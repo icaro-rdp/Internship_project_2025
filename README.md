@@ -35,6 +35,7 @@ This repository contains tools and notebooks for analyzing visual similarity bet
 
 - `VGG-16_pruning_RSA.ipynb` - Representational Similarity Analysis with VGG-16
 - `VGG-16_pruning_RSME.ipynb` - Root Mean Square Error analysis with VGG-16
+- `AIGCQA2023_descriptive.ipynb` - Descriptive statistics for AIGCQA2023 dataset
 
 ## Setup
 
