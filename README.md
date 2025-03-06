@@ -1,7 +1,4 @@
-# Visual Similarity Analysis Project
-
-This repository contains tools and notebooks for analyzing visual similarity between images using various computational models and comparing them with human judgments.
-
+# Internship Project: Re Depaolini Icaro 2025
 ## Project Structure
 
 - **Code examples/** - Contains implementation examples and notebooks
@@ -21,6 +18,12 @@ This repository contains tools and notebooks for analyzing visual similarity bet
   - HPDv2.ipynb
 
 - **Models/**, **Pruning_masks/**, **Pruning_sets/** - Directories for model artifacts and pruning data
+
+## Key Notebooks
+
+- `VGG-16_pruning_RSA.ipynb` - Representational Similarity Analysis with VGG-16
+- `VGG-16_pruning_RSME.ipynb` - Root Mean Square Error analysis with VGG-16
+- `AIGCQA2023_descriptive.ipynb` - Descriptive statistics for AIGCQA2023 dataset
 
 ## Core Functionality
 
