@@ -102,11 +102,7 @@ The strong and nearly identical Pearson and Spearman correlation coefficients (0
 
 # 5. Implications for DNN Training
 
-# Current Approach: Joint MSE Loss
-
-You're currently using MSE loss to predict both quality and authenticity together. While this is a common approach, the bimodal distribution of quality scores introduces significant challenges:
-
-## Problems with MSE for Your Data
+## Problems with MSE 
 
 ### For Quality Scores (Bimodal):
 
