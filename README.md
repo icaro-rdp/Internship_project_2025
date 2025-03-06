@@ -34,12 +34,6 @@
 - Feature extraction from CNNs (VGG-16, Inception)
 - Computation of similarity matrices using cosine similarity
 
-## Key Notebooks
-
-- `VGG-16_pruning_RSA.ipynb` - Representational Similarity Analysis with VGG-16
-- `VGG-16_pruning_RSME.ipynb` - Root Mean Square Error analysis with VGG-16
-- `AIGCQA2023_descriptive.ipynb` - Descriptive statistics for AIGCQA2023 dataset
-
 ## Setup
 
 This repo is just for visualization and code examples. The actual datasets and models are not included. To actually run the code, you need to download the datasets and models separately. (contact the authors for access)
