@@ -51,3 +51,6 @@ Dataset
 .env
 config.ini
 
+# Images
+Heatmap_images
+
