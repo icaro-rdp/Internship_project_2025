@@ -1,23 +1,18 @@
-# Neural Network Visualization Methodology
-
-- **Importance Score Processing**
-
-  - I inverted the z-scored importance values since my original metric assigned negative values to important channels
-  - This ensures channels critical to model performance receive positive weights in my visualizations
-
-- **Feature Map Normalization**
-
-  - I Z-standardized each feature map independently to zero mean and unit variance
-
-- **Weighted Aggregation Approach**
-  - I have created new 512 importance scores for each model, in which each of the zeroed out channels is assigned a score of 0. (only the scores of important channels are z-scored and keeped)
-  - I multiplied each normalized map by its importance score 
-  - Summed across channels to create a weighted heatmap
-  - Re-scaling the heatmap to [0,1] for visualization
-
-- **Visualization**
-
-  - Taken the dataset image, and reversed the transformations steps (imageNet normalization) to obtain the original image
-  - Applied gamma correction to enhance mid-range values and make subtle patterns more apparent.
-  - Scaled the heatmap to the same size as the original image (14x14 -> 224x224)
-  - Overlayed the heatmap on the original image to show where the model focuses its attention.
+1. Feature Map Extraction
+For each image in your dataset, pass it through the neural network and extract the activation maps from the deepest convolutional layer (in our case 512 per image)
+2. Define Hollow Square Templates
+Use the same height and width of the feature map, and construct hollow sqare templates that are binary masks. The length of each side of the square should be  50%, 60%, 70%, 80%, 90% of the feature map height/width).  For example, of the activation maps are 14x14, the smallest square will be 7x7 centered.
+The square is open, i.e., only the edges are marked — top, bottom, left, and right — not the interior.
+3. Match Templates to Feature Maps
+For each feature map (i.e., each channel) in each image:
+Compare the activation map to each of the square templates using a similarity measure (e.g., normalized cross-correlation or cosine similarity).
+This yields one match score per square size.
+From these, record:
+The maximum match score (i.e., best-fitting square size) (Store Pearson correlation) AND
+The corresponding size ratio that produced the maximum score
+4. Aggregate Results Across Images
+For each feature map across the dataset:
+Collect the best match scores for all images (Correlation and size)
+Analyze the distribution of these scores:
+A feature map that often has high scores may be consistently detecting hollow squares.
+A feature map with a bimodal or heavy-tailed distribution may only activate in the presence of the artifact.
