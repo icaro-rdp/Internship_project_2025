@@ -7,3 +7,18 @@
    - we can use the same approach?
    - understand.
 4) Documentation for each of the steps.
+
+POINT 2:
+
+A form of feature ablation or perturbation analysis per object. Here's how:
+1. For a single object, loop over all features (or groups of features, like feature maps if they come
+from conv layers):
+For each feature fi:
+• Temporarily set fi = 0 (or to a baseline value).
+• Recompute the prediction: ý-i
+• Compute the new error: |ý-i - Ytrue|
+• Compare with the original error: |ý — Ytrue |
+This tells you whether removing that feature improved or worsened the prediction.
+2. Rank features for that object based on how much their removal increased or decreased the
+prediction error.
+This gives you an individual-level feature attribution.
