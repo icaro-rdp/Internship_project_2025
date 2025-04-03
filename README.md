@@ -24,6 +24,8 @@
 - `VGG-16_pruning_RSA.ipynb` - Representational Similarity Analysis with VGG-16
 - `VGG-16_pruning_RSME.ipynb` - Root Mean Square Error analysis with VGG-16
 - `AIGCQA2023_descriptive.ipynb` - Descriptive statistics for AIGCQA2023 dataset
+- `VGG-16_pruning_RSME_authenticity` - Root Mean Square Error analysis for authenticity on realistic images subset
+- `VGG-16-authenticity_cam_gradCam_heatmaps` - Grad-CAM and weighted-CAM heatmaps for authenticity 
 
 ## Core Functionality
 
@@ -33,6 +35,7 @@
 - Representation Similarity Matrix (RSM) analysis
 - Feature extraction from CNNs (VGG-16, Inception)
 - Computation of similarity matrices using cosine similarity
+- Visualization of feature importance using heatmaps
 
 ## Setup
 
