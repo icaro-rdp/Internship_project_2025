@@ -22,3 +22,8 @@ This tells you whether removing that feature improved or worsened the prediction
 2. Rank features for that object based on how much their removal increased or decreased the
 prediction error.
 This gives you an individual-level feature attribution.
+
+
+- consider isntead of the absolute error, the sing of the error, to understand if the feature is 
+  - increasing or decreasing the distance to the ground truth.
+  
