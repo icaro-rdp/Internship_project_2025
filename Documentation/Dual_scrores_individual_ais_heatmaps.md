@@ -26,18 +26,17 @@ The first step involves calculating importance scores for each feature map in th
 Before generating heatmaps, importance scores undergo several transformations:
 
 1. **Score Sign Extraction**:
-   - Extract the sign of the residual scores using sign function, needed to determine the direction of impact
+   - Extract the sign of the residual scores using sign function, needed to determine the direction of impact.
 
-2. **Min-Max Scaling**:
-   - Normalize prediction scores to [0, 1] range using min-max normalization
+2. **Z-score Normalization**:
+   - Normalize the absolute values of `delta_prediction` using Z-score normalization:
+     - `z_score = (x - mean) / std`
+     - This transforms the scores to have a mean of 0 and standard deviation of 1, making them comparable across channels and images.
 
 3. **Combined Transformation**:
+   - Use the absolute values of `delta_prediction` to refer to the magnitude of the impact, and the sign of `delta_residual` to refer to the direction of the impact.
+   - This combines the normalized prediction impact with the sign of residual impact, ensuring that the final score reflects both the magnitude and direction of the impact.
    - The final importance score combines normalized prediction impact with the sign of residual impact
-   - This multiplies the magnitude of prediction impact (0-1) by the direction of error impact (-1 or 1)
-   - Result: scores in range [-1, 1] where:
-     - Positive values: Channels that increase error when removed
-     - Negative values: Channels that decrease error when removed
-     - Magnitude: How strongly the channel affects prediction
 
 ## 3. Heatmap Generation with AIS and GradCAM
 
@@ -52,7 +51,7 @@ Two visualization techniques are implemented:
    - Apply ReLU to activations to focus on positive influences
    - Weight each channel's activation map by pre-calculated importance scores (negative and positive)
    - Sum weighted activations across channels
-   - Resize to input image size
+   - Resize to input image size (224x224) using bilinear interpolation
    - Normalize by maximum absolute value to preserve sign information
    - Result: Heatmap values in range [-1, 1]
 
@@ -61,7 +60,7 @@ Two visualization techniques are implemented:
 For the AIS visualization:
 
 1. **Dual-Color Interpretation**:
-   - Red-blue colormap ('seismic') is used to indicate sign:
+   - Red-blue colormap ('bwr') is used to represent the heatmap values:
      - Red: Positive values (helpful features that increase realism)
      - Blue: Negative values (features that decrease realism)
      - Intensity: Magnitude of impact
@@ -70,3 +69,5 @@ For the AIS visualization:
    - Render original image
    - Create red-blue heatmap using TwoSlopeNorm for proper centering at zero
    - Overlay heatmap on image with 60% original image, 40% heatmap weighting
+   - Create a only positive heatmap for positive values (red) and a only negative heatmap for negative values (blue)
+   
