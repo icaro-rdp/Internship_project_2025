@@ -39,4 +39,4 @@
 
 ## Setup
 
-This repo is just for visualization and code examples. The actual datasets and models are not included. To actually run the code, you need to download the datasets and models separately. (contact the authors for access)
+This repo is just for visualization and code examples. The actual datasets and models are not included. To actually run the code, you need to download the datasets and models separately. (contact the authors for access).
