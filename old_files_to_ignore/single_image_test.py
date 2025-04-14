@@ -398,8 +398,8 @@ def process_single_image(image_path, baseline_model_path, noisy_pruned_model_pat
 if __name__ == "__main__":
     # Replace these paths with your actual paths
     image_path = "test_image.jpeg"
-    baseline_model_path = "Models/VGG-16_real_authenticity_finetuned.pth"
-    noisy_pruned_model_path = "Models/real_authenticity_noise_out_pruned_model.pth"
+    baseline_model_path = "Weights/VGG-16_real_authenticity_finetuned.pth"
+    noisy_pruned_model_path = "Weights/real_authenticity_noise_out_pruned_model.pth"
     importance_scores_path = "Ranking_arrays/obj_x_obj_authenticity_importance_scores.npy"
     
     # Process the image
