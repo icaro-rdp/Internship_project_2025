@@ -15,11 +15,12 @@ The following modification and training, is performed for each model, in order t
 
 Following their suggestions, for all the models, the feature extraction are performed using the following suggestions:
 
-For ResNet-152, DenseNet-161, and InceptionV3, the feature maps from the deepest convolutional layer are extracted, and then **global pooling is applied to these feature maps to generate object embeddings**.
+For ResNet-152, DenseNet-161, and InceptionV3, the feature maps from the deepest convolutional layer are extracted. 
 
 Specifically:
-*   **ResNet-152** has **2,048** feature maps in its deepest layer. Global pooling is then used on these maps to obtain the embeddings.
-*   **DenseNet-161** has **2208** feature maps in its deepest layer. Similar to ResNet-152, **global pooling** is applied to these feature maps to generate the embeddings.
-*   **InceptionV3** has **2,048** feature maps in its deepest layer. The process for obtaining embeddings involves applying **global pooling** to these feature maps.
-For **Barlow Twins**, which uses a ResNet-50 architecture (related to ResNet-152), the feature maps from the **last convolutional layer** are extracted. The authors of Barlow Twins suggest using the **global average pooling** method to obtain the embeddings from these feature maps. The Barlow Twins model is trained on ImageNet-1K, and the authors of the paper suggest using the **global average pooling** method to obtain the embeddings from these feature maps.
+*   **ResNet-152** has **2,048x7x7** feature maps in its deepest layer. 
+*   **DenseNet-161** has **2208x7x7** feature maps in its deepest layer. 
+*   **InceptionV3** has **2,048x8x8** feature maps in its deepest layer. 
+*   **Barlow Twins**, has **2,048x7x7** feature maps in its deepest layer.
 
+The feature maps from these model, cotrarely to the vgg16 are less localized, since the 7x7 and 8x8 feature maps are less localized than the 14x14 feature maps from VGG16. Therefore, the scalling to the original image, should be less precise and more distributed.

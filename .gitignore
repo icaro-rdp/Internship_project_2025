@@ -36,7 +36,8 @@ ENV/
 *.swo
 
 # Model files and datasets
-Models
+Models/*/Weights
+Models/*/Ranking_arrays
 Dataset
 *.pkl
 *.h5
