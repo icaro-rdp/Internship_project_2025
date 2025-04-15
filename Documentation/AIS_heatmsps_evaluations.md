@@ -3,8 +3,9 @@
 Looking at the AIS paper, the authors used the following models for an evaluation:
  - ResNet152
  - DenseNet161
- - InceptionV3
+ - VGG19
  - BarlowTwins
+ 
 
 # 2) Models adaptations and Training
 
@@ -15,12 +16,14 @@ The following modification and training, is performed for each model, in order t
 
 Following their suggestions, for all the models, the feature extraction are performed using the following suggestions:
 
-For ResNet-152, DenseNet-161, and InceptionV3, the feature maps from the deepest convolutional layer are extracted. 
-
 Specifically:
-*   **ResNet-152** has **2,048x7x7** feature maps in its deepest layer. 
-*   **DenseNet-161** has **2208x7x7** feature maps in its deepest layer. 
-*   **InceptionV3** has **2,048x8x8** feature maps in its deepest layer. 
-*   **Barlow Twins**, has **2,048x7x7** feature maps in its deepest layer.
+*   **VGG19** has **512x14x14** feature maps in its deepest layer, in the layer `features.28`.
+*   **ResNet-152** has **2,048x7x7** feature maps in its deepest layer, in the layer `features.7.2.conv3`'
+*   **DenseNet-161** has **48x7x7** feature maps in its deepest layer, in the layer `features.denseblock4.denselayer32.norm1`.
+*   **Barlow Twins**, has **2,048x7x7** feature maps in its deepest layer in the layer `features.7.2.conv3`.
 
 The feature maps from these model, cotrarely to the vgg16 are less localized, since the 7x7 and 8x8 feature maps are less localized than the 14x14 feature maps from VGG16. Therefore, the scalling to the original image, should be less precise and more distributed.
+
+# 4) InceptionV3 exclusion
+
+I have decided to exclude from the evaluation of the ais heatmaps the incpetionv3 model, even if the prediction of the aesthetic score is not affected by the model, the feature maps are less localized than the other models. Therefore, the heatmaps are less interpretable and more distributed, sice the model uses a parallel architecture with multiple branches. 
