@@ -38,6 +38,8 @@ ENV/
 # Model files and datasets
 Models/*/Weights
 Models/*/Ranking_arrays
+Models/*/*/Weights
+Models/*/*/Ranking_arrays
 Dataset
 *.pkl
 *.h5

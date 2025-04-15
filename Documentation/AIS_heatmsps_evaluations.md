@@ -21,6 +21,7 @@ Specifically:
 *   **ResNet-152** has **2,048x7x7** feature maps in its deepest layer, in the layer `features.7.2.conv3`'
 *   **DenseNet-161** has **48x7x7** feature maps in its deepest layer, in the layer `features.denseblock4.denselayer32.norm1`.
 *   **Barlow Twins**, has **2,048x7x7** feature maps in its deepest layer in the layer `features.7.2.conv3`.
+*  **EfficientNetB3** has **1536x8x8** feature maps in its deepest layer, in the layer `features.8.0`.
 
 The feature maps from these model, cotrarely to the vgg16 are less localized, since the 7x7 and 8x8 feature maps are less localized than the 14x14 feature maps from VGG16. Therefore, the scalling to the original image, should be less precise and more distributed.
 
