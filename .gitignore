@@ -40,6 +40,7 @@ Models/*/Weights
 Models/*/Ranking_arrays
 Models/*/*/Weights
 Models/*/*/Ranking_arrays
+Models/*/saliency_experiment_outputs
 Dataset
 *.pkl
 *.h5
