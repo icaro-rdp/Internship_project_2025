@@ -44,3 +44,25 @@ The process involves the following key steps:
     * The results from the comparison step (Step 3).
     * The list of N model names/identifiers.
 2.  **Display Results**: For each chosen metric, a similarity matrix (heatmap) will be generated. This N x N matrix visually represents the calculated similarity (e.g., mean similarity) between every pair of models. The axes of the matrix will be labeled with your provided model names, making it easy to interpret.
+
+## Resutls 
+
+### 1. Correlation Analysis
+
+1.  **Impact of Pruning on Model Heatmaps:**
+    * For most models (BarlowTwins, DenseNet-161, EfficientNet-B3, ResNet-152), pruning has a very minor effect on the generated heatmaps. This is evidenced by the extremely high correlation scores (approximately 0.98 to 0.99) between the baseline and pruned versions of these models. This suggests that, for these architectures, the core features influencing their heatmap outputs are largely preserved after pruning.
+    * VGG-16 shows a slightly greater impact from pruning, with a correlation of 0.84 between its baseline and pruned versions. While still high, it indicates some changes in heatmap characteristics.
+    * VGG-19 is most affected by pruning, with a correlation of only 0.56 between its baseline and pruned heatmaps. This suggests that pruning significantly alters the feature importance or visual explanations for VGG-19.
+
+2.  **Correlations Within Model Architectures:**
+    * As expected, the highest correlations are generally observed between the baseline and pruned versions of the same model.
+    * Models of the same architecture family also tend to show some correlation, though this varies. For instance, VGG-16 models (Baseline/Pruned) correlate more strongly with each other than with VGG-19 models.
+
+3.  **Correlations Across Different Model Architectures:**
+    * **BarlowTwins:** These models show a high positive correlation with each other (0.99). They exhibit a moderate negative correlation with DenseNet models (around -0.46 to -0.56) and some slight positive correlation with VGG models (around 0.20 to 0.35). Their correlation with EfficientNet and ResNet models is generally low.
+    * **DenseNet-161:** These models show strong negative correlations with VGG-16 models (ranging from -0.46 to -0.61). Their correlation with VGG-19 models is weaker and more mixed. Correlations with EfficientNet and ResNet are minimal.
+    * **EfficientNet-B3 & ResNet-152:** Both EfficientNet-B3 and ResNet-152 models (baseline and pruned) show very high internal correlation but exhibit low to negligible correlation with most other model families. This suggests their learned feature representations, as visualized by heatmaps, are quite distinct from the other architectures tested. ResNet models show a slight negative correlation with VGG-19 models (around -0.21 to -0.30).
+    * **VGG Models:**
+        * VGG-16 models have a strong negative correlation with DenseNet models.
+        * VGG models show some positive correlation with BarlowTwins models.
+        * The correlation between VGG-16 and VGG-19 heatmaps is positive but not very strong (e.g., VGG-16 Pruned vs VGG-19 Pruned is 0.27; VGG-19 Baseline vs VGG-16 Pruned is 0.19).
