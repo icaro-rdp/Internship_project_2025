@@ -44,7 +44,8 @@ Models/*/*/Ranking_arrays
 # Ignore saliency_experiment_outputs by default
 Models/*/saliency_experiment_outputs/*
 Models/*/*/saliency_experiment_outputs/*
-
+Models/*/*/5_imgs_masking_experiment_outputs/*
+Models/*/5_imgs_masking_experiment_outputs/*
 
 Dataset
 *.pkl
