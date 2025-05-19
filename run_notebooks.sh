@@ -2,9 +2,9 @@
 
 echo "Starting notebook executions..."
 
-# echo "Running BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
-# jupyter nbconvert --to notebook --execute --inplace "Models/BarlowTwins/BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
-# echo "Finished BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
+echo "Running BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
+jupyter nbconvert --to notebook --execute --inplace "Models/BarlowTwins/BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
+echo "Finished BarlowTwins_multiscale_mask_saliency_parallel.ipynb"
 
 echo "Running DenseNet-161_multiscale_mask_saliency_parallel.ipynb"
 jupyter nbconvert --to notebook --execute --inplace "/home/icaro.redepaolini@unitn.it/icaro_rdp_projects/Models/DenseNet-161/DenseNet-161_multiscale_mask_saliency_parallel.ipynb"
@@ -27,3 +27,5 @@ jupyter nbconvert --to notebook --execute --inplace "/home/icaro.redepaolini@uni
 echo "Finished VGG16_multiscale_mask_saliency_parallel.ipynb"
 
 echo "All notebook executions finished."
+
+# to run the script, use the command: bash run_notebooks.sh
