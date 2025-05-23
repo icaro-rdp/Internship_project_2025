@@ -21,6 +21,7 @@ class ImageAuthenticityDataset(Dataset):
         self.base_dir = 'Dataset/AIGCIQA2023'
         self.csv_file = os.path.join(self.base_dir, csv_file_name)
         self.data = pd.read_csv(self.csv_file)
+        self.transform = transform
 
     def __len__(self):
         """Returns the number of samples in the dataset."""
@@ -41,8 +42,7 @@ class ImageAuthenticityDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        # TODO: to be fixed, right now is folder dependent
-        img_name = self.data.iloc[idx, 3].replace("./", "../../../../")
+        img_name = self.data.iloc[idx, 3]
         image = Image.open(img_name).convert('RGB')
         authenticity = self.data.iloc[idx, 1]  # Authenticity column
         labels = torch.tensor([authenticity], dtype=torch.float)
