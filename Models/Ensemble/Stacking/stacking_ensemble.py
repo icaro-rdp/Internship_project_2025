@@ -148,12 +148,6 @@ def train_stacking_model(model, dataloader, criterion, optimizer, num_epochs=10)
 # Train the stacking model
 train_stacking_model(stacking_model, train_dataloader, criterion, optimizer, num_epochs=20)
 
-
-# (Your existing code for imports, model definitions, loading base models, OOF generation, and training stacking_model)
-# ...
-# train_stacking_model(stacking_model, train_dataloader, criterion, optimizer, num_epochs=20)
-# print("Stacking model training finished.")
-
 # ---- TESTING THE STACKED MODEL ----
 print("\n--- Testing Stacking Model ---")
 
@@ -166,16 +160,10 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 stacking_model = stacking_model.to(device)
 stacking_model.eval() # Set to evaluation mode
 
-# 1. Prepare Test Data and True Labels
-# This section is highly dependent on how your IMAGENET_DATASET['test'] and DENSENET_DATASET['test'] are structured.
-# The following is an example, adjust it to your actual dataset implementation.
-
-# Assuming IMAGENET_DATASET['test'] is the reference for test samples and labels
-# And that it's a torch.utils.data.Subset or a similar Dataset object
 
 y_test_true_tensor = None
 num_test_samples = 0
-main_test_subset_indices_for_all = None # To ensure consistent indexing across different datasets
+main_test_subset_indices_for_all = None 
 
 if 'test' not in IMAGENET_DATASET or IMAGENET_DATASET['test'] is None:
     print("Test dataset IMAGENET_DATASET['test'] not found. Skipping testing.")
@@ -239,9 +227,7 @@ else:
 
                 current_test_dataloader_for_model = DataLoader(final_subset_for_model, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
             else:
-                # Assumes IMAGENET_DATASET['test'] is already defined and correctly represents the items
-                # If main_test_subset_indices_for_all was derived from IMAGENET_DATASET['test'] being a Subset, then main_test_subset_ref is what we need
-                # If IMAGENET_DATASET['test'] was a full dataset, main_test_dataset_ref is what we need
+                
                 dataset_to_use_for_model = main_test_subset_ref if isinstance(IMAGENET_DATASET['test'], Subset) else main_test_dataset_ref
                 current_test_dataloader_for_model = DataLoader(dataset_to_use_for_model, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
             
@@ -272,10 +258,14 @@ else:
 
         # Calculate and print MSE on the test scores
         mse_test = mean_squared_error(y_test_true_numpy, final_predictions_numpy)
+        r_squared_test = 1 - (mse_test / np.var(y_test_true_numpy)) if np.var(y_test_true_numpy) > 0 else float('nan')
         print(f"  MSE on test scores: {mse_test:.4f}")
+        print(f" RMSE on test scores: {np.sqrt(mse_test):.4f}")
+        print(f"R^2 on test scores: {r_squared_test:.4f}")
+        # Optionally, you can also calculate R^2 or other metrics if needed
     else:
         print("No test samples found or processed. Skipping evaluation.")
 
 # Optional: Save the trained stacking model
 torch.save(stacking_model.state_dict(), 'stacking_ensemble_final.pth')
-# print("\nTrained stacking model state_dict saved to stacking_ensemble_final.pth")
+print("\nTrained stacking model state_dict saved to stacking_ensemble_final.pth")
