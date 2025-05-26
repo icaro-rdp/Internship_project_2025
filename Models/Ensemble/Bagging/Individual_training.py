@@ -223,14 +223,13 @@ if __name__ == "__main__":
                 num_epochs=NUMBER_OF_EPOCHS,
                 device=device,
                 save_model=True,
-                path_to_save="Models/Ensemble/Bagging/Weights/",
+                path_to_save="Models/Ensemble/Weights/",
                 model_name=model_name_key 
             )
             print(f"  Model '{model_name_key}' training completed.")
-            # 'trained_model' is the same 'current_model_instance' trained in-place.
-            # 'training_stats' contains logs like losses, accuracies, times per epoch.
+    
 
         except Exception as error:
             print(f"  Error training model '{model_name_key}': {error}")
             import traceback
-            traceback.print_exc() # This will print the full error stack for debugging
+            traceback.print_exc() 
