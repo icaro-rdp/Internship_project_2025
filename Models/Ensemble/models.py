@@ -161,11 +161,9 @@ class VGG16AuthenticityPredictor(nn.Module):
         self.fc1 = vgg.classifier[:-1]  # Up to fc2 (4096 -> 128)
         
         # New regression head
+        # New regression head
         self.regression_head = nn.Sequential(
-            nn.Linear(4096, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 128),
+            nn.Linear(4096, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(128, 1),  
@@ -196,11 +194,9 @@ class VGG19AuthenticityPredictor(nn.Module):
         self.fc1 = vgg.classifier[:-1]  # Up to fc2 (4096 -> 128)
         
         # New regression head
+        # New regression head
         self.regression_head = nn.Sequential(
-            nn.Linear(4096, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 128),
+            nn.Linear(4096, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(128, 1),  

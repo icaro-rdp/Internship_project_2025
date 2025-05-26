@@ -51,7 +51,7 @@ if __name__ == "__main__":
         'EfficientNetB3': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
         'DenseNet161': DataLoader(DENSENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
         'ResNet152': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
-        'InceptionV3': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
+        'InceptionV3': DataLoader(DENSENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
         'VGG16': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
         'VGG19': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20)
     }
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     ### TRAINING INDIVIDUAL MODELS ###
     criterion = torch.nn.MSELoss()  # Or your preferred loss function
-    NUMBER_OF_EPOCHS = 40
+    NUMBER_OF_EPOCHS = 20
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
     print("\nStarting training for individual ensemble members...")
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         print(f"\nTraining model: '{model_name_key}' for {NUMBER_OF_EPOCHS} epochs...")
         
         try:
-            trained_model, training_stats = train_model(
+            _, training_stats = train_model(
                 model=current_model_instance,
                 train_dataloader=current_train_dataloader,
                 criterion=criterion,
@@ -97,6 +97,8 @@ if __name__ == "__main__":
                 model_name=model_name_key 
             )
             print(f"  Model '{model_name_key}' training completed.")
+            del current_model_instance  # Free memory if needed
+
     
 
         except Exception as error:
