@@ -324,3 +324,31 @@ def test_ensemble(
     print(f"{'='*60}\n")
 
     return average_loss
+
+def get_predictions(
+    model: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: str = 'cuda'
+) -> torch.Tensor:
+    """
+    Get predictions from the model for the given dataloader.
+
+    Args:
+        model (nn.Module): The model to use for predictions
+        dataloader (DataLoader): DataLoader containing the data
+        device (str): Device to use ('cuda' or 'cpu'). Defaults to 'cuda'
+
+    Returns:
+        torch.Tensor: Predictions from the model
+    """
+    model.to(device)
+    model.eval()
+    all_predictions = []
+
+    with torch.no_grad():
+        for inputs, _ in tqdm(dataloader, desc="Getting Predictions", unit="batch"):
+            inputs = inputs.to(device, non_blocking=True)
+            outputs, _ = model(inputs)
+            all_predictions.append(outputs.cpu())
+
+    return torch.cat(all_predictions, dim=0)
