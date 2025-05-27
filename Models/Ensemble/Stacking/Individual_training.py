@@ -1,7 +1,5 @@
 import torch
 from torch.utils.data import DataLoader
-
-# These are your direct imports. The code below assumes they work as expected.
 from Models.Ensemble.models import (
     BarlowTwinsAuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
@@ -12,12 +10,10 @@ from Models.Ensemble.models import (
     InceptionV3AuthenticityPredictor,
 )
 from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
-from Models.Ensemble.utils import  train_model
+from Models.Ensemble.utils import train_model
 
-# Example usage
-if __name__ == "__main__":
-    
-    # Initialize models with more descriptive variable names
+def setup():
+    # Initialize models
     barlow_twins_model = BarlowTwinsAuthenticityPredictor()
     efficientnet_b3_model = EfficientNetB3AuthenticityPredictor()
     densenet_161_model = DenseNet161AuthenticityPredictor()
@@ -55,9 +51,10 @@ if __name__ == "__main__":
         'VGG16': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20),
         'VGG19': DataLoader(IMAGENET_DATASET['train'], batch_size=64, shuffle=True, num_workers=20)
     }
+    return ensemble_models, model_names, train_dataloaders
 
-
-    # Determine device and move models
+def main():
+    ensemble_models, model_names, train_dataloaders = setup()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
 
@@ -65,25 +62,17 @@ if __name__ == "__main__":
         model.to(device)
         print(f"  {model_names[model_idx]} moved to {device}")
 
-    ### TRAINING INDIVIDUAL MODELS ###
-    criterion = torch.nn.MSELoss()  # Or your preferred loss function
+    criterion = torch.nn.MSELoss()
     NUMBER_OF_EPOCHS = 20
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\nUsing device: {device}")
     print("\nStarting training for individual ensemble members...")
 
     for model_name_key, current_train_dataloader in train_dataloaders.items():
-        
         current_model_instance = next((m for m, name in zip(ensemble_models, model_names) if name == model_name_key), None)
-        
         if current_model_instance is None:
             print(f"  Model '{model_name_key}' not found in ensemble_models list. Skipping.")
             continue
-            
         optimizer = torch.optim.Adam(current_model_instance.parameters(), lr=0.001)
-        
         print(f"\nTraining model: '{model_name_key}' for {NUMBER_OF_EPOCHS} epochs...")
-        
         try:
             _, training_stats = train_model(
                 model=current_model_instance,
@@ -97,11 +86,11 @@ if __name__ == "__main__":
                 model_name=model_name_key 
             )
             print(f"  Model '{model_name_key}' training completed.")
-            del current_model_instance  # Free memory if needed
-
-    
-
+            del current_model_instance
         except Exception as error:
             print(f"  Error training model '{model_name_key}': {error}")
             import traceback
-            traceback.print_exc() 
+            traceback.print_exc()
+
+if __name__ == "__main__":
+    main()

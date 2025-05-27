@@ -241,8 +241,7 @@ def main():
 
     # Split OOF predictions for meta-learner training and validation
     X_meta_train, X_meta_val, y_meta_train, y_meta_val = train_test_split(
-        oof_predictions_all_models, y_train_full_tensor, # used y_train_full_tensor instead of oof_labels for consistency
-        test_size=0.2, 
+        oof_predictions_all_models, y_train_full_tensor,
         random_state=Config.RANDOM_STATE
     )
 
