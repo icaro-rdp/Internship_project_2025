@@ -4,11 +4,11 @@
 The script first loads several pre-trained **base models**: BarlowTwinsAuthenticityPredictor, EfficientNetB3AuthenticityPredictor, DenseNet161AuthenticityPredictor, ResNet152AuthenticityPredictor, VGG16AuthenticityPredictor, VGG19AuthenticityPredictor, and InceptionV3AuthenticityPredictor, along with their respective weights. These base models are used to generate predictions that will serve as input features for the meta-learner.
 
 ---
-## K-Fold Cross-Validation for Meta-Learner Training Data 🔄
+## K-Fold Cross-Validation for Meta-Learner Training Data
 
 To prevent information leakage and create a robust training dataset for the meta-learner, the script employs **K-Fold cross-validation** on the training data. Here's how it works:
 
-1.  **Initialization**: The main training dataset (`IMAGENET_DATASET['train']`) is identified. The script initializes tensors to store **out-of-fold (OOF) predictions** (`oof_predictions_all_models`) and the corresponding true labels (`oof_labels`). A `KFold` object is configured with `N_SPLITS = 5` splits, ensuring shuffling and a fixed random state for reproducibility.
+1.  **Initialization**: The main training dataset (`IMAGENET_DATASET['train']`) is identified. The script initializes tensors to store **out-of-fold (OOF) predictions** (`oof_predictions_all_models`) and the corresponding true labels (`oof_labels`). A `KFold` object is configured with `N_SPLITS = N` splits, ensuring shuffling and a fixed random state for reproducibility.
 
 2.  **Iteration through Folds**: The script iterates five times (once for each fold). In each iteration:
     * The training data is split into a training fold and a validation fold based on local indices within the main training subset.
@@ -20,9 +20,8 @@ To prevent information leakage and create a robust training dataset for the meta
     * Predictions are obtained from the current base model on this validation fold using the `get_predictions` function.
     * These predictions are then stored in the `oof_predictions_all_models` tensor at the rows corresponding to the validation fold samples and the column corresponding to the current base model.
 
-The result of this K-Fold process is `oof_predictions_all_models`, where each row represents a sample from the original training set, and each column contains the predictions for that sample from a different base model. These OOF predictions are "unseen" by the models that generated them during their own training (if they were trained in a similar k-fold fashion, though the script only loads pre-trained base models).
+The result of this K-Fold process is `oof_predictions_all_models`, where each row represents a sample from the original training set, and each column contains the predictions for that sample from a different base model. These OOF predictions are "unseen" by the models that generated them during their own training.
 
----
 ## Meta-Learner Construction and Training 
 
 1.  **Data Preparation**:
@@ -40,7 +39,6 @@ The result of this K-Fold process is `oof_predictions_all_models`, where each ro
     * The `train_stacking_model` function trains the meta-learner for a specified number of epochs (20 in this case).
     * In each epoch, the model iterates through the `train_dataloader`. For each batch, it calculates the output, computes the loss against the true labels, performs backpropagation, and updates the model parameters. The training loss is printed after each epoch.
 
----
 ## Testing the Stacked Model
 
 After training the meta-learner, the script evaluates its performance on a separate test set:

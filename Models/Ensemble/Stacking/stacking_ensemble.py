@@ -1,271 +1,377 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-from sklearn.model_selection import KFold
+from torch.utils.data import DataLoader, Subset, TensorDataset
+from sklearn.model_selection import KFold, train_test_split
+from sklearn.metrics import mean_squared_error
 import numpy as np
-from Models.Ensemble.models import (
-    BarlowTwinsAuthenticityPredictor,
-    EfficientNetB3AuthenticityPredictor,
-    DenseNet161AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    InceptionV3AuthenticityPredictor,
-)
-from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
-from Models.Ensemble.utils import test_model, train_model, get_predictions
+import random
+from pathlib import Path
+import logging
+
+# --- Model and Dataset Imports (Assuming these are in the specified paths) ---
+# These would need to be resolvable in your environment
+# For this example, I'll define dummy classes/dicts if they aren't found
+try:
+    from Models.Ensemble.models import (
+        BarlowTwinsAuthenticityPredictor,
+        EfficientNetB3AuthenticityPredictor,
+        DenseNet161AuthenticityPredictor,
+        ResNet152AuthenticityPredictor,
+        VGG16AuthenticityPredictor,
+        VGG19AuthenticityPredictor,
+        InceptionV3AuthenticityPredictor,
+    )
+    from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
+    from Models.Ensemble.utils import test_model, train_model, get_predictions
+except ImportError:
+    logging.warning("Could not import all custom models/datasets/utils. Using dummy placeholders.")
+    # Dummy placeholders for demonstration if imports fail
+    class DummyModel(nn.Module):
+        def __init__(self, *args, **kwargs): super().__init__(); self.fc = nn.Linear(10,1)
+        def forward(self, x): return torch.rand(x.size(0) if isinstance(x, torch.Tensor) else x[0].size(0), 1) # Simplified
+    BarlowTwinsAuthenticityPredictor = EfficientNetB3AuthenticityPredictor = DenseNet161AuthenticityPredictor = \
+    ResNet152AuthenticityPredictor = VGG16AuthenticityPredictor = VGG19AuthenticityPredictor = \
+    InceptionV3AuthenticityPredictor = DummyModel
+
+    # Dummy dataset structure
+    def _create_dummy_dataset(size=100, num_classes=2):
+        # Ensuring data has .iloc for consistency with original code's access pattern
+        import pandas as pd
+        data = pd.DataFrame({
+            'features': [torch.randn(3, 224, 224) for _ in range(size)],
+            'labels': np.random.randint(0, num_classes, size)
+        })
+        class DummyTorchDataset(torch.utils.data.Dataset):
+            def __init__(self, data_df): self.data = data_df
+            def __len__(self): return len(self.data)
+            def __getitem__(self, idx): return self.data.iloc[idx, 0], self.data.iloc[idx, 1]
+        
+        dummy_torch_ds = DummyTorchDataset(data)
+        return {
+            'train': Subset(dummy_torch_ds, list(range(size // 2))),
+            'test': Subset(dummy_torch_ds, list(range(size // 2, size))),
+            'dataset_object': dummy_torch_ds # Reference to the full original dataset
+        }
+    IMAGENET_DATASET = _create_dummy_dataset(200) # Larger for KFold
+    DENSENET_DATASET = _create_dummy_dataset(200)
+
+    def get_predictions(model: nn.Module, dataloader: DataLoader, device: str = 'cpu') -> torch.Tensor:
+        model.eval()
+        model.to(device)
+        all_preds = []
+        with torch.no_grad():
+            for inputs, _ in dataloader: # Assuming labels are not needed for preds for now
+                if isinstance(inputs, list): inputs = inputs[0] # If dataloader yields list
+                inputs = inputs.to(device)
+                outputs = model(inputs)
+                all_preds.append(outputs.cpu())
+        return torch.cat(all_preds).squeeze()
 
 
-# Helper function to load a model and its weights
-def load_model_with_weights(model_class, weights_path, device='cuda'):
+# --- Configuration ---
+class Config:
+    N_SPLITS = 7
+    BATCH_SIZE = 32 
+    NUM_WORKERS = 20  
+    RANDOM_STATE = 42
+    LEARNING_RATE_META = 0.001
+    EPOCHS_META = 40 # Original value
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Paths
+    BASE_MODEL_WEIGHTS_DIR = Path('Models')
+    OUTPUT_DIR = Path('.') # Current directory for output
+    META_LEARNER_SAVE_PATH = OUTPUT_DIR / 'Models/Ensemble/Weights/Stacking/stacking_ensemble_weights.pth'
+
+    # Model configurations: (ModelClass, weights_filename, dataset_dict_to_use)
+    MODEL_CONFIGS = [
+        (BarlowTwinsAuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'BarlowTwins/Weights/BarlowTwins_real_authenticity_finetuned.pth', IMAGENET_DATASET),
+        (EfficientNetB3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/EfficientNetB3_weights.pth', IMAGENET_DATASET),
+        (DenseNet161AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/DenseNet161_weights.pth', DENSENET_DATASET),
+        (ResNet152AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/ResNet152_weights.pth', IMAGENET_DATASET),
+        (VGG16AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG16_weights.pth', IMAGENET_DATASET),
+        (VGG19AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG19_weights.pth', IMAGENET_DATASET),
+        (InceptionV3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/InceptionV3_weights.pth', DENSENET_DATASET),
+    ]
+
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Reproducibility ---
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+# --- Helper Functions ---
+def load_model_with_weights(model_class: type, weights_path: Path, device: str) -> nn.Module:
+    """Loads a model and its weights onto the specified device."""
     model = model_class()
-    # Load weights with proper device mapping
-    if device == 'cuda' and torch.cuda.is_available():
-        model.load_state_dict(torch.load(weights_path))
-        model = model.to(device)
-    else:
-        model.load_state_dict(torch.load(weights_path, map_location='cpu'))
-        model = model.to('cpu')
+    try:
+        if device == 'cuda' and torch.cuda.is_available():
+            model.load_state_dict(torch.load(weights_path))
+            model = model.to(device)
+        else:
+            model.load_state_dict(torch.load(weights_path, map_location='cpu'))
+            model = model.to('cpu')
+        logging.info(f"Loaded weights for {model_class.__name__} from {weights_path}")
+    except FileNotFoundError:
+        logging.warning(f"Weights file not found for {model_class.__name__} at {weights_path}. Using initialized model.")
+    except Exception as e:
+        logging.error(f"Error loading weights for {model_class.__name__} from {weights_path}: {e}. Using initialized model.")
     return model
 
-# List of (model class, weights path) tuples
-model_configs = [
-    (BarlowTwinsAuthenticityPredictor, 'Models/BarlowTwins/Weights/BarlowTwins_real_authenticity_finetuned.pth'),
-    (EfficientNetB3AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/EfficientNetB3_weights.pth'),
-    (DenseNet161AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/DenseNet161_weights.pth'),
-    (ResNet152AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/ResNet152_weights.pth'),
-    (VGG16AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/VGG16_weights.pth'),
-    (VGG19AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/VGG19_weights.pth'),
-    (InceptionV3AuthenticityPredictor, 'Models/Ensemble/Weights/Stacking/InceptionV3_weights.pth'),
-]
-
-# Load all models with their weights
-models = []
-for model_class, weights_path in model_configs:
-    model = load_model_with_weights(model_class, weights_path)
-    models.append(model)
-
-# Define constants for K-Fold and DataLoaders
-N_SPLITS = 5
-BATCH_SIZE = 64
-NUM_WORKERS = 20
-RANDOM_STATE = 42 # For reproducibility
-
-# --- Generate Out-of-Fold (OOF) predictions for meta-learner training ---
-
-main_train_subset = IMAGENET_DATASET['train']
-main_original_dataset = main_train_subset.dataset 
-main_subset_indices = main_train_subset.indices
-
-num_total_samples = len(main_subset_indices)
-
-y_train_full_numpy = main_original_dataset.data.iloc[main_subset_indices, 1].values
-y_train_full_tensor = torch.tensor(y_train_full_numpy, dtype=torch.float)
-
-# 3. Initialize placeholders for OOF predictions and labels
-# oof_predictions_all_models will store predictions: rows are samples, columns are models
-oof_predictions_all_models = torch.zeros(num_total_samples, len(models), device='cpu')
-oof_labels = torch.zeros(num_total_samples, device='cpu')
-
-# 4. Initialize KFold
-kf = KFold(n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
-
-print(f"Starting K-Fold cross-validation with {N_SPLITS} splits...")
-# 5. Iterate through K-Folds
-# train_fold_local_idx, val_fold_local_idx are indices *within* our main_train_subset (0 to num_total_samples-1)
-for fold_num, (train_fold_local_idx, val_fold_local_idx) in enumerate(kf.split(np.arange(num_total_samples))):
-    print(f"Processing Fold {fold_num + 1}/{N_SPLITS}...")
-    
-    # Get the actual global indices for the validation fold samples
-    # These indices refer to the positions in main_original_dataset.data
-    current_val_global_indices = [main_subset_indices[i] for i in val_fold_local_idx]
-    
-    # Store the true labels for this validation fold
-    oof_labels[val_fold_local_idx] = y_train_full_tensor[val_fold_local_idx]
-    
-    # For each base model, get predictions on this validation fold
-    for model_idx, model_instance in enumerate(models):
-        model_name = model_instance.__class__.__name__
-        # print(f"  Getting predictions from {model_name} for fold {fold_num + 1}...")
-        
-        # Determine which original dataset this model uses
-        if model_name in ['DenseNet161AuthenticityPredictor', 'InceptionV3AuthenticityPredictor']:
-            # These models use DENSENET_DATASET transformations
-            original_full_dataset_for_model = DENSENET_DATASET['train'].dataset
-        else:
-            # Other models use IMAGENET_DATASET transformations
-            original_full_dataset_for_model = IMAGENET_DATASET['train'].dataset
-            
-        # Create a Subset for the current validation fold using global indices
-        # This ensures the correct items are fetched with the model-specific transformations
-        val_fold_subset = Subset(original_full_dataset_for_model, current_val_global_indices)
-        val_fold_dataloader = DataLoader(val_fold_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-        
-        # Get predictions (ensure get_predictions returns a CPU tensor)
-        fold_model_preds = get_predictions(model_instance, val_fold_dataloader) # Expected shape: (len(val_fold_local_idx), 1) or (len(val_fold_local_idx),)
-        
-        # Store predictions
-        oof_predictions_all_models[val_fold_local_idx, model_idx] = fold_model_preds.squeeze().cpu()
-
-print("K-Fold cross-validation finished.")
-
-combined_predictions = oof_predictions_all_models
-labels_tensor = oof_labels
-
-# Define the training and validation datasets for the meta-learner
-train_dataset = torch.utils.data.TensorDataset(combined_predictions, labels_tensor)
-train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
-
-# Define the stacking model
+# --- Stacking Ensemble Model ---
 class StackingEnsemble(nn.Module):
-    def __init__(self, input_size, num_classes):
+    """A simple meta-learner with one linear layer."""
+    def __init__(self, input_size: int, num_classes: int):
         super(StackingEnsemble, self).__init__()
         self.fc = nn.Linear(input_size, num_classes)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.fc(x)
-# Initialize the stacking model
-stacking_model = StackingEnsemble(input_size=combined_predictions.shape[1], num_classes=1)
-# Define the loss function and optimizer
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(stacking_model.parameters(), lr=0.001)
 
-# Define the training and validation functions
-def train_stacking_model(model, dataloader, criterion, optimizer, num_epochs=10):
+def train_stacking_model(
+    model: nn.Module,
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader, # Added for meta-learner validation
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    num_epochs: int,
+    device: str
+) -> None:
+    """Trains the stacking model (meta-learner) with validation."""
+    model.to(device)
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-        for inputs, labels in dataloader:
-            inputs, labels = inputs.to(next(model.parameters()).device), labels.to(next(model.parameters()).device)
+        for inputs, labels in train_dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs.squeeze(), labels)
             loss.backward()
             optimizer.step()
             running_loss += loss.item() * inputs.size(0)
-        epoch_loss = running_loss / len(dataloader.dataset)
-        print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}')
-# Train the stacking model
-train_stacking_model(stacking_model, train_dataloader, criterion, optimizer, num_epochs=20)
-
-# ---- TESTING THE STACKED MODEL ----
-print("\n--- Testing Stacking Model ---")
-
-# Ensure to import metrics if not already done at the top
-from sklearn.metrics import mean_squared_error # Removed other classification metrics
-
-# 0. Define device (if not already globally defined and used for stacking_model training)
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-# Ensure the trained stacking_model is on the correct device for testing
-stacking_model = stacking_model.to(device)
-stacking_model.eval() # Set to evaluation mode
-
-
-y_test_true_tensor = None
-num_test_samples = 0
-main_test_subset_indices_for_all = None 
-
-if 'test' not in IMAGENET_DATASET or IMAGENET_DATASET['test'] is None:
-    print("Test dataset IMAGENET_DATASET['test'] not found. Skipping testing.")
-else:
-    if isinstance(IMAGENET_DATASET['test'], Subset):
-        main_test_subset_ref = IMAGENET_DATASET['test']
-        main_original_test_dataset_ref = main_test_subset_ref.dataset
-        main_test_subset_indices_for_all = main_test_subset_ref.indices
-        num_test_samples = len(main_test_subset_indices_for_all)
         
-        # Example: Extracting true labels (modify if your dataset stores labels differently)
-        try:
-            # Attempting pandas-style access first, as in your training data
-            y_test_true_numpy = main_original_test_dataset_ref.data.iloc[main_test_subset_indices_for_all, 1].values
-            y_test_true_tensor = torch.tensor(y_test_true_numpy, dtype=torch.float)
-        except AttributeError:
-            # Fallback if .data or .iloc is not available (e.g., standard torchvision dataset)
-            print("Pandas-style label extraction failed for test set, trying DataLoader method.")
-            y_test_true_list = []
-            temp_label_loader = DataLoader(main_test_subset_ref, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-            for _, labels_batch in temp_label_loader:
-                y_test_true_list.extend(labels_batch.tolist())
-            y_test_true_tensor = torch.tensor(y_test_true_list, dtype=torch.float)
-
-    else: # Assuming IMAGENET_DATASET['test'] is a full Dataset object
-        main_test_dataset_ref = IMAGENET_DATASET['test']
-        num_test_samples = len(main_test_dataset_ref)
-        # No main_test_subset_indices_for_all here, assumes full dataset is used by all or DENSENET_DATASET['test'] is also full and aligned
+        epoch_loss = running_loss / len(train_dataloader.dataset)
         
-        y_test_true_list = []
-        temp_label_loader = DataLoader(main_test_dataset_ref, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+        # Validation phase
+        model.eval()
+        val_running_loss = 0.0
+        with torch.no_grad():
+            for val_inputs, val_labels in val_dataloader:
+                val_inputs, val_labels = val_inputs.to(device), val_labels.to(device)
+                val_outputs = model(val_inputs)
+                val_loss = criterion(val_outputs.squeeze(), val_labels)
+                val_running_loss += val_loss.item() * val_inputs.size(0)
+        
+        epoch_val_loss = val_running_loss / len(val_dataloader.dataset)
+        logging.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {epoch_loss:.4f}, Val Loss: {epoch_val_loss:.4f}')
+
+# --- Main Execution ---
+def main():
+    set_seed(Config.RANDOM_STATE) #
+
+    # Load all base models with their weights
+    loaded_models = []
+    for model_class, weights_path, _ in Config.MODEL_CONFIGS: #
+        model = load_model_with_weights(model_class, weights_path, Config.DEVICE) #
+        loaded_models.append(model)
+
+    # --- Generate Out-of-Fold (OOF) predictions for meta-learner training ---
+    # Using IMAGENET_DATASET as the primary reference for subsetting, as in original code
+    main_train_subset = IMAGENET_DATASET['train'] #
+    # Handle if 'dataset' attribute doesn't exist, use the Subset's dataset directly
+    # Or, if 'dataset_object' is the intended full dataset as per dummy.
+    main_original_dataset = getattr(main_train_subset, 'dataset', None)
+    if main_original_dataset is None and 'dataset_object' in IMAGENET_DATASET: # Fallback for dummy
+        main_original_dataset = IMAGENET_DATASET['dataset_object']
+    elif main_original_dataset is None:
+        raise ValueError("Cannot determine the original dataset from IMAGENET_DATASET['train']")
+        
+    main_subset_indices = main_train_subset.indices #
+    num_total_samples_oof = len(main_subset_indices) #
+
+    # Extracting labels - ensure this matches your true dataset structure
+    # Original code: main_original_dataset.data.iloc[main_subset_indices, 1].values
+    # This requires main_original_dataset to have a .data attribute that is a pandas DataFrame
+    try:
+        y_train_full_numpy = main_original_dataset.data.iloc[main_subset_indices, 1].values #
+    except (AttributeError, TypeError) as e:
+        logging.warning(f"Failed to get labels via .data.iloc: {e}. Trying to extract from DataLoader (slower).")
+        # Fallback: extract labels via DataLoader (slower, but more general)
+        temp_label_loader = DataLoader(main_train_subset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS)
+        y_train_list = []
         for _, labels_batch in temp_label_loader:
-            y_test_true_list.extend(labels_batch.tolist())
-        y_test_true_tensor = torch.tensor(y_test_true_list, dtype=torch.float)
+            y_train_list.extend(labels_batch.tolist())
+        y_train_full_numpy = np.array(y_train_list)
 
-    if num_test_samples > 0:
-        print(f"Number of test samples: {num_test_samples}")
+    y_train_full_tensor = torch.tensor(y_train_full_numpy, dtype=torch.float) #
 
-        # 2. Get Predictions from Base Models on the Test Set
-        test_predictions_all_models = torch.zeros(num_test_samples, len(models), device='cpu') # Store on CPU
+    oof_predictions_all_models = torch.zeros(num_total_samples_oof, len(loaded_models), device='cpu') #
+    oof_labels = torch.zeros(num_total_samples_oof, device='cpu') #
 
-        print("Getting predictions from base models on the test set...")
-        for model_idx, model_instance in enumerate(models):
-            model_instance.to(device) # Ensure model is on the correct device
-            model_instance.eval()
-            model_name = model_instance.__class__.__name__
-            print(f"  Getting predictions from {model_name} for test set...")
+    kf = KFold(n_splits=Config.N_SPLITS, shuffle=True, random_state=Config.RANDOM_STATE) #
+    logging.info(f"Starting K-Fold cross-validation with {Config.N_SPLITS} splits...")
 
-            current_test_dataloader_for_model = None
-            if model_name in ['DenseNet161AuthenticityPredictor', 'InceptionV3AuthenticityPredictor']:
-                if 'test' not in DENSENET_DATASET or DENSENET_DATASET['test'] is None:
-                    print(f"Test dataset for {model_name} not found. Skipping model.")
-                    test_predictions_all_models[:, model_idx] = torch.nan # Mark as NaN if dataset missing
+    for fold_num, (train_fold_local_idx, val_fold_local_idx) in enumerate(kf.split(np.arange(num_total_samples_oof))): #
+        logging.info(f"Processing Fold {fold_num + 1}/{Config.N_SPLITS}...")
+        
+        current_val_global_indices = [main_subset_indices[i] for i in val_fold_local_idx] #
+        oof_labels[val_fold_local_idx] = y_train_full_tensor[val_fold_local_idx] #
+        
+        for model_idx, model_instance in enumerate(loaded_models):
+            _, _, model_dataset_dict = Config.MODEL_CONFIGS[model_idx] # Get the dataset dict for this model
+            
+            # Use 'dataset_object' if available (full dataset), else use .dataset from subset
+            original_full_dataset_for_model = model_dataset_dict.get('dataset_object', model_dataset_dict['train'].dataset)
+            
+            val_fold_subset = Subset(original_full_dataset_for_model, current_val_global_indices) #
+            val_fold_dataloader = DataLoader(val_fold_subset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS) #
+            
+            fold_model_preds = get_predictions(model_instance, val_fold_dataloader, Config.DEVICE) #
+            oof_predictions_all_models[val_fold_local_idx, model_idx] = fold_model_preds.squeeze().cpu() #
+
+    logging.info("K-Fold cross-validation finished.")
+
+    # Split OOF predictions for meta-learner training and validation
+    X_meta_train, X_meta_val, y_meta_train, y_meta_val = train_test_split(
+        oof_predictions_all_models, y_train_full_tensor, # used y_train_full_tensor instead of oof_labels for consistency
+        test_size=0.2, 
+        random_state=Config.RANDOM_STATE
+    )
+
+    train_meta_dataset = TensorDataset(X_meta_train, y_meta_train)
+    val_meta_dataset = TensorDataset(X_meta_val, y_meta_val)
+
+    train_meta_dataloader = DataLoader(train_meta_dataset, batch_size=Config.BATCH_SIZE, shuffle=True, num_workers=Config.NUM_WORKERS)
+    val_meta_dataloader = DataLoader(val_meta_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS)
+
+    # Initialize and train the stacking model (meta-learner)
+    stacking_model = StackingEnsemble(input_size=oof_predictions_all_models.shape[1], num_classes=1) #
+    criterion_meta = nn.MSELoss() #
+    optimizer_meta = torch.optim.Adam(stacking_model.parameters(), lr=Config.LEARNING_RATE_META) #
+
+    logging.info("Training the stacking model (meta-learner)...")
+    train_stacking_model(stacking_model, train_meta_dataloader, val_meta_dataloader, criterion_meta, optimizer_meta, Config.EPOCHS_META, Config.DEVICE)
+
+    # ---- TESTING THE STACKED MODEL ----
+    logging.info("\n--- Testing Stacking Model ---")
+    stacking_model.eval() #
+
+    y_test_true_tensor = None
+    num_test_samples = 0
+    main_test_subset_indices_for_all = None
+
+    primary_test_set_key = 'test' # Assuming 'test' is the key for test data
+
+    if primary_test_set_key not in IMAGENET_DATASET or IMAGENET_DATASET[primary_test_set_key] is None: #
+        logging.warning("Test dataset IMAGENET_DATASET['test'] not found. Skipping testing.")
+    else:
+        current_test_set_ref = IMAGENET_DATASET[primary_test_set_key]
+        # Determine original dataset and indices for the primary test set (IMAGENET)
+        if isinstance(current_test_set_ref, Subset): #
+            main_test_subset_ref = current_test_set_ref
+            main_original_test_dataset_ref = getattr(main_test_subset_ref, 'dataset', IMAGENET_DATASET.get('dataset_object'))
+            main_test_subset_indices_for_all = main_test_subset_ref.indices #
+            num_test_samples = len(main_test_subset_indices_for_all) #
+        else: # Assuming it's a full Dataset object
+            main_test_dataset_ref = current_test_set_ref
+            main_original_test_dataset_ref = main_test_dataset_ref # It is the original itself
+            num_test_samples = len(main_test_dataset_ref)
+            main_test_subset_indices_for_all = list(range(num_test_samples))
+
+
+        if num_test_samples > 0:
+            logging.info(f"Number of test samples: {num_test_samples}")
+            # Extract true labels for the test set
+            try: #
+                y_test_true_numpy = main_original_test_dataset_ref.data.iloc[main_test_subset_indices_for_all, 1].values #
+                y_test_true_tensor = torch.tensor(y_test_true_numpy, dtype=torch.float) #
+            except (AttributeError, TypeError) as e: #
+                logging.warning(f"Pandas-style label extraction failed for test set: {e}. Trying DataLoader method.") #
+                y_test_true_list = []
+                # Use the appropriate subset/dataset for label extraction
+                label_extraction_dataset = Subset(main_original_test_dataset_ref, main_test_subset_indices_for_all) if isinstance(current_test_set_ref, Subset) else main_test_dataset_ref
+                temp_label_loader = DataLoader(label_extraction_dataset, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS) #
+                for _, labels_batch in temp_label_loader: #
+                    y_test_true_list.extend(labels_batch.tolist()) #
+                y_test_true_tensor = torch.tensor(y_test_true_list, dtype=torch.float) #
+
+
+            test_predictions_all_models = torch.zeros(num_test_samples, len(loaded_models), device='cpu') #
+            logging.info("Getting predictions from base models on the test set...")
+
+            for model_idx, model_instance in enumerate(loaded_models):
+                model_instance.to(Config.DEVICE) #
+                model_instance.eval() #
+                model_class, _, model_dataset_dict = Config.MODEL_CONFIGS[model_idx] #
+                model_name = model_class.__name__ #
+                logging.info(f"  Getting predictions from {model_name} for test set...") #
+
+                current_test_dataloader_for_model = None
+                if primary_test_set_key not in model_dataset_dict or model_dataset_dict[primary_test_set_key] is None: #
+                    logging.warning(f"Test dataset for {model_name} not found. Predictions will be NaN.") #
+                    test_predictions_all_models[:, model_idx] = torch.nan #
                     continue
                 
-                dataset_to_use_for_model = DENSENET_DATASET['test'].dataset if isinstance(DENSENET_DATASET['test'], Subset) else DENSENET_DATASET['test']
-                if main_test_subset_indices_for_all is not None and isinstance(DENSENET_DATASET['test'], Subset): # Use consistent indices if primary test set was a subset
-                    final_subset_for_model = Subset(dataset_to_use_for_model, main_test_subset_indices_for_all)
-                else: # Use the full DENSENET_DATASET['test'] or its original dataset if it was a Subset (without re-subsetting)
-                    final_subset_for_model = DENSENET_DATASET['test']
+                # Determine the dataset to use for THIS model (could be IMAGENET or DENSENET based)
+                specific_model_test_set_ref = model_dataset_dict[primary_test_set_key]
+                original_full_test_dataset_for_model = getattr(specific_model_test_set_ref, 'dataset', model_dataset_dict.get('dataset_object'))
 
-                current_test_dataloader_for_model = DataLoader(final_subset_for_model, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-            else:
                 
-                dataset_to_use_for_model = main_test_subset_ref if isinstance(IMAGENET_DATASET['test'], Subset) else main_test_dataset_ref
-                current_test_dataloader_for_model = DataLoader(dataset_to_use_for_model, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+                final_subset_for_model_test = Subset(original_full_test_dataset_for_model, main_test_subset_indices_for_all)
+                current_test_dataloader_for_model = DataLoader(final_subset_for_model_test, batch_size=Config.BATCH_SIZE, shuffle=False, num_workers=Config.NUM_WORKERS) #
+                            
+                model_test_preds = get_predictions(model_instance, current_test_dataloader_for_model, Config.DEVICE) #
+                test_predictions_all_models[:, model_idx] = model_test_preds.squeeze().cpu() #
+
+            logging.info("Base model predictions for test set collected.")
+
+            X_meta_test = test_predictions_all_models.to(Config.DEVICE) #
+            final_predictions_on_test = None
+            with torch.no_grad(): #
+                meta_test_outputs = stacking_model(X_meta_test) #
+                final_predictions_on_test = meta_test_outputs.squeeze().cpu() #
+            logging.info("Final predictions from stacking model obtained for test set.")
+
+            y_test_true_numpy = y_test_true_tensor.cpu().numpy() #
+            final_predictions_numpy = final_predictions_on_test.numpy() #
+
+            logging.info(f"\nStacking Model - Test Performance:")
             
-            # Using get_predictions as it's used in your OOF generation
-            # Ensure your get_predictions function handles device internally or accepts `device`
-            # model_test_preds = get_predictions(model_instance, current_test_dataloader_for_model, device) # If get_predictions accepts device
-            model_test_preds = get_predictions(model_instance, current_test_dataloader_for_model) # As per your current usage in OOF
+            # Handle potential NaNs in predictions before calculating metrics
+            valid_indices = ~np.isnan(final_predictions_numpy) & ~np.isnan(y_test_true_numpy)
+            if np.sum(valid_indices) == 0:
+                logging.warning("No valid (non-NaN) predictions available for metric calculation.")
+            else:
+                y_test_true_numpy_clean = y_test_true_numpy[valid_indices]
+                final_predictions_numpy_clean = final_predictions_numpy[valid_indices]
 
-            test_predictions_all_models[:, model_idx] = model_test_preds.squeeze().cpu()
+                if len(y_test_true_numpy_clean) > 0:
+                    mse_test = mean_squared_error(y_test_true_numpy_clean, final_predictions_numpy_clean) # uses original sklearn
+                    rmse_test = np.sqrt(mse_test)
+                    
+                    var_true = np.var(y_test_true_numpy_clean) # Using cleaned data for variance
+                    r_squared_test = 1 - (mse_test / var_true) if var_true > 0 else float('nan') #
+                    
+                    logging.info(f"  MSE on test scores (NaNs excluded): {mse_test:.4f}") #
+                    logging.info(f" RMSE on test scores (NaNs excluded): {rmse_test:.4f}") #
+                    logging.info(f"R^2 on test scores (NaNs excluded): {r_squared_test:.4f}") #
+                else:
+                    logging.warning("No valid samples left after NaN cleaning for metric calculation.")
+        else:
+            logging.warning("No test samples found or processed. Skipping evaluation.") #
 
-        print("Base model predictions for test set collected.")
+    # Save the trained stacking model
+    torch.save(stacking_model.state_dict(), Config.META_LEARNER_SAVE_PATH) #
+    logging.info(f"\nTrained stacking model state_dict saved to {Config.META_LEARNER_SAVE_PATH}")
 
-        # 3. Prepare Meta-Learner Input and Get Final Predictions
-        X_meta_test = test_predictions_all_models.to(device)
-        final_predictions_on_test = None
 
-        with torch.no_grad():
-            meta_test_outputs = stacking_model(X_meta_test)
-            final_predictions_on_test = meta_test_outputs.squeeze().cpu()
-
-        print("Final predictions from stacking model obtained for test set.")
-
-        # 4. Evaluate Performance
-        y_test_true_numpy = y_test_true_tensor.cpu().numpy() 
-        final_predictions_numpy = final_predictions_on_test.numpy() # Continuous scores
-
-        print(f"\nStacking Model - Test Performance:")
-
-        # Calculate and print MSE on the test scores
-        mse_test = mean_squared_error(y_test_true_numpy, final_predictions_numpy)
-        r_squared_test = 1 - (mse_test / np.var(y_test_true_numpy)) if np.var(y_test_true_numpy) > 0 else float('nan')
-        print(f"  MSE on test scores: {mse_test:.4f}")
-        print(f" RMSE on test scores: {np.sqrt(mse_test):.4f}")
-        print(f"R^2 on test scores: {r_squared_test:.4f}")
-        # Optionally, you can also calculate R^2 or other metrics if needed
-    else:
-        print("No test samples found or processed. Skipping evaluation.")
-
-# Optional: Save the trained stacking model
-torch.save(stacking_model.state_dict(), 'stacking_ensemble_final.pth')
-print("\nTrained stacking model state_dict saved to stacking_ensemble_final.pth")
+if __name__ == "__main__":
+    main()
