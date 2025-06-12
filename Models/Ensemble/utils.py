@@ -276,7 +276,7 @@ def test_ensemble(
     test_dataloader: torch.utils.data.DataLoader,
     criterion: nn.Module,
     device: str = 'cuda'
-) -> float:
+) -> Tuple[float, torch.Tensor]:
     """
     Tests the ensemble model on the provided test dataloader.
 
@@ -287,7 +287,7 @@ def test_ensemble(
         device (str): Device to use ('cuda' or 'cpu'). Defaults to 'cuda'
 
     Returns:
-        float: Average loss on the test set
+        Tuple[float, torch.Tensor]: Average loss and all predictions
     """
     # Move all models in ensemble to device
     for model in ensemble_predictor.models:
@@ -296,6 +296,8 @@ def test_ensemble(
 
     running_loss = 0.0
     total_samples = 0
+    all_predictions = []
+    all_labels = []
 
     print(f"\n{'='*60}")
     print(f"Testing Ensemble Model")
@@ -308,22 +310,27 @@ def test_ensemble(
         for inputs, labels in tqdm(test_dataloader, desc="Testing Ensemble", unit="batch"):
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
+            all_labels.append(labels.cpu())
 
             # Get ensemble predictions
             ensemble_outputs = ensemble_predictor.predict(inputs)
+            all_predictions.append(ensemble_outputs.cpu())
+            
             loss = criterion(ensemble_outputs, labels)
 
             running_loss += loss.item() * inputs.size(0)
             total_samples += labels.size(0)
 
     average_loss = running_loss / total_samples if total_samples > 0 else 0.0
+    all_predictions_tensor = torch.cat(all_predictions, dim=0)
+    all_labels_tensor = torch.cat(all_labels, dim=0)
 
     print(f"\n{'='*60}")
     print(f"Ensemble Test Results:")
     print(f"Test Loss: {average_loss:.4f}")
     print(f"{'='*60}\n")
 
-    return average_loss
+    return average_loss, all_predictions_tensor, all_labels_tensor
 
 def get_predictions(
     model: nn.Module,

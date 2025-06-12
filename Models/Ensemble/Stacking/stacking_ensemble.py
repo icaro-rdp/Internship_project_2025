@@ -8,66 +8,18 @@ import random
 from pathlib import Path
 import logging
 
-# --- Model and Dataset Imports (Assuming these are in the specified paths) ---
-# These would need to be resolvable in your environment
-# For this example, I'll define dummy classes/dicts if they aren't found
-try:
-    from Models.Ensemble.models import (
-        BarlowTwinsAuthenticityPredictor,
-        EfficientNetB3AuthenticityPredictor,
-        DenseNet161AuthenticityPredictor,
-        ResNet152AuthenticityPredictor,
-        VGG16AuthenticityPredictor,
-        VGG19AuthenticityPredictor,
-        InceptionV3AuthenticityPredictor,
-    )
-    from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
-    from Models.Ensemble.utils import test_model, train_model, get_predictions
-except ImportError:
-    logging.warning("Could not import all custom models/datasets/utils. Using dummy placeholders.")
-    # Dummy placeholders for demonstration if imports fail
-    class DummyModel(nn.Module):
-        def __init__(self, *args, **kwargs): super().__init__(); self.fc = nn.Linear(10,1)
-        def forward(self, x): return torch.rand(x.size(0) if isinstance(x, torch.Tensor) else x[0].size(0), 1) # Simplified
-    BarlowTwinsAuthenticityPredictor = EfficientNetB3AuthenticityPredictor = DenseNet161AuthenticityPredictor = \
-    ResNet152AuthenticityPredictor = VGG16AuthenticityPredictor = VGG19AuthenticityPredictor = \
-    InceptionV3AuthenticityPredictor = DummyModel
-
-    # Dummy dataset structure
-    def _create_dummy_dataset(size=100, num_classes=2):
-        # Ensuring data has .iloc for consistency with original code's access pattern
-        import pandas as pd
-        data = pd.DataFrame({
-            'features': [torch.randn(3, 224, 224) for _ in range(size)],
-            'labels': np.random.randint(0, num_classes, size)
-        })
-        class DummyTorchDataset(torch.utils.data.Dataset):
-            def __init__(self, data_df): self.data = data_df
-            def __len__(self): return len(self.data)
-            def __getitem__(self, idx): return self.data.iloc[idx, 0], self.data.iloc[idx, 1]
-        
-        dummy_torch_ds = DummyTorchDataset(data)
-        return {
-            'train': Subset(dummy_torch_ds, list(range(size // 2))),
-            'test': Subset(dummy_torch_ds, list(range(size // 2, size))),
-            'dataset_object': dummy_torch_ds # Reference to the full original dataset
-        }
-    IMAGENET_DATASET = _create_dummy_dataset(200) # Larger for KFold
-    DENSENET_DATASET = _create_dummy_dataset(200)
-
-    def get_predictions(model: nn.Module, dataloader: DataLoader, device: str = 'cpu') -> torch.Tensor:
-        model.eval()
-        model.to(device)
-        all_preds = []
-        with torch.no_grad():
-            for inputs, _ in dataloader: # Assuming labels are not needed for preds for now
-                if isinstance(inputs, list): inputs = inputs[0] # If dataloader yields list
-                inputs = inputs.to(device)
-                outputs = model(inputs)
-                all_preds.append(outputs.cpu())
-        return torch.cat(all_preds).squeeze()
-
-
+from Models.Ensemble.models import (
+    BarlowTwinsAuthenticityPredictor,
+    EfficientNetB3AuthenticityPredictor,
+    DenseNet161AuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
+    InceptionV3AuthenticityPredictor,
+)
+from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
+from Models.Ensemble.utils import test_model, train_model, get_predictions
+from Models.Ensemble.descriptive_analysis import ModelEvaluationVisualizer
 # --- Configuration ---
 class Config:
     N_SPLITS = 7
@@ -257,10 +209,17 @@ def main():
     optimizer_meta = torch.optim.Adam(stacking_model.parameters(), lr=Config.LEARNING_RATE_META) #
 
     logging.info("Training the stacking model (meta-learner)...")
-    train_stacking_model(stacking_model, train_meta_dataloader, val_meta_dataloader, criterion_meta, optimizer_meta, Config.EPOCHS_META, Config.DEVICE)
+    # check if the models has already been trained
+    if not Path(Config.META_LEARNER_SAVE_PATH).exists(): #
+        logging.info("Stacking model weights not found. Training from scratch.")
+        train_stacking_model(stacking_model, train_meta_dataloader, val_meta_dataloader, criterion_meta, optimizer_meta, Config.EPOCHS_META, Config.DEVICE)
+    else:
+        logging.info(f"Stacking model weights found at {Config.META_LEARNER_SAVE_PATH}. Loading and skipping training.")
+        stacking_model.load_state_dict(torch.load(Config.META_LEARNER_SAVE_PATH, map_location=Config.DEVICE))
 
     # ---- TESTING THE STACKED MODEL ----
     logging.info("\n--- Testing Stacking Model ---")
+    stacking_model.to(Config.DEVICE)
     stacking_model.eval() #
 
     y_test_true_tensor = None
@@ -341,6 +300,15 @@ def main():
 
             y_test_true_numpy = y_test_true_tensor.cpu().numpy() #
             final_predictions_numpy = final_predictions_on_test.numpy() #
+
+            visualizer = ModelEvaluationVisualizer()
+            metrics = visualizer.analyze_from_arrays(
+                predictions=final_predictions_numpy,
+                ground_truth=y_test_true_numpy,
+                save_path='stacking_model_scatterplot_ypred_ytrue.png',
+                plot_title="Stacking Model Test Performance",
+
+            )
 
             logging.info(f"\nStacking Model - Test Performance:")
             

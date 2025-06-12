@@ -15,6 +15,7 @@ from Models.Ensemble.models import (
 )
 from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
 from Models.Ensemble.utils import test_model, test_ensemble
+from Models.Ensemble.descriptive_analysis import ModelEvaluationVisualizer
 import math
 
 # Define the Ensemble class
@@ -112,7 +113,7 @@ ensemble_test_dataloader = DataLoader(IMAGENET_DATASET['test'],
                                      num_workers=ensemble_predictor.num_workers, 
                                      shuffle=False)
 
-ensemble_loss = test_ensemble(ensemble_predictor, ensemble_test_dataloader, criterion, device)
+ensemble_loss, ensemble_predictions, labels = test_ensemble(ensemble_predictor, ensemble_test_dataloader, criterion, device)
 
 # Print comparison results
 print(f"\n{'='*60}")
@@ -137,5 +138,15 @@ print(f"\nBest individual model: {best_individual_name} with {best_individual_lo
 print(f"Ensemble loss: {ensemble_loss:.4f}")
 print(f"Improvement: {improvement:.4f} ({improvement/best_individual_loss*100:.2f}% better)" if improvement > 0 else f"Degradation: {abs(improvement):.4f} ({abs(improvement)/best_individual_loss*100:.2f}% worse)")
 
+# Visualize descriptive results using scatter plot
+
+visualizer = ModelEvaluationVisualizer()
+visualizer.analyze_from_arrays(
+    predictions=ensemble_predictions.numpy(),
+    ground_truth= labels.numpy(),
+    save_path='bagging_model_scatterplot_ypred_ytrue.png',
+    plot_title="Bagging Model pred vs True Labels",
+
+    )
 
 
