@@ -59,7 +59,7 @@ The process involves the following key steps:
     * Models of the same architecture family also tend to show some correlation, though this varies. For instance, VGG-16 models (Baseline/Pruned) correlate more strongly with each other than with VGG-19 models.
 
 3.  **Correlations Across Different Model Architectures:**
-    * **BarlowTwins:** These models show a high positive correlation with each other (0.99). They exhibit a moderate negative correlation with DenseNet models (around -0.46 to -0.56) and some slight positive correlation with VGG models (around 0.20 to 0.35). Their correlation with EfficientNet and ResNet models is generally low.
+    * **BarlowTwins:** They exhibit a moderate negative correlation with DenseNet models (around -0.46 to -0.56) and some slight positive correlation with VGG models (around 0.20 to 0.35). Their correlation with EfficientNet and ResNet models is generally low.
     * **DenseNet-161:** These models show strong negative correlations with VGG-16 models (ranging from -0.46 to -0.61). Their correlation with VGG-19 models is weaker and more mixed. Correlations with EfficientNet and ResNet are minimal.
     * **EfficientNet-B3 & ResNet-152:** Both EfficientNet-B3 and ResNet-152 models (baseline and pruned) show very high internal correlation but exhibit low to negligible correlation with most other model families. This suggests their learned feature representations, as visualized by heatmaps, are quite distinct from the other architectures tested. ResNet models show a slight negative correlation with VGG-19 models (around -0.21 to -0.30).
     * **VGG Models:**
