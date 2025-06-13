@@ -46,6 +46,7 @@ Models/*/saliency_experiment_outputs/*
 Models/*/*/saliency_experiment_outputs/*
 Models/*/*/5_imgs_masking_experiment_outputs/*
 Models/*/5_imgs_masking_experiment_outputs/*
+Models/*/multiscale_masking_outputs_ensemble/*
 
 Dataset
 *.pkl
