@@ -42,65 +42,94 @@ class AuthenticityPredictor(nn.Module):
         return predictions, features
 
 # GradCAM implementation for model interpretation
+
 class GradCAM:
-    """
-    Implements Gradient-weighted Class Activation Mapping for model interpretation.
-    """
     def __init__(self, model, target_layer):
         self.model = model
         self.target_layer = target_layer
         self.gradients = None
         self.activations = None
-        
-        # Register hooks to capture activations and gradients
+        self.hooks = []
         self.register_hooks()
         
     def register_hooks(self):
         def forward_hook(module, input, output):
-            # Store the activations of the target layer
             self.activations = output.detach()
             
         def backward_hook(module, grad_input, grad_output):
-            # Store the gradients coming into the target layer
-            self.gradients = grad_output[0].detach()
+            if grad_output[0] is not None:
+                self.gradients = grad_output[0].detach()
         
-        # Register the hooks
-        self.target_layer.register_forward_hook(forward_hook)
-        self.target_layer.register_backward_hook(backward_hook)
-        
+        # Store hook handles for cleanup
+        self.hooks.append(self.target_layer.register_forward_hook(forward_hook))
+        self.hooks.append(self.target_layer.register_full_backward_hook(backward_hook))
+
     def generate_cam(self, input_image):
-        # Forward pass through the model
+        # Clear previous gradients and activations
+        self.gradients = None
+        self.activations = None
+        
+        # Enable gradients for input
+        input_image.requires_grad_(True)
+        
+        # Set model to eval but enable gradients
+        self.model.eval()
+        
+        # Forward pass
         model_output, _ = self.model(input_image)
         
         # Clear previous gradients
         self.model.zero_grad()
         
-        # Backward pass - for regression we use the output directly
-        model_output.backward(retain_graph=True)
+        # Backward pass - use the scalar output
+        score = model_output[0, 0]  # Get scalar value for regression
+        score.backward(retain_graph=True)
         
-        # Get the gradients and activations
-        gradients = self.gradients.data.cpu().numpy()[0]  # [C, H, W]
-        activations = self.activations.data.cpu().numpy()[0]  # [C, H, W]
+        # Check if gradients and activations were captured
+        if self.gradients is None:
+            raise RuntimeError("Gradients not captured. Check target layer path.")
+        if self.activations is None:
+            raise RuntimeError("Activations not captured. Check target layer path.")
         
-        # Weight the channels by the average gradient
+        # Get gradients and activations
+        gradients = self.gradients.cpu().numpy()[0]  # [C, H, W]
+        activations = self.activations.cpu().numpy()[0]  # [C, H, W]
+        
+        print(f"Gradients shape: {gradients.shape}, range: [{gradients.min():.4f}, {gradients.max():.4f}]")
+        print(f"Activations shape: {activations.shape}, range: [{activations.min():.4f}, {activations.max():.4f}]")
+        
+        # Calculate importance weights
         weights = np.mean(gradients, axis=(1, 2))  # [C]
+        print(f"Weights range: [{weights.min():.4f}, {weights.max():.4f}]")
         
-        # Create weighted combination of activation maps
-        cam = np.zeros(activations.shape[1:], dtype=np.float32)  # [H, W]
+        # Generate CAM
+        cam = np.zeros(activations.shape[1:], dtype=np.float32)
         for i, w in enumerate(weights):
             cam += w * activations[i, :, :]
         
-        # Apply ReLU to focus on features that have a positive influence
+        print(f"CAM before ReLU - range: [{cam.min():.4f}, {cam.max():.4f}]")
+        
+        # Apply ReLU
         cam = np.maximum(cam, 0)
         
-        # Resize CAM to input image size
-        cam = cv2.resize(cam, (input_image.shape[2], input_image.shape[3]))
+        print(f"CAM after ReLU - range: [{cam.min():.4f}, {cam.max():.4f}]")
         
-        # Normalize the CAM
-        cam = cam - np.min(cam)
-        cam = cam / (np.max(cam) + 1e-7)  # Adding small constant to avoid division by zero
+        # Resize CAM to input image size
+        cam = cv2.resize(cam, (input_image.shape[3], input_image.shape[2]))
+        
+        # Normalize CAM
+        if cam.max() > cam.min():
+            cam = (cam - cam.min()) / (cam.max() - cam.min())
+        else:
+            print("Warning: CAM has no variation (all values are the same)")
+            
+        print(f"Final CAM range: [{cam.min():.4f}, {cam.max():.4f}]")
         
         return cam
+    
+    def cleanup(self):
+        for hook in self.hooks:
+            hook.remove()
 
 # AIS implementation (formerly CAM)
 class CAM:
