@@ -69,6 +69,7 @@ DENSENET_TRANSFORM = transforms.Compose([
 
 
 ANNOTATION_FILE =  'real_images_annotations.csv'
+VISUALIZATION_FILE = '5_images_to_plot.csv'
 BATCH_SIZE = 64
 NUM_WORKERS = 10
 
@@ -76,6 +77,8 @@ NUM_WORKERS = 10
 # Create the datasets
 imageNet_dataset = ImageAuthenticityDataset(csv_file_name=ANNOTATION_FILE, transform=IMAGENET_TRANSFORM)
 denseNet_dataset = ImageAuthenticityDataset(csv_file_name=ANNOTATION_FILE, transform=DENSENET_TRANSFORM)
+imgeNet_visualization_dataset = ImageAuthenticityDataset(csv_file_name=VISUALIZATION_FILE, transform=IMAGENET_TRANSFORM)
+denseNet_visualization_dataset = ImageAuthenticityDataset(csv_file_name=VISUALIZATION_FILE, transform=DENSENET_TRANSFORM)
 
 # Set seed reproducibility
 GENERATOR = torch.Generator().manual_seed(42)
@@ -92,6 +95,7 @@ imagenet_train_ds, imagenet_test_ds = random_split(
     [imagenet_train_size, imagenet_test_size],
     generator=GENERATOR 
 )
+
 
 densenet_total_size = len(denseNet_dataset)
 densenet_train_size = int(0.8 * densenet_total_size)
@@ -117,6 +121,9 @@ INCEPTIONV3_DATASET = {
     'train': densenet_train_ds,
     'test': densenet_test_ds
 }
+
+IMAGENET_VISUALIZATION_DATASET = imgeNet_visualization_dataset
+DENSENET_VISUALIZATION_DATASET = denseNet_visualization_dataset
 
 
 

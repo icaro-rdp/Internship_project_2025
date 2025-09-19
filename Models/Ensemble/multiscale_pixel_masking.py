@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+# Add the project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 import os
 import cv2
 import itertools
@@ -33,7 +40,7 @@ from Models.Ensemble.models import (
     VGG19AuthenticityPredictor,
     InceptionV3AuthenticityPredictor,
 )
-from Models.Ensemble.dataset import IMAGENET_DATASET, DENSENET_DATASET
+from Models.Ensemble.dataset import IMAGENET_VISUALIZATION_DATASET, DENSENET_VISUALIZATION_DATASET
 from Models.Ensemble.utils import get_predictions
 
 # %% [markdown]
@@ -63,13 +70,13 @@ class Config:
 
     # Model configurations: (ModelClass, weights_filename, dataset_dict_to_use)
     MODEL_CONFIGS = [
-        (BarlowTwinsAuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'BarlowTwins/Weights/BarlowTwins_real_authenticity_finetuned.pth', IMAGENET_DATASET),
-        (EfficientNetB3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/EfficientNetB3_weights.pth', IMAGENET_DATASET),
-        (DenseNet161AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/DenseNet161_weights.pth', DENSENET_DATASET),
-        (ResNet152AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/ResNet152_weights.pth', IMAGENET_DATASET),
-        (VGG16AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG16_weights.pth', IMAGENET_DATASET),
-        (VGG19AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG19_weights.pth', IMAGENET_DATASET),
-        (InceptionV3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/InceptionV3_weights.pth', DENSENET_DATASET),
+        (BarlowTwinsAuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'BarlowTwins/Weights/BarlowTwins_real_authenticity_finetuned.pth', IMAGENET_VISUALIZATION_DATASET),
+        (EfficientNetB3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/EfficientNetB3_weights.pth', IMAGENET_VISUALIZATION_DATASET),
+        (DenseNet161AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/DenseNet161_weights.pth', DENSENET_VISUALIZATION_DATASET),
+        (ResNet152AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/ResNet152_weights.pth', IMAGENET_VISUALIZATION_DATASET),
+        (VGG16AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG16_weights.pth', IMAGENET_VISUALIZATION_DATASET),
+        (VGG19AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/VGG19_weights.pth', IMAGENET_VISUALIZATION_DATASET),
+        (InceptionV3AuthenticityPredictor, BASE_MODEL_WEIGHTS_DIR / 'Ensemble/Weights/Stacking/InceptionV3_weights.pth', DENSENET_VISUALIZATION_DATASET),
     ]
 
 # --- Setup ---
@@ -334,17 +341,13 @@ def main():
     )
 
     # --- 3. Prepare the DataLoader ---
-    # The saliency analysis runs on test data.
-    if 'test' not in IMAGENET_DATASET:
-        logging.error("FATAL: Test dataset not found in IMAGENET_DATASET dictionary. Cannot create DataLoader.")
-        return
-
-    test_dataset = IMAGENET_DATASET['test']
     
+    test_dataset = IMAGENET_VISUALIZATION_DATASET
+
     # If you want to run on specific images, create a subset
-    indices_to_extract = random.sample(range(len(test_dataset)), 5)  # Adjust the number of images as needed
-    print(f"Extracting {indices_to_extract} images from the test dataset for analysis.")
-    test_dataset = Subset(test_dataset, indices_to_extract)
+    # indices_to_extract = list(range())  # Change this to select different images
+    # print(f"Extracting {indices_to_extract} images from the test dataset for analysis.")
+    # test_dataset = Subset(test_dataset, indices_to_extract)
 
     test_dataloader = DataLoader(
         test_dataset,
@@ -354,24 +357,19 @@ def main():
     )
     logging.info(f"Test DataLoader created with {len(test_dataset)} images.")
 
-    print(test_dataset)  # Print the first item to verify
-    #print 
-
     # --- 4. Run Saliency Analysis on the Ensemble Model ---
-    run_saliency_analysis(
-        model=full_ensemble_model,
-        dataloader=test_dataloader,
-        output_dir=Config.MAIN_OUTPUT_DIR,
-        num_images_to_process=len(test_dataset),  # Process all images in the subset
-        sigma_list=Config.SIGMA_LIST,
-        pixel_batch_size=Config.PIXEL_BATCH_SIZE,
-        mask_value=Config.MASK_VALUE,
-        vis_cmap=Config.VIS_CMAP,
-        vis_alpha=Config.VIS_ALPHA,
-        model_name="Stacking_Ensemble"
-    )
-
-    logging.info(f"\n--- All Saliency Analyses Completed. Outputs in '{Config.MAIN_OUTPUT_DIR}' ---")
+    # run_saliency_analysis(
+    #     model=full_ensemble_model,
+    #     dataloader=test_dataloader,
+    #     output_dir=Config.MAIN_OUTPUT_DIR,
+    #     num_images_to_process=len(test_dataset),  # Process all images in the subset
+    #     sigma_list=Config.SIGMA_LIST,
+    #     pixel_batch_size=Config.PIXEL_BATCH_SIZE,
+    #     mask_value=Config.MASK_VALUE,
+    #     vis_cmap=Config.VIS_CMAP,
+    #     vis_alpha=Config.VIS_ALPHA,
+    #     model_name="Stacking_Ensemble"
+    # )
 
 
 if __name__ == '__main__':
