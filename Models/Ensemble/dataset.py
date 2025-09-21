@@ -69,7 +69,7 @@ DENSENET_TRANSFORM = transforms.Compose([
 
 
 ANNOTATION_FILE =  'real_images_annotations.csv'
-VISUALIZATION_FILE = '5_images_to_plot.csv'
+VISUALIZATION_FILE = '2_images_to_plot.csv'
 BATCH_SIZE = 64
 NUM_WORKERS = 10
 

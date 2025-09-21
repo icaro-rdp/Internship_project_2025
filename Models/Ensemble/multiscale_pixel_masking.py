@@ -55,7 +55,7 @@ class Config:
     MASK_VALUE = 0.0
     VIS_CMAP = 'bwr'
     VIS_ALPHA = 0.6
-    PIXEL_BATCH_SIZE = 128  # Adjust based on GPU memory
+    PIXEL_BATCH_SIZE = 256  # Adjust based on GPU memory
     MAIN_OUTPUT_DIR = Path('multiscale_masking_outputs_ensemble')
 
     # --- Ensemble Model Config ---
@@ -207,7 +207,7 @@ def run_saliency_analysis(model, dataloader, output_dir, model_name, **kwargs):
     """Facade function to run and orchestrate the saliency analysis."""
     logging.info(f"\n--- Starting Saliency Analysis for {model_name} ---")
     model_output_dir = Path(output_dir) / model_name.replace(" ", "_")
-    model_output_dir.mkdir(exist_ok=True)
+    model_output_dir.mkdir(exist_ok=True, parents=True)  # Add parents=True
     logging.info(f"Outputs will be saved in: {model_output_dir}")
 
     num_images_to_process = kwargs.get('num_images_to_process', len(dataloader.dataset))
@@ -357,19 +357,19 @@ def main():
     )
     logging.info(f"Test DataLoader created with {len(test_dataset)} images.")
 
-    # --- 4. Run Saliency Analysis on the Ensemble Model ---
-    # run_saliency_analysis(
-    #     model=full_ensemble_model,
-    #     dataloader=test_dataloader,
-    #     output_dir=Config.MAIN_OUTPUT_DIR,
-    #     num_images_to_process=len(test_dataset),  # Process all images in the subset
-    #     sigma_list=Config.SIGMA_LIST,
-    #     pixel_batch_size=Config.PIXEL_BATCH_SIZE,
-    #     mask_value=Config.MASK_VALUE,
-    #     vis_cmap=Config.VIS_CMAP,
-    #     vis_alpha=Config.VIS_ALPHA,
-    #     model_name="Stacking_Ensemble"
-    # )
+    ## --- 4. Run Saliency Analysis on the Ensemble Model ---
+    run_saliency_analysis(
+        model=full_ensemble_model,
+        dataloader=test_dataloader,
+        output_dir='visualization_test',
+        num_images_to_process=len(test_dataset),  # Process all images in the subset
+        sigma_list=Config.SIGMA_LIST,
+        pixel_batch_size=Config.PIXEL_BATCH_SIZE,
+        mask_value=Config.MASK_VALUE,
+        vis_cmap=Config.VIS_CMAP,
+        vis_alpha=Config.VIS_ALPHA,
+        model_name="Stacking_Ensemble"
+    )
 
 
 if __name__ == '__main__':
