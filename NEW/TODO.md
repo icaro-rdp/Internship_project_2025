@@ -1,3 +1,4 @@
+- Refactor the code to and folder structure to make it more modular and easier to read.
 - Training with early stopping for the individual models.
 - Pruning for the individual models.
 - Go trough the GradCAM and MPM explanations for the individual models.
