@@ -24,7 +24,7 @@ Image_Authenticity_prediction/
     │   └── models.py            ✓ 7 model architectures
     ├── Utils/
     │   ├── __init__.py          ✓ Exports utilities
-    │   ├── explainability.py    ✓ GradCAM + MPM (fixed imports)
+    │   ├── explainability.py    ✓ GradCAM + MPM methods
     │   └── pruning.py           ✓ Feature pruning
     └── Experiments/
         ├── __init__.py          ✓ Experiments package
@@ -33,17 +33,14 @@ Image_Authenticity_prediction/
         └── experiment_three.py  • Empty (ready for implementation)
 ```
 
-### 2. Import System ✓
+### 2. Import System 
 
-**All imports are correctly structured:**
+**Check if the import patterns are correctly set up:**
+```python
+python test_imports.py
+```
 
-- ✅ `main/Models/__init__.py` exports all 7 models
-- ✅ `main/Utils/__init__.py` exports GradCAM, MultiscalePixelMasking, FeatureMapsPruner
-- ✅ `main/Experiments/__init__.py` exports all experiments
-- ✅ `main/__init__.py` package initialization
-- ✅ Missing imports added (itertools, math in explainability.py)
-
-### 3. CLI Interface ✓
+### 3. CLI Interface 
 
 **Created `__main__.py` with full command-line interface:**
 
@@ -55,7 +52,7 @@ python -m Image_Authenticity_prediction train --model <model_name> [options]
 python -m Image_Authenticity_prediction evaluate --model <model_name> --weights <path>
 ```
 
-### 4. Documentation ✓
+### 4. Documentation 
 
 **Created comprehensive documentation:**
 
@@ -99,7 +96,6 @@ python -m Image_Authenticity_prediction evaluate --model <model_name> --weights 
 ### Explainability
 - GradCAM visualization
 - Multiscale Pixel Masking
-- Automated saliency maps
 
 ### Optimization
 - Feature importance ranking
@@ -107,20 +103,7 @@ python -m Image_Authenticity_prediction evaluate --model <model_name> --weights 
 - Negative impact pruning
 
 ## 🔧 Configuration
-
-Edit `Configs/config.yaml`:
-```yaml
-run_settings:
-  device: 'cuda'
-
-pruning:
-  layer_name: 'features.2'
-  threshold: 0.0
-
-paths:
-  weights_dir: 'Weights'
-  rankings_dir: 'Ranking_arrays'
-```
+- Config file at `Configs/config.yaml`
 
 ## 📦 Dependencies
 
@@ -163,17 +146,6 @@ Main dependencies:
    sys.path.insert(0, '/path/to/icaro_rdp_projects')
    from Image_Authenticity_prediction.main.Models import VGG16AuthenticityPredictor
    ```
-
-### ✅ Module Organization
-- Created package hierarchy
-- Added proper `__all__` exports
-- Documented all import patterns
-
-### ✅ CLI Integration
-- Full command-line interface
-- Argument parsing
-- Model registry system
-- Config file integration
 
 ## 📞 Support
 

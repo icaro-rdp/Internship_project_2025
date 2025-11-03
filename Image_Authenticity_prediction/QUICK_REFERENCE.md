@@ -85,6 +85,6 @@ GradCAM(model, target_layer=model.features[-1])
 ## File Locations
 
 - **Configs**: `Configs/config.yaml`
-- **Saved Models**: `Weights/*.pth`
-- **Importance Scores**: `Ranking_arrays/*.npy`
+- **Saved Models**: `Output/Weights/*.pth`
+- **Importance Scores**: `Output/Ranking_arrays/*.npy`
 - **Dataset**: `Dataset/AIGCIQA2023/`

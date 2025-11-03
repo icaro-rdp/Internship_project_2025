@@ -36,6 +36,8 @@ Image_Authenticity_prediction/
 ├── README.md                   # This file
 ├── Configs/
 │   └── config.yaml            # Configuration file
+├── Dataset/
+│   └── AIGCIQA2023/           # Dataset directory (contact the authors for access)
 └── main/
     ├── __init__.py
     ├── data.py                # Dataset and data loaders
@@ -43,6 +45,10 @@ Image_Authenticity_prediction/
     ├── Models/
     │   ├── __init__.py
     │   └── models.py          # Model architectures
+    ├──Output/            # Output directory for results (weights, rankings, etc.)
+        ├── Weights/               # Saved model weights
+        ├── Ranking_arrays/        # Feature importance rankings
+        └── ...                     # Other output files
     ├── Utils/
     │   ├── __init__.py
     │   ├── explainability.py  # GradCAM and visualization tools
@@ -80,7 +86,6 @@ Image_Authenticity_prediction/
    ```
    Dataset/AIGCIQA2023/
    ├── real_images_annotations.csv
-   ├── 2_images_to_plot.csv
    └── [image files]
    ```
 
@@ -240,7 +245,7 @@ import torch.nn as nn
 pruner = FeatureMapsPruner(
     model=model,
     dataloader=test_loader,
-    layer_name='features.0',  # Layer to prune
+    layer_name='features.0',  # Layer to prune, check Target Layers
     criterion=nn.MSELoss(),
     eval_function=test_model,
     device=torch.device('cuda')
@@ -291,7 +296,6 @@ All models are based on pretrained backbones with custom regression heads for au
 The project uses the **AIGCIQA2023** dataset:
 
 - **CSV Annotations**: `real_images_annotations.csv`
-- **Visualization Subset**: `2_images_to_plot.csv`
 - **Split**: 80% training, 20% testing (random seed: 42)
 
 ### Data Transforms
@@ -309,15 +313,15 @@ The project uses the **AIGCIQA2023** dataset:
 - ✅ Loss curve visualization
 
 ### Explainability
-- ✅ GradCAM for visual explanations
+- ✅ GradCAM for visual explanations (gradient over regression activation maps)
 - ✅ Multiscale Pixel Masking (Occlusion Saliency)
 - ✅ Automated saliency map generation
 
 ### Model Optimization
-- ✅ Feature map importance ranking
-- ✅ Greedy pruning strategy
-- ✅ Negative impact pruning
-- ✅ Automated performance evaluation
+- ✅ Feature map importance ranking (Importance Scores (IS) based on performance drop (MSE))
+- ✅ Greedy pruning strategy (removes least important features iteratively)
+- ✅ Negative impact pruning (removes features that negatively impact performance (IS > 0))
+- ✅ Automated performance evaluation after pruning
 
 ## 📝 TODO
 
@@ -325,7 +329,11 @@ See [TODO.md](TODO.md) for current development tasks and roadmap.
 
 ## 🤝 Contributing
 
-This is a research project. For questions or contributions, please contact the project maintainer.
+This is a research project done during an internship period at CiMEC. The project is part of Re Depaolini Icaro's Thesis. For questions or contributions, please contact the project maintainer.
+
+## 🔗 Reference
+- Icaro Re Depaolini, University of Trento, "Predicting Image Authenticity: Human alignment and Explainability methods", Oct 14 2025.
+
 
 ## 📄 License
 
@@ -336,9 +344,10 @@ This project is part of academic research. Please contact the authors for usage 
 - Pretrained models from PyTorch and torchvision
 - BarlowTwins implementation from Facebook Research
 - AIGCIQA2023 dataset
+- CiMEC, University of Trento
 
 ---
 
 **Author**: Icaro Re Depaolini  
-**Institution**: University of Trento  
+**Institution**: CiMec, University of Trento  
 **Last Updated**: November 2025
