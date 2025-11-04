@@ -146,7 +146,8 @@ def evaluate_command(args):
     # Evaluate
     criterion = torch.nn.MSELoss()
     test_loss = test_model(model, test_loader, criterion, device)
-    print(f"Test Loss (RMSE): {test_loss:.4f}")
+    test_rmse = test_loss ** 0.5  # Compute RMSE from MSE
+    print(f"Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
 
 
 def main():

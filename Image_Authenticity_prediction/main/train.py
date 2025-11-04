@@ -1,6 +1,7 @@
 import copy
 import torch
 import matplotlib.pyplot as plt
+import math
 
 def train_model(model, dataloaders, criterion, optimizer, num_epochs=10, device='cuda', patience=5):
     """
@@ -108,18 +109,19 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=10, device=
     # Return the best model and the loss history
     return model, history
 
-def test_model(model, dataloader, criterion, device='cuda'):
+def test_model(model, dataloader, criterion, device='cuda', return_rmse=False):
     """
     Tests the model on the test dataset.
 
     Args:
         model (nn.Module): The trained model.
         dataloader (DataLoader): The test data loader.
-        criterion (nn.Module): The loss function.
+        criterion (nn.Module): The loss function (e.g., MSELoss).
         device (str): Device to use for testing ('cuda' or 'cpu'). Defaults to 'cuda'.
+        return_rmse (bool): If True, returns RMSE (square root of MSE). Defaults to False.
 
     Returns:
-        float: The average loss on the test dataset.
+        float: The average MSE loss on the test dataset, or RMSE if return_rmse=True.
     """
     model.eval()  # Set the model to evaluation mode
     model.to(device)
@@ -138,10 +140,16 @@ def test_model(model, dataloader, criterion, device='cuda'):
             # Accumulate the loss
             running_loss += loss.item() * inputs.size(0)
 
-    # Calculate the average loss over the entire test dataset
-    test_loss = running_loss / len(dataloader.dataset)
-    print(f'Test Loss: {test_loss:.4f}')
-    return test_loss
+    # Calculate the average MSE loss over the entire test dataset
+    mse_loss = running_loss / len(dataloader.dataset)
+    
+    if return_rmse:
+        rmse_loss = math.sqrt(mse_loss)
+        print(f'Test MSE: {mse_loss:.4f}, RMSE: {rmse_loss:.4f}')
+        return rmse_loss
+    else:
+        print(f'Test MSE: {mse_loss:.4f}')
+        return mse_loss
 
 def plot_loss_history(history):
 

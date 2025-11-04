@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
+import math
 from tqdm import tqdm
 from typing import Callable, Optional, Tuple, Dict, Any, List
 
@@ -30,7 +31,7 @@ class FeatureMapsPruner:
             criterion: The loss function to use for evaluation (e.g., nn.MSELoss()).
             eval_function: A callable function (like test_model) that takes
                            (model, dataloader, criterion, device) and returns
-                           a performance metric (e.g., RMSE).
+                           a performance metric (MSE loss).
             device: The device (e.g., torch.device('cuda')) to run on.
         """
         self.model = model
@@ -48,6 +49,7 @@ class FeatureMapsPruner:
 
         # Internal state
         self.importance_scores: Optional[np.ndarray] = None
+        self.baseline_mse: Optional[float] = None
         self.baseline_rmse: Optional[float] = None
         self._original_weights: torch.Tensor = self.layer.weight.clone().detach()
         self._original_bias: Optional[torch.Tensor] = None
@@ -63,12 +65,18 @@ class FeatureMapsPruner:
             raise ValueError(f"Layer '{self.layer_name}' not found in model. "
                              f"Available layers: {list(dict_modules.keys())}")
 
-    def _evaluate_model(self) -> float:
-        """Helper function to evaluate the model's current state."""
+    def _evaluate_model(self) -> Tuple[float, float]:
+        """
+        Helper function to evaluate the model's current state.
+        
+        Returns:
+            Tuple of (MSE, RMSE)
+        """
         self.model.eval()
         with torch.no_grad():
-            rmse = self.eval_function(self.model, self.dataloader, self.criterion, self.device)
-        return rmse
+            mse = self.eval_function(self.model, self.dataloader, self.criterion, self.device)
+            rmse = math.sqrt(mse)
+        return mse, rmse
 
     def _restore_weights(self):
         """Restores the layer's weights and bias to their original state."""
@@ -95,7 +103,7 @@ class FeatureMapsPruner:
         """
         Computes the importance of each feature map in the layer.
 
-        Importance is measured as: baseline_rmse - pruned_rmse
+        Importance is measured as: baseline_mse - pruned_mse
         A positive score means removing the channel HURTS performance (it's important).
         A negative score means removing the channel HELPS performance (it's noisy).
 
@@ -121,8 +129,8 @@ class FeatureMapsPruner:
         self._restore_weights()  # Ensure we start from a clean state
         self.model.eval()
 
-        self.baseline_rmse = self._evaluate_model()
-        print(f'Authenticity baseline RMSE: {self.baseline_rmse:.4f}')
+        self.baseline_mse, self.baseline_rmse = self._evaluate_model()
+        print(f'Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}')
 
         scores = []
         num_channels = self.layer.out_channels
@@ -130,12 +138,12 @@ class FeatureMapsPruner:
         for i in tqdm(range(num_channels), desc=f"Computing importance for {self.layer_name}"):
             self._zero_out_channel(i)
             
-            pruned_rmse = self._evaluate_model()
+            pruned_mse, pruned_rmse = self._evaluate_model()
             
-            # Importance = baseline - pruned
+            # Importance = baseline - pruned (using MSE)
             # positive = bad to remove (important)
             # negative = good to remove (noisy)
-            importance_score = self.baseline_rmse - pruned_rmse
+            importance_score = self.baseline_mse - pruned_mse
             scores.append([i, importance_score])
 
             self._restore_channel(i) # Restore just this channel
@@ -156,7 +164,7 @@ class FeatureMapsPruner:
     def greedy_pruning(self, model_save_path: str) -> Dict[str, Any]:
         """
         Iteratively removes feature maps, keeping a removal only if it
-        improves (lowers) the RMSE.
+        improves (lowers) the MSE loss.
 
         This method modifies the model, saves the pruned version, and then
         restores the original model state.
@@ -173,14 +181,15 @@ class FeatureMapsPruner:
 
         self._restore_weights()  # Start from a clean slate
         
-        if self.baseline_rmse is None:
-             self.baseline_rmse = self._evaluate_model()
+        if self.baseline_mse is None:
+             self.baseline_mse, self.baseline_rmse = self._evaluate_model()
 
-        print(f"Starting greedy pruning. Baseline RMSE: {self.baseline_rmse:.4f}")
+        print(f"Starting greedy pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}")
         print("------------------")
 
         removed_features = []
-        rmse_history = [(removed_features.copy(), self.baseline_rmse)]
+        mse_history = [(removed_features.copy(), self.baseline_mse, self.baseline_rmse)]
+        current_best_mse = self.baseline_mse
         current_best_rmse = self.baseline_rmse
 
         # Iterate from most noisy (lowest score) to most important (highest score)
@@ -189,18 +198,19 @@ class FeatureMapsPruner:
             
             self._zero_out_channel(channel_idx)
             
-            pruned_rmse = self._evaluate_model()
+            pruned_mse, pruned_rmse = self._evaluate_model()
 
             print(f"Testing removal of channel {channel_idx}, "
                   f"Importance: {importance_score:.4f}, "
-                  f"New RMSE: {pruned_rmse:.4f}")
+                  f"New MSE: {pruned_mse:.4f}, RMSE: {pruned_rmse:.4f}")
 
-            # If RMSE improved (got smaller), keep the channel zeroed out
-            if pruned_rmse < current_best_rmse:
+            # If MSE improved (got smaller), keep the channel zeroed out
+            if pruned_mse < current_best_mse:
+                current_best_mse = pruned_mse
                 current_best_rmse = pruned_rmse
                 removed_features.append(channel_idx)
-                rmse_history.append((removed_features.copy(), current_best_rmse))
-                print(f"  ✓ IMPROVING: Keeping channel {channel_idx} zeroed. New best RMSE: {current_best_rmse:.4f}")
+                mse_history.append((removed_features.copy(), current_best_mse, current_best_rmse))
+                print(f"  ✓ IMPROVING: Keeping channel {channel_idx} zeroed. New best MSE: {current_best_mse:.4f}, RMSE: {current_best_rmse:.4f}")
             else:
                 # Restore this channel
                 self._restore_channel(channel_idx)
@@ -217,33 +227,38 @@ class FeatureMapsPruner:
         self._restore_weights()
 
         # Final statistics
+        final_mse = current_best_mse
         final_rmse = current_best_rmse
-        improvement = self.baseline_rmse - final_rmse
+        improvement_mse = self.baseline_mse - final_mse
+        improvement_rmse = self.baseline_rmse - final_rmse
         reduction_pct = (len(removed_features) / self.layer.out_channels) * 100
 
         print("------------------")
-        print(f"Final RMSE: {final_rmse:.4f} after removing {len(removed_features)} feature maps")
-        print(f"Improvement over baseline: {improvement:.4f}")
+        print(f"Final MSE: {final_mse:.4f}, RMSE: {final_rmse:.4f} after removing {len(removed_features)} feature maps")
+        print(f"Improvement - MSE: {improvement_mse:.4f}, RMSE: {improvement_rmse:.4f}")
         print(f"Feature reduction: {reduction_pct:.1f}%")
 
         return {
             'removed_features': removed_features,
+            'baseline_mse': self.baseline_mse,
             'baseline_rmse': self.baseline_rmse,
+            'final_mse': final_mse,
             'final_rmse': final_rmse,
-            'improvement': improvement,
+            'improvement_mse': improvement_mse,
+            'improvement_rmse': improvement_rmse,
             'reduction_percentage': reduction_pct,
-            'rmse_history': rmse_history
+            'mse_history': mse_history
         }
 
     def negative_impact_pruning(self, model_save_path: str, threshold: float = 0.0) -> Dict[str, Any]:
         """
-        Removes all feature maps with an importance score above a threshold (> treshold).
+        Removes all feature maps with an importance score above a threshold (> threshold).
         
 
         Args:
             model_save_path: Path to save the final pruned model state_dict.
             threshold: Importance score threshold. Channels with a score
-                       *below* this (e.g., negative) will be removed.
+                       *above* this will be removed.
 
         Returns:
             A dictionary with pruning results.
@@ -254,10 +269,10 @@ class FeatureMapsPruner:
 
         self._restore_weights()  # Start from a clean slate
         
-        if self.baseline_rmse is None:
-             self.baseline_rmse = self._evaluate_model()
+        if self.baseline_mse is None:
+             self.baseline_mse, self.baseline_rmse = self._evaluate_model()
 
-        print(f"Starting negative impact pruning. Baseline RMSE: {self.baseline_rmse:.4f}")
+        print(f"Starting negative impact pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}")
         
         removed_features = []
         for (channel_idx, importance_score) in tqdm(self.importance_scores, desc=f"Pruning negative impact features"):
@@ -266,11 +281,11 @@ class FeatureMapsPruner:
                 self._zero_out_channel(channel_idx)
                 removed_features.append(channel_idx)
         
-        print(f"Removed {len(removed_features)} features with score < {threshold}.")
+        print(f"Removed {len(removed_features)} features with score > {threshold}.")
 
         # Evaluate the final pruned model
-        final_rmse = self._evaluate_model()
-        print(f"Final RMSE after pruning: {final_rmse:.4f}")
+        final_mse, final_rmse = self._evaluate_model()
+        print(f"Final MSE: {final_mse:.4f}, RMSE: {final_rmse:.4f} after pruning")
 
         # Save the pruned model
         os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
@@ -281,14 +296,18 @@ class FeatureMapsPruner:
         self._restore_weights()
 
         # Final stats
-        improvement = self.baseline_rmse - final_rmse
+        improvement_mse = self.baseline_mse - final_mse
+        improvement_rmse = self.baseline_rmse - final_rmse
         reduction_pct = (len(removed_features) / self.layer.out_channels) * 100
 
         return {
             'removed_features': removed_features,
+            'baseline_mse': self.baseline_mse,
             'baseline_rmse': self.baseline_rmse,
+            'final_mse': final_mse,
             'final_rmse': final_rmse,
-            'improvement': improvement,
+            'improvement_mse': improvement_mse,
+            'improvement_rmse': improvement_rmse,
             'reduction_percentage': reduction_pct
         }
     
