@@ -148,10 +148,10 @@ class FeatureMapsPruner:
 
             self._restore_channel(i) # Restore just this channel
 
-        # Sort by importance score (ascending). 
-        # The most "negative impact" (most "important") are last.
-        # The most "positive impact" (noisy) are first.
-        sorted_scores = sorted(scores, key=lambda x: x[1])
+        # Sort by importance score (descending, larger values first).
+        # Higher scores = more harmful to remove 
+        # Lower/negative scores = less important 
+        sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
         self.importance_scores = np.array(sorted_scores)
 
         if save_path:
