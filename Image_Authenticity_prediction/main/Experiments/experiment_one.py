@@ -82,8 +82,8 @@ MODEL_REGISTRY = {
 
 # Training hyperparameters
 TRAINING_CONFIG = {
-    'max_epochs': 50,
-    'patience': 7,
+    'max_epochs': 500,
+    'patience': 15,
     'learning_rate': 0.001,
     'freeze_backbone': True,
     'device': 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -98,8 +98,10 @@ PRUNING_CONFIG = {
 OUTPUT_DIR = Path('main/Output')
 WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 RANKINGS_DIR = OUTPUT_DIR / 'Ranking_arrays'
+RANKING_PLOTS_DIR = OUTPUT_DIR / 'Ranking_Plots'
 TRAINING_PLOTS_DIR = OUTPUT_DIR / 'Training_Plots'
 TRAINING_HISTORY_DIR = OUTPUT_DIR / 'Training_History'
+
 
 
 # ============================================================================
@@ -380,6 +382,7 @@ def experiment_1b_prune_all_models(
     
     # Create output directories
     RANKINGS_DIR.mkdir(parents=True, exist_ok=True)
+    RANKING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     
     # Select models to prune
     if models_to_prune is None:
@@ -465,6 +468,15 @@ def experiment_1b_prune_all_models(
                 save_path=str(importance_path),
                 force_recompute=PRUNING_CONFIG['force_recompute']
             )
+            
+            # Plot and save importance scores
+            print("\nGenerating importance score plot...")
+            plot_path = RANKING_PLOTS_DIR / f"{model_name}_exp1b_importance_scores.png"
+            try:
+                pruner.plot_importance_scores(save_path=str(plot_path))
+                print(f"✓ Importance score plot saved to: {plot_path}")
+            except Exception as e:
+                print(f"Warning: Could not save importance plot: {e}")
             
             print(f"✓ Importance scores computed and saved to: {importance_path}")
             print(f"  - Baseline MSE: {pruner.baseline_mse:.4f}, RMSE: {pruner.baseline_rmse:.4f}")

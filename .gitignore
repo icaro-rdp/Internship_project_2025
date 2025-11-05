@@ -35,6 +35,10 @@ ENV/
 *.swp
 *.swo
 
+#Output directories
+*/Output/*
+*/*/Output/*
+
 # Model files and datasets
 Models/*/Weights
 Models/*/Ranking_arrays

@@ -311,6 +311,39 @@ class FeatureMapsPruner:
             'reduction_percentage': reduction_pct
         }
     
+    def plot_importance_scores(self, save_path=None):
+        """
+        Plots the importance scores as a bar chart.
+        
+        Args:
+            save_path (str, optional): Path to save the plot. If None, only displays the plot.
+        """
+        import matplotlib
+        import matplotlib.pyplot as plt
+
+        if self.importance_scores is None:
+            raise ValueError("Importance scores not computed. Run compute_importance_scores first.")
+
+        channels = self.importance_scores[:, 0]
+        scores = self.importance_scores[:, 1]
+
+        # Use non-interactive backend if saving
+        if save_path:
+            matplotlib.use('Agg')
+        
+        plt.figure(figsize=(12, 6))
+        plt.bar(channels, scores, color='skyblue')
+        plt.xlabel('Channel Index')
+        plt.ylabel('Importance Score (Baseline MSE - Pruned MSE)')
+        plt.title(f'Feature Map Importance Scores for Layer: {self.layer_name}')
+        plt.axhline(0, color='red', linestyle='--')
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
 #! Example usage:
 # import torch
 # import torch.nn as nn
