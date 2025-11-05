@@ -1,14 +1,17 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import os
+import sys
 from pathlib import Path
-import yaml
 import numpy as np
 import gc
 
+# Add main package to path - go up from  Experiments/ -> main/ -> Image_Authenticity_prediction/
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 # Import models
-from ..Models import (
+from main.Models import (
     VGG16AuthenticityPredictor,
     VGG19AuthenticityPredictor,
     ResNet152AuthenticityPredictor,
@@ -19,9 +22,9 @@ from ..Models import (
 )
 
 # Import utilities
-from ..Utils import FeatureMapsPruner
-from ..train import train_model, test_model, plot_loss_history
-from ..data import (
+from main.Utils import FeatureMapsPruner
+from main.train import train_model, test_model, plot_loss_history
+from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
     INCEPTIONV3_DATASET,
@@ -670,7 +673,13 @@ def run_experiment_one_complete(
 
 if __name__ == '__main__':
     """
-    Example usage:
+    Isntruction to run Experiment 1:
+    ===========================================================================
+    - cd to the Image_Authenticity_prediction/main/Experiments/ directory
+    - activate your Python environment : conda activate <your_env>
+    - python experiment_one.py
+    ===========================================================================
+
     
     # Run complete pipeline for all models
     results = run_experiment_one_complete()
@@ -701,6 +710,8 @@ if __name__ == '__main__':
         pruning_method='negative_impact',
         threshold=0.0
     )
+
+   
     """
     
     # Default: Run complete pipeline for all models with both pruning methods
