@@ -54,31 +54,31 @@ MODEL_REGISTRY = {
     'resnet152': {
         'class': ResNet152AuthenticityPredictor,
         'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.7',  # Last residual block
+        'target_layer': 'features.7.2.conv3',  # Last residual block
         'input_size': 224
     },
     'densenet161': {
         'class': DenseNet161AuthenticityPredictor,
         'dataset': DENSENET_DATASET,
-        'target_layer': 'features.denseblock4',  # Last dense block
+        'target_layer': 'features.denseblock4.denselayer24.conv2',  # Last dense block conv layer
         'input_size': 300
     },
     'inceptionv3': {
         'class': InceptionV3AuthenticityPredictor,
         'dataset': INCEPTIONV3_DATASET,
-        'target_layer': 'features.16',  # Last mixed layer
+        'target_layer': None,  # InceptionV3 cannot be pruned with current method
         'input_size': 299
     },
     'efficientnetb3': {
         'class': EfficientNetB3AuthenticityPredictor,
         'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.8',  # Last MBConv block
+        'target_layer': 'features.8.0',  # Last conv2d of the last block
         'input_size': 224
     },
     'barlowtwins': {
         'class': BarlowTwinsAuthenticityPredictor,
         'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.7',  # Last layer before avgpool
+        'target_layer': 'features.7.2.conv3',  # Last layer before avgpool
         'input_size': 224
     }
 }
@@ -671,6 +671,7 @@ def run_experiment_one_complete(
 # ============================================================================
 
 if __name__ == '__main__':
+    
     """
     Isntruction to run Experiment 1:
     ===========================================================================
@@ -678,7 +679,6 @@ if __name__ == '__main__':
     - activate your Python environment : conda activate <your_env>
     - python experiment_one.py
     ===========================================================================
-
     
     # Run complete pipeline for all models
     results = run_experiment_one_complete()
@@ -709,18 +709,12 @@ if __name__ == '__main__':
         pruning_method='negative_impact',
         threshold=0.0
     )
-
-   
     """
     
     # Default: Run complete pipeline for all models with both pruning methods
-    print("Starting Experiment 1: Complete Training and Pruning Pipeline")
-    print("This will train and prune all 7 models using both pruning methods.")
-    print("To run only specific parts or models, edit this section or import the functions.\n")
-    
-    results = run_experiment_one_complete(run_pruning=False)
-    
-    print("\n" + "=" * 80)
-    print("EXPERIMENT 1 COMPLETE!")
-    print("=" * 80)
-    
+    results = run_experiment_one_complete(
+        models_to_process=None,
+        run_training=False,
+        pruning_method='both'
+    )
+
