@@ -98,7 +98,7 @@ PRUNING_CONFIG = {
 }
 
 # Output directories
-OUTPUT_DIR = Path('main/Output')
+OUTPUT_DIR = Path('Output')
 WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 RANKINGS_DIR = OUTPUT_DIR / 'Ranking_arrays'
 RANKING_PLOTS_DIR = OUTPUT_DIR / 'Ranking_Plots'
