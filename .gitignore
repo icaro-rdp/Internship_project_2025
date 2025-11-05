@@ -36,8 +36,7 @@ ENV/
 *.swo
 
 #Output directories
-Output/*
-*/*/*/*/Output/*
+*/main/Experiments/Outputs/*
 
 # Model files and datasets
 Models/*/Weights

@@ -98,13 +98,12 @@ PRUNING_CONFIG = {
 }
 
 # Output directories
-OUTPUT_DIR = Path('Output')
+OUTPUT_DIR = Path('Outputs/Experiment_1')
 WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 RANKINGS_DIR = OUTPUT_DIR / 'Ranking_arrays'
 RANKING_PLOTS_DIR = OUTPUT_DIR / 'Ranking_Plots'
 TRAINING_PLOTS_DIR = OUTPUT_DIR / 'Training_Plots'
 TRAINING_HISTORY_DIR = OUTPUT_DIR / 'Training_History'
-
 
 
 # ============================================================================
@@ -719,16 +718,9 @@ if __name__ == '__main__':
     print("This will train and prune all 7 models using both pruning methods.")
     print("To run only specific parts or models, edit this section or import the functions.\n")
     
-    results = run_experiment_one_complete(
-        models_to_process=None,  # None = all models
-        run_training=True,
-        run_pruning=True,
-        pruning_method='both'  # Run both greedy and negative_impact
-    )
+    results = run_experiment_one_complete(run_pruning=False)
     
     print("\n" + "=" * 80)
     print("EXPERIMENT 1 COMPLETE!")
     print("=" * 80)
-    print(f"\nResults saved to: {OUTPUT_DIR}")
-    print(f"  - Model weights: {WEIGHTS_DIR}")
-    print(f"  - Importance scores: {RANKINGS_DIR}")
+    
