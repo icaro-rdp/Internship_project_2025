@@ -22,6 +22,11 @@ sys.path.insert(0, str(project_root))
 
 # Now import using the full package path
 from main.Experiments import experiment_one
+import torch
+from torch.utils.data import DataLoader
+import torch.nn as nn
+from main.train import test_model
+from main.data import BATCH_SIZE, NUM_WORKERS
 
 def test_train_only():
     """Test training only with minimal settings."""
@@ -55,6 +60,51 @@ def test_train_only():
             print("\n  Training:")
             print(f"    - Test MSE: {results['training']['vgg16']['final_test_mse']:.4f}")
             print(f"    - Test RMSE: {results['training']['vgg16']['final_test_rmse']:.4f}")
+            # Try to compute PLCC and SRCC by loading the saved weights and running test_model
+            try:
+                def _extract_weights_path(training_results, model_name='vgg16'):
+                    # Common shapes: training_results[model_name]['weights_path'] or per-variant entries
+                    if not training_results:
+                        return None
+                    if model_name in training_results:
+                        m = training_results[model_name]
+                        if isinstance(m, dict):
+                            if 'weights_path' in m:
+                                return m['weights_path']
+                            # check variants
+                            for k, v in m.items():
+                                if isinstance(v, dict) and 'weights_path' in v:
+                                    return v['weights_path']
+                    # fallback: search nested dicts
+                    for mv in training_results.values():
+                        if isinstance(mv, dict):
+                            for sub in mv.values():
+                                if isinstance(sub, dict) and 'weights_path' in sub:
+                                    return sub['weights_path']
+                    return None
+
+                weights_path = _extract_weights_path(results.get('training', {}), 'vgg16')
+                if weights_path:
+                    # Instantiate model, load weights, and evaluate with additional metrics
+                    model_cls = experiment_one.MODEL_REGISTRY['vgg16']['class']
+                    model = model_cls(freeze_backbone=False)
+                    model.load_state_dict(torch.load(weights_path))
+
+                    dataset = experiment_one.MODEL_REGISTRY['vgg16']['dataset']
+                    test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+                    criterion = nn.MSELoss()
+                    device = experiment_one.TRAINING_CONFIG['device']
+                    metrics = test_model(model, test_loader, criterion, device=device, return_additional_metrics=True)
+                    # Attach metrics into results for downstream inspection
+                    results.setdefault('metrics', {})['vgg16'] = {'plcc': metrics.get('plcc'), 'srcc': metrics.get('srcc'),'krcc': metrics.get('krcc')}
+                    print(f"  - PLCC: {metrics.get('plcc')}")
+                    print(f"  - SRCC: {metrics.get('srcc')}")
+                    print(f"  - KRCC: {metrics.get('krcc')}")
+                else:
+                    print('  - Could not locate weights_path to compute PLCC/SRCC')
+            except Exception as e:
+                print(f'  - Error computing PLCC/SRCC: {e}')
+
             return True, results
         else:
             print("\n✗ Training only test FAILED")
@@ -118,6 +168,46 @@ def test_complete_pipeline():
                 # Only one method was run
                 print(f"    - Improvement MSE: {r['improvement_mse']:.4f}")
                 print(f"    - Features removed: {r['num_removed']}")
+            # Try to compute PLCC and SRCC if training succeeded
+            try:
+                def _extract_weights_path(training_results, model_name='vgg16'):
+                    if not training_results:
+                        return None
+                    if model_name in training_results:
+                        m = training_results[model_name]
+                        if isinstance(m, dict):
+                            if 'weights_path' in m:
+                                return m['weights_path']
+                            for k, v in m.items():
+                                if isinstance(v, dict) and 'weights_path' in v:
+                                    return v['weights_path']
+                    for mv in training_results.values():
+                        if isinstance(mv, dict):
+                            for sub in mv.values():
+                                if isinstance(sub, dict) and 'weights_path' in sub:
+                                    return sub['weights_path']
+                    return None
+
+                weights_path = _extract_weights_path(results.get('training', {}), 'vgg16')
+                if weights_path:
+                    model_cls = experiment_one.MODEL_REGISTRY['vgg16']['class']
+                    model = model_cls(freeze_backbone=False)
+                    model.load_state_dict(torch.load(weights_path))
+
+                    dataset = experiment_one.MODEL_REGISTRY['vgg16']['dataset']
+                    test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+                    criterion = nn.MSELoss()
+                    device = experiment_one.TRAINING_CONFIG['device']
+                    metrics = test_model(model, test_loader, criterion, device=device, return_additional_metrics=True)
+                    results.setdefault('metrics', {})['vgg16'] = {'plcc': metrics.get('plcc'), 'srcc': metrics.get('srcc'),'krcc': metrics.get('krcc')}
+                    print(f"  - PLCC: {metrics.get('plcc')}")
+                    print(f"  - SRCC: {metrics.get('srcc')}")
+                    print(f"  - KRCC: {metrics.get('krcc')}")
+                else:
+                    print('  - Could not locate weights_path to compute PLCC/SRCC')
+            except Exception as e:
+                print(f'  - Error computing PLCC/SRCC: {e}')
+
             return True, results
         else:
             print("\n✗ Complete pipeline test FAILED")

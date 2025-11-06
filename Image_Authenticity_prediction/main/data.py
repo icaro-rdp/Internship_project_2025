@@ -104,7 +104,7 @@ DENSENET_TRANSFORM: transforms.Compose = transforms.Compose([
 
 ANNOTATION_FILE: str = 'real_images_annotations.csv'
 BATCH_SIZE: int = 64
-NUM_WORKERS: int = 10
+NUM_WORKERS: int = 20
 
 
 # Create the datasets

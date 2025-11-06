@@ -2,6 +2,8 @@ import copy
 import torch
 import matplotlib.pyplot as plt
 import math
+import numpy as np
+import pandas as pd
 
 def train_model(model, dataloaders, criterion, optimizer, num_epochs=10, device='cuda', patience=5):
     """
@@ -109,7 +111,7 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=10, device=
     # Return the best model and the loss history
     return model, history
 
-def test_model(model, dataloader, criterion, device='cuda', return_rmse=False):
+def test_model(model, dataloader, criterion, device='cuda', return_rmse=False, return_additional_metrics=False):
     """
     Tests the model on the test dataset.
 
@@ -122,10 +124,14 @@ def test_model(model, dataloader, criterion, device='cuda', return_rmse=False):
 
     Returns:
         float: The average MSE loss on the test dataset, or RMSE if return_rmse=True.
+        When return_additional_metrics=True, returns a dict with keys:
+            - 'mse', 'rmse', 'plcc', 'srcc', 'preds', 'labels'
     """
     model.eval()  # Set the model to evaluation mode
     model.to(device)
     running_loss = 0.0
+    preds_list = []
+    labels_list = []
 
     # Disable gradient calculation during evaluation
     with torch.no_grad():  
@@ -140,16 +146,65 @@ def test_model(model, dataloader, criterion, device='cuda', return_rmse=False):
             # Accumulate the loss
             running_loss += loss.item() * inputs.size(0)
 
+            # Store predictions and labels for optional metrics
+            try:
+                # Assume outputs and labels are tensors of shape (batch, 1) or (batch,)
+                preds_batch = outputs.detach().cpu().view(-1).numpy()
+                labels_batch = labels.detach().cpu().view(-1).numpy()
+            except Exception:
+                # Fallback: convert to list
+                preds_batch = [float(x) for x in outputs.detach().cpu()]
+                labels_batch = [float(x) for x in labels.detach().cpu()]
+
+            preds_list.append(preds_batch)
+            labels_list.append(labels_batch)
+
     # Calculate the average MSE loss over the entire test dataset
     mse_loss = running_loss / len(dataloader.dataset)
-    
-    if return_rmse:
-        rmse_loss = math.sqrt(mse_loss)
-        print(f'Test MSE: {mse_loss:.4f}, RMSE: {rmse_loss:.4f}')
-        return rmse_loss
+
+    # Flatten collected preds/labels
+    if len(preds_list) > 0:
+        preds = np.concatenate([np.asarray(p) for p in preds_list])
+        labels_arr = np.concatenate([np.asarray(l) for l in labels_list])
     else:
-        print(f'Test MSE: {mse_loss:.4f}')
-        return mse_loss
+        preds = np.array([])
+        labels_arr = np.array([])
+
+    if return_additional_metrics:
+        rmse_loss = math.sqrt(mse_loss)
+
+        # Compute Pearson Linear Correlation Coefficient (PLCC) and Spearman (SRCC)
+        try:
+            s_preds = pd.Series(preds)
+            s_labels = pd.Series(labels_arr)
+            plcc = s_preds.corr(s_labels, method='pearson')
+            srcc = s_preds.corr(s_labels, method='spearman')
+            krcc = s_preds.corr(s_labels, method='kendall')
+        except Exception:
+            plcc = None
+            srcc = None
+            krcc = None
+
+        print(f'Test MSE: {mse_loss:.4f}, RMSE: {rmse_loss:.4f}, PLCC: {plcc}, SRCC: {srcc}', f'KRCC: {krcc}')
+
+        return {
+            'mse': mse_loss,
+            'rmse': rmse_loss,
+            'plcc': plcc,
+            'srcc': srcc,
+            'krcc': krcc,
+            'preds': preds,
+            'labels': labels_arr
+        }
+
+    else:
+        if return_rmse:
+            rmse_loss = math.sqrt(mse_loss)
+            print(f'Test MSE: {mse_loss:.4f}, RMSE: {rmse_loss:.4f}')
+            return rmse_loss
+        else:
+            print(f'Test MSE: {mse_loss:.4f}')
+            return mse_loss
 
 def plot_loss_history(history):
 

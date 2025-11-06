@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import sys
 from pathlib import Path
 import numpy as np
@@ -29,7 +29,9 @@ from main.data import (
     DENSENET_DATASET,
     INCEPTIONV3_DATASET,
     BATCH_SIZE,
-    NUM_WORKERS
+    NUM_WORKERS,
+    imageNet_dataset,
+    denseNet_dataset
 )
 
 
@@ -98,7 +100,7 @@ PRUNING_CONFIG = {
 }
 
 # Output directories
-OUTPUT_DIR = Path('Outputs/Experiment_1')
+OUTPUT_DIR = Path('Outputs/Experiment_1_variants')
 WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 RANKINGS_DIR = OUTPUT_DIR / 'Ranking_arrays'
 RANKING_PLOTS_DIR = OUTPUT_DIR / 'Ranking_Plots'
@@ -193,6 +195,23 @@ def experiment_1a_train_all_models(
     TRAINING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     TRAINING_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     
+    # Number of variants per model (default 10 variants)
+    variants_per_model = 10
+
+    # Prepare a global test index set so the test split is identical across
+    # all models and variants. We derive it from the imageNet_dataset length
+    # (both imageNet_dataset and denseNet_dataset are built from the same CSV
+    # so indices align).
+    try:
+        total_size = len(imageNet_dataset)
+        test_size = int(0.2 * total_size)
+        # Use seed 42 for global test selection as requested
+        gen_global = torch.Generator().manual_seed(42)
+        perm = torch.randperm(total_size, generator=gen_global).tolist()
+        GLOBAL_TEST_INDICES = perm[:test_size]
+    except Exception:
+        GLOBAL_TEST_INDICES = None
+
     # Select models to train
     if models_to_train is None:
         models_to_train = list(MODEL_REGISTRY.keys())
@@ -208,102 +227,159 @@ def experiment_1a_train_all_models(
         try:
             # Get model configuration
             config = MODEL_REGISTRY[model_name]
-            
-            # Initialize model
+            # We'll create multiple variants by reinitializing the regression head
+            # and by using different random splits for train/test.
             if verbose:
-                print(f"Initializing {model_name} model...")
-            model = config['class'](freeze_backbone=TRAINING_CONFIG['freeze_backbone'])
-            
-            # Get dataset and create dataloaders
-            dataset = config['dataset']
-            train_loader = DataLoader(
-                dataset['train'],
-                batch_size=BATCH_SIZE,
-                shuffle=True,
-                num_workers=NUM_WORKERS
-            )
-            test_loader = DataLoader(
-                dataset['test'],
-                batch_size=BATCH_SIZE,
-                shuffle=False,
-                num_workers=NUM_WORKERS
-            )
-            
-            dataloaders = {
-                'train': train_loader,
-                'val': test_loader
-            }
-            
-            # Setup training
-            criterion = nn.MSELoss()
-            optimizer = torch.optim.Adam(
-                model.parameters(),
-                lr=TRAINING_CONFIG['learning_rate']
-            )
-            
-            # Train the model
-            if verbose:
-                print(f"Training on device: {TRAINING_CONFIG['device']}")
-                print(f"Max epochs: {TRAINING_CONFIG['max_epochs']}, Patience: {TRAINING_CONFIG['patience']}")
-            
-            best_model, history = train_model(
-                model=model,
-                dataloaders=dataloaders,
-                criterion=criterion,
-                optimizer=optimizer,
-                num_epochs=TRAINING_CONFIG['max_epochs'],
-                device=TRAINING_CONFIG['device'],
-                patience=TRAINING_CONFIG['patience']
-            )
-            
-            # Evaluate on test set
-            print("\nEvaluating on test set...")
-            test_loss = test_model(
-                best_model,
-                test_loader,
-                criterion,
-                TRAINING_CONFIG['device']
-            )
-            test_rmse = np.sqrt(test_loss)  # Compute RMSE from MSE
-            
-            # Save model weights
-            weights_path = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
-            torch.save(best_model.state_dict(), weights_path)
-            print(f"✓ Model saved to: {weights_path}")
-            
-            # Save training history
-            history_path = TRAINING_HISTORY_DIR / f"{model_name}_exp1a_history.npy"
-            np.save(history_path, history)
-            
-            # Plot and save training history
-            if save_plots:
+                print(f"Preparing to train {variants_per_model} variants for {model_name}...")
+
+            # Determine the base full dataset for this model so we can re-split
+            # Use imageNet_dataset / denseNet_dataset depending on config
+            backbone_dataset = None
+            if config['dataset'] is IMAGENET_DATASET:
+                backbone_dataset = imageNet_dataset
+            elif config['dataset'] is DENSENET_DATASET:
+                backbone_dataset = denseNet_dataset
+            else:
+                # Fall back to provided split if we can't find base dataset
+                backbone_dataset = None
+
+            # Train variants
+            for variant_idx in range(1, variants_per_model + 1):
+                print(f"\nVariant {variant_idx}/{variants_per_model} for {model_name}")
+
+                # Initialize model for this variant
+                if verbose:
+                    print(f"Initializing {model_name} model (variant {variant_idx})...")
+                model = config['class'](freeze_backbone=TRAINING_CONFIG['freeze_backbone'])
+
+                # Reinitialize regression head weights to get a distinct starting state
                 try:
-                    import matplotlib
-                    matplotlib.use('Agg')  # Use non-interactive backend
-                    plot_loss_history(history)
-                    import matplotlib.pyplot as plt
-                    plot_path = TRAINING_PLOTS_DIR / f"{model_name}_exp1a_training_curve.png"
-                    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    print(f"✓ Training curve saved to: {plot_path}")
-                except Exception as e:
-                    print(f"Warning: Could not save plot: {e}")
-            
-            # Store results
-            results[model_name] = {
-                'final_test_mse': test_loss,
-                'final_test_rmse': test_rmse,
-                'final_val_loss': history['val_loss'][-1],
-                'best_val_loss': min(history['val_loss']),
-                'epochs_trained': len(history['train_loss']),
-                'weights_path': str(weights_path),
-                'history': history
-            }
-            
-            print(f"\n✓ {model_name.upper()} training complete!")
-            print(f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
-            print(f"  - Best Val Loss: {results[model_name]['best_val_loss']:.4f}")
-            print(f"  - Epochs trained: {results[model_name]['epochs_trained']}")
+                    def reset_regression_head(m):
+                        import torch.nn as _nn
+                        for layer in m.regression_head.modules():
+                            if isinstance(layer, _nn.Linear):
+                                layer.reset_parameters()
+
+                    reset_regression_head(model)
+                except Exception:
+                    # If model does not have regression_head attribute, ignore
+                    pass
+
+                # Create train/test split for this variant by using a different seed
+                from torch.utils.data import random_split
+                import torch as _torch
+
+                if backbone_dataset is not None:
+                    total_size = len(backbone_dataset)
+                    train_size = int(0.8 * total_size)
+                    # Use the global test indices if available to ensure same test set
+                    if GLOBAL_TEST_INDICES is not None:
+                        test_indices = GLOBAL_TEST_INDICES
+                        # Remaining indices for training
+                        all_indices = list(range(total_size))
+                        train_indices = [i for i in all_indices if i not in test_indices]
+
+                        # Shuffle train indices per-variant to alter train split/order
+                        gen2 = _torch.Generator().manual_seed(42 + variant_idx)
+                        perm_train = _torch.randperm(len(train_indices), generator=gen2).tolist()
+                        train_indices_shuffled = [train_indices[i] for i in perm_train]
+
+                        train_ds = Subset(backbone_dataset, train_indices_shuffled)
+                        test_ds = Subset(backbone_dataset, test_indices)
+                    else:
+                        # Fallback to random_split if global indices not available
+                        gen = _torch.Generator().manual_seed(42 + variant_idx)
+                        train_ds, test_ds = random_split(backbone_dataset, [train_size, total_size - train_size], generator=gen)
+                else:
+                    # Fall back to using the already-split dataset provided in config
+                    train_ds = config['dataset']['train']
+                    test_ds = config['dataset']['test']
+
+                train_loader = DataLoader(
+                    train_ds,
+                    batch_size=BATCH_SIZE,
+                    shuffle=True,
+                    num_workers=NUM_WORKERS
+                )
+                test_loader = DataLoader(
+                    test_ds,
+                    batch_size=BATCH_SIZE,
+                    shuffle=False,
+                    num_workers=NUM_WORKERS
+                )
+
+                dataloaders = {'train': train_loader, 'val': test_loader}
+
+                # Setup training for this variant
+                criterion = nn.MSELoss()
+                optimizer = torch.optim.Adam(
+                    model.parameters(),
+                    lr=TRAINING_CONFIG['learning_rate']
+                )
+
+                if verbose:
+                    print(f"Training on device: {TRAINING_CONFIG['device']}")
+                    print(f"Max epochs: {TRAINING_CONFIG['max_epochs']}, Patience: {TRAINING_CONFIG['patience']}")
+
+                # Train the model for this variant
+                best_model, history = train_model(
+                    model=model,
+                    dataloaders=dataloaders,
+                    criterion=criterion,
+                    optimizer=optimizer,
+                    num_epochs=TRAINING_CONFIG['max_epochs'],
+                    device=TRAINING_CONFIG['device'],
+                    patience=TRAINING_CONFIG['patience']
+                )
+
+                # Evaluate on test set
+                print("\nEvaluating on test set...")
+                test_loss = test_model(
+                    best_model,
+                    test_loader,
+                    criterion,
+                    TRAINING_CONFIG['device']
+                )
+                test_rmse = np.sqrt(test_loss)  # Compute RMSE from MSE
+
+                # Save model weights for this variant
+                weights_path = WEIGHTS_DIR / f"{model_name}_exp1a_variant{variant_idx}_best.pth"
+                torch.save(best_model.state_dict(), weights_path)
+                print(f"✓ Variant weights saved to: {weights_path}")
+
+                # Save training history for this variant
+                history_path = TRAINING_HISTORY_DIR / f"{model_name}_exp1a_variant{variant_idx}_history.npy"
+                np.save(history_path, history)
+
+                # Plot and save training history (single image per model; variants share same filename)
+                if save_plots:
+                    try:
+                        import matplotlib
+                        matplotlib.use('Agg')  # Use non-interactive backend
+                        plot_loss_history(history)
+                        import matplotlib.pyplot as plt
+                        plot_path = TRAINING_PLOTS_DIR / f"{model_name}_exp1a_training_curve_variant{variant_idx}.png"
+                        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                        plt.close()
+                        print(f"✓ Training curve saved to: {plot_path}")
+                    except Exception as e:
+                        print(f"Warning: Could not save plot: {e}")
+
+                # Store results per-variant inside model dict
+                results.setdefault(model_name, {})[f'variant{variant_idx}'] = {
+                    'final_test_mse': test_loss,
+                    'final_test_rmse': test_rmse,
+                    'final_val_loss': history['val_loss'][-1],
+                    'best_val_loss': min(history['val_loss']),
+                    'epochs_trained': len(history['train_loss']),
+                    'weights_path': str(weights_path),
+                    'history': history
+                }
+
+                print(f"\n✓ {model_name.upper()} variant {variant_idx} training complete!")
+                print(f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
+                print(f"  - Best Val Loss: {results[model_name][f'variant{variant_idx}']['best_val_loss']:.4f}")
+                print(f"  - Epochs trained: {results[model_name][f'variant{variant_idx}']['epochs_trained']}")
             
         except Exception as e:
             print(f"\n✗ Error training {model_name}: {e}")
@@ -353,7 +429,6 @@ def experiment_1a_train_all_models(
     
     return results
 
-
 # ============================================================================
 # Experiment 1B: Prune All Trained Models
 # ============================================================================
@@ -387,17 +462,32 @@ def experiment_1b_prune_all_models(
     RANKING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     
     # Select models to prune
+    weights_files_by_model = {}
     if models_to_prune is None:
-        # Find all trained models
-        models_to_prune = []
+        # Find all trained model weight files (including variant files)
         for model_name in MODEL_REGISTRY.keys():
-            weights_path = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
-            if weights_path.exists():
-                models_to_prune.append(model_name)
-        
-        if not models_to_prune:
+            pattern_files = list(WEIGHTS_DIR.glob(f"{model_name}_exp1a_variant*_best.pth"))
+            # fallback to original single-file pattern
+            fallback = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
+            files = pattern_files[:]
+            if fallback.exists():
+                files.append(fallback)
+            if files:
+                weights_files_by_model[model_name] = files
+
+        if not weights_files_by_model:
             print("Error: No trained models found. Please run Experiment 1A first.")
             return {}
+    else:
+        # User provided a list of models; collect weight files for each
+        for model_name in models_to_prune:
+            pattern_files = list(WEIGHTS_DIR.glob(f"{model_name}_exp1a_variant*_best.pth"))
+            fallback = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
+            files = pattern_files[:]
+            if fallback.exists():
+                files.append(fallback)
+            if files:
+                weights_files_by_model[model_name] = files
     
     print(f"Found {len(models_to_prune)} trained models to prune.")
     print(f"Pruning method: {pruning_method}")
@@ -416,27 +506,16 @@ def experiment_1b_prune_all_models(
     # Results storage
     results = {}
     
-    # Prune each model
-    for idx, model_name in enumerate(models_to_prune, 1):
-        print(f"\n[{idx}/{len(models_to_prune)}] Pruning {model_name.upper()}")
+    # Prune each model (and its variant files)
+    model_items = list(weights_files_by_model.items())
+    for idx, (model_name, weight_file_list) in enumerate(model_items, 1):
+        print(f"\n[{idx}/{len(model_items)}] Pruning {model_name.upper()}")
         print("-" * 80)
-        
+
         try:
-            # Get model configuration
             config = MODEL_REGISTRY[model_name]
-            
-            # Load trained model
-            weights_path = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
-            if not weights_path.exists():
-                print(f"Warning: Weights not found at {weights_path}. Skipping.")
-                continue
-            
-            if verbose:
-                print(f"Loading trained model from {weights_path}...")
-            model = config['class'](freeze_backbone=False)  # Unfreeze for pruning
-            model.load_state_dict(torch.load(weights_path))
-            
-            # Get dataset and create dataloader
+
+            # Prepare test loader (same for all variants unless dataset differs)
             dataset = config['dataset']
             test_loader = DataLoader(
                 dataset['test'],
@@ -444,99 +523,109 @@ def experiment_1b_prune_all_models(
                 shuffle=False,
                 num_workers=NUM_WORKERS
             )
-            
+
             # Setup criterion and device
             criterion = nn.MSELoss()
             device = torch.device(TRAINING_CONFIG['device'])
-            
-            # Initialize pruner
-            target_layer = config['target_layer']
-            if verbose:
-                print(f"Target layer for pruning: {target_layer}")
-            
-            pruner = FeatureMapsPruner(
-                model=model,
-                dataloader=test_loader,
-                layer_name=target_layer,
-                criterion=criterion,
-                eval_function=test_model,
-                device=device
-            )
-            
-            # Compute importance scores
-            print("\nComputing feature importance scores...")
-            importance_path = RANKINGS_DIR / f"{model_name}_exp1b_importance_scores.npy"
-            importance_scores = pruner.compute_importance_scores(
-                save_path=str(importance_path),
-                force_recompute=PRUNING_CONFIG['force_recompute']
-            )
-            
-            # Plot and save importance scores
-            print("\nGenerating importance score plot...")
-            plot_path = RANKING_PLOTS_DIR / f"{model_name}_exp1b_importance_scores.png"
-            try:
-                pruner.plot_importance_scores(save_path=str(plot_path))
-                print(f"✓ Importance score plot saved to: {plot_path}")
-            except Exception as e:
-                print(f"Warning: Could not save importance plot: {e}")
-            
-            print(f"✓ Importance scores computed and saved to: {importance_path}")
-            print(f"  - Baseline MSE: {pruner.baseline_mse:.4f}, RMSE: {pruner.baseline_rmse:.4f}")
-            print(f"  - Number of feature maps: {len(importance_scores)}")
-            
-            # Store results structure
+
+            # Prepare results container for this model
             if len(methods_to_run) > 1:
-                # Multiple methods: store results in nested dict
                 results[model_name] = {}
-            
-            # Perform pruning for each method
-            for method in methods_to_run:
-                if method == 'greedy':
-                    print("\nPerforming greedy pruning...")
-                    pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_greedy_pruned.pth"
-                    pruning_results = pruner.greedy_pruning(
-                        model_save_path=str(pruned_weights_path)
-                    )
-                    
-                elif method == 'negative_impact':
-                    print(f"\nPerforming negative impact pruning (threshold={threshold})...")
-                    pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_negative_pruned.pth"
-                    pruning_results = pruner.negative_impact_pruning(
-                        model_save_path=str(pruned_weights_path),
-                        threshold=threshold
-                    )
-                
-                # Prepare result dict for this method
-                method_results = {
-                    'baseline_mse': pruning_results['baseline_mse'],
-                    'baseline_rmse': pruning_results['baseline_rmse'],
-                    'final_mse': pruning_results['final_mse'],
-                    'final_rmse': pruning_results['final_rmse'],
-                    'improvement_mse': pruning_results['improvement_mse'],
-                    'improvement_rmse': pruning_results['improvement_rmse'],
-                    'removed_features': pruning_results['removed_features'],
-                    'num_removed': len(pruning_results['removed_features']),
-                    'reduction_percentage': pruning_results['reduction_percentage'],
-                    'pruned_weights_path': str(pruned_weights_path),
-                    'importance_scores_path': str(importance_path)
-                }
-                
-                if method == 'greedy' and 'mse_history' in pruning_results:
-                    method_results['mse_history'] = pruning_results['mse_history']
-                
-                # Store results
-                if len(methods_to_run) > 1:
-                    results[model_name][method] = method_results
-                else:
-                    results[model_name] = method_results
-                
-                # Print method-specific results
-                print(f"\n✓ {model_name.upper()} {method} pruning complete!")
-                print(f"  - Baseline MSE: {pruning_results['baseline_mse']:.4f}, RMSE: {pruning_results['baseline_rmse']:.4f}")
-                print(f"  - Final MSE: {pruning_results['final_mse']:.4f}, RMSE: {pruning_results['final_rmse']:.4f}")
-                print(f"  - Improvement MSE: {pruning_results['improvement_mse']:.4f}, RMSE: {pruning_results['improvement_rmse']:.4f}")
-                print(f"  - Features removed: {len(pruning_results['removed_features'])}")
-                print(f"  - Reduction: {pruning_results['reduction_percentage']:.1f}%")
+            else:
+                results[model_name] = {}
+
+            # Iterate over all weight files (variants) for this model
+            import re
+            for weights_path in weight_file_list:
+                if verbose:
+                    print(f"Loading trained model from {weights_path}...")
+                model = config['class'](freeze_backbone=False)
+                model.load_state_dict(torch.load(weights_path))
+
+                target_layer = config['target_layer']
+                if verbose:
+                    print(f"Target layer for pruning: {target_layer}")
+
+                pruner = FeatureMapsPruner(
+                    model=model,
+                    dataloader=test_loader,
+                    layer_name=target_layer,
+                    criterion=criterion,
+                    eval_function=test_model,
+                    device=device
+                )
+
+                # Compute importance scores per-variant
+                print("\nComputing feature importance scores...")
+                # derive a variant tag from filename
+                m = re.search(r"variant\d+", str(weights_path))
+                variant_tag = m.group(0) if m else 'orig'
+                importance_path = RANKINGS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.npy"
+                importance_scores = pruner.compute_importance_scores(
+                    save_path=str(importance_path),
+                    force_recompute=PRUNING_CONFIG['force_recompute']
+                )
+
+                # Plot and save importance scores per-variant
+                print("\nGenerating importance score plot...")
+                plot_path = RANKING_PLOTS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.png"
+                try:
+                    pruner.plot_importance_scores(save_path=str(plot_path))
+                    print(f"✓ Importance score plot saved to: {plot_path}")
+                except Exception as e:
+                    print(f"Warning: Could not save importance plot: {e}")
+
+                print(f"✓ Importance scores computed and saved to: {importance_path}")
+                print(f"  - Baseline MSE: {pruner.baseline_mse:.4f}, RMSE: {pruner.baseline_rmse:.4f}")
+                print(f"  - Number of feature maps: {len(importance_scores)}")
+
+                # Perform pruning methods for this variant
+                for method in methods_to_run:
+                    if method == 'greedy':
+                        print("\nPerforming greedy pruning...")
+                        pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_greedy_pruned.pth"
+                        pruning_results = pruner.greedy_pruning(
+                            model_save_path=str(pruned_weights_path)
+                        )
+
+                    elif method == 'negative_impact':
+                        print(f"\nPerforming negative impact pruning (threshold={threshold})...")
+                        pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_negative_pruned.pth"
+                        pruning_results = pruner.negative_impact_pruning(
+                            model_save_path=str(pruned_weights_path),
+                            threshold=threshold
+                        )
+
+                    # Prepare result dict for this variant+method
+                    method_results = {
+                        'baseline_mse': pruning_results['baseline_mse'],
+                        'baseline_rmse': pruning_results['baseline_rmse'],
+                        'final_mse': pruning_results['final_mse'],
+                        'final_rmse': pruning_results['final_rmse'],
+                        'improvement_mse': pruning_results['improvement_mse'],
+                        'improvement_rmse': pruning_results['improvement_rmse'],
+                        'removed_features': pruning_results['removed_features'],
+                        'num_removed': len(pruning_results['removed_features']),
+                        'reduction_percentage': pruning_results['reduction_percentage'],
+                        'pruned_weights_path': str(pruned_weights_path),
+                        'importance_scores_path': str(importance_path),
+                        'variant_tag': variant_tag,
+                        'original_weights_path': str(weights_path)
+                    }
+
+                    if method == 'greedy' and 'mse_history' in pruning_results:
+                        method_results['mse_history'] = pruning_results['mse_history']
+
+                    # Store results
+                    results.setdefault(model_name, {}).setdefault(variant_tag, {})[method] = method_results
+
+                    # Print method-specific results
+                    print(f"\n✓ {model_name.upper()} {variant_tag} {method} pruning complete!")
+                    print(f"  - Baseline MSE: {pruning_results['baseline_mse']:.4f}, RMSE: {pruning_results['baseline_rmse']:.4f}")
+                    print(f"  - Final MSE: {pruning_results['final_mse']:.4f}, RMSE: {pruning_results['final_rmse']:.4f}")
+                    print(f"  - Improvement MSE: {pruning_results['improvement_mse']:.4f}, RMSE: {pruning_results['improvement_rmse']:.4f}")
+                    print(f"  - Features removed: {len(pruning_results['removed_features'])}")
+                    print(f"  - Reduction: {pruning_results['reduction_percentage']:.1f}%")
             
             
         except Exception as e:
@@ -713,8 +802,8 @@ if __name__ == '__main__':
     
     # Default: Run complete pipeline for all models with both pruning methods
     results = run_experiment_one_complete(
-        models_to_process=None,
-        run_training=False,
-        pruning_method='both'
+        models_to_process=['vgg19', 'resnet152', 'densenet161','efefficientnetb3','barlowtwins'],
+        run_pruning=False,
     )
+
 
