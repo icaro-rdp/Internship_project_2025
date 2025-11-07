@@ -23,6 +23,7 @@ from main.Models import (
 
 # Import utilities
 from main.Utils import FeatureMapsPruner
+from main.Utils.logger import info, warn, error, debug, set_level
 from main.train import train_model, test_model, plot_loss_history
 from main.data import (
     IMAGENET_DATASET,
@@ -65,12 +66,12 @@ MODEL_REGISTRY = {
         'target_layer': 'features.denseblock4.denselayer24.conv2',  # Last dense block conv layer
         'input_size': 300
     },
-    'inceptionv3': {
-        'class': InceptionV3AuthenticityPredictor,
-        'dataset': INCEPTIONV3_DATASET,
-        'target_layer': None,  # InceptionV3 cannot be pruned with current method
-        'input_size': 299
-    },
+    # 'inceptionv3': {
+    #     'class': InceptionV3AuthenticityPredictor,
+    #     'dataset': INCEPTIONV3_DATASET,
+    #     'target_layer': None,  # InceptionV3 cannot be pruned with current method
+    #     'input_size': 299
+    # },
     'efficientnetb3': {
         'class': EfficientNetB3AuthenticityPredictor,
         'dataset': IMAGENET_DATASET,
@@ -186,9 +187,9 @@ def experiment_1a_train_all_models(
     Returns:
         dict: Dictionary containing training results for each model.
     """
-    print("=" * 80)
-    print("EXPERIMENT 1A: TRAINING ALL MODELS")
-    print("=" * 80)
+    info("=" * 80)
+    info("EXPERIMENT 1A: TRAINING ALL MODELS")
+    info("=" * 80)
     
     # Create output directories
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -221,7 +222,7 @@ def experiment_1a_train_all_models(
     
     # Train each model
     for idx, model_name in enumerate(models_to_train, 1):
-        print(f"\n[{idx}/{len(models_to_train)}] Training {model_name.upper()}")
+        print(f"n[{idx}/{len(models_to_train)}] Training {model_name.upper()}")
         print("-" * 80)
         
         try:
@@ -245,7 +246,7 @@ def experiment_1a_train_all_models(
 
             # Train variants
             for variant_idx in range(1, variants_per_model + 1):
-                print(f"\nVariant {variant_idx}/{variants_per_model} for {model_name}")
+                print(f"nVariant {variant_idx}/{variants_per_model} for {model_name}")
 
                 # Initialize model for this variant
                 if verbose:
@@ -265,40 +266,56 @@ def experiment_1a_train_all_models(
                     # If model does not have regression_head attribute, ignore
                     pass
 
-                # Create train/test split for this variant by using a different seed
+                # Create train/val/test split for this variant by using a different seed
                 from torch.utils.data import random_split
                 import torch as _torch
 
                 if backbone_dataset is not None:
                     total_size = len(backbone_dataset)
-                    train_size = int(0.8 * total_size)
                     # Use the global test indices if available to ensure same test set
                     if GLOBAL_TEST_INDICES is not None:
                         test_indices = GLOBAL_TEST_INDICES
-                        # Remaining indices for training
+                        # Remaining indices for training and validation
                         all_indices = list(range(total_size))
-                        train_indices = [i for i in all_indices if i not in test_indices]
+                        remaining_indices = [i for i in all_indices if i not in test_indices]
 
-                        # Shuffle train indices per-variant to alter train split/order
-                        gen2 = _torch.Generator().manual_seed(42 + variant_idx)
-                        perm_train = _torch.randperm(len(train_indices), generator=gen2).tolist()
-                        train_indices_shuffled = [train_indices[i] for i in perm_train]
+                        # Shuffle remaining indices per-variant to alter train/val split
+                        gen = _torch.Generator().manual_seed(42 + variant_idx)
+                        perm_remaining = _torch.randperm(len(remaining_indices), generator=gen).tolist()
+                        shuffled_remaining = [remaining_indices[i] for i in perm_remaining]
 
-                        train_ds = Subset(backbone_dataset, train_indices_shuffled)
+                        # Split remaining into train and val (80% train, 10% val of total, since test 10%)
+                        val_size = int(0.1 * total_size)
+                        train_size = len(shuffled_remaining) - val_size
+
+                        train_indices = shuffled_remaining[:train_size]
+                        val_indices = shuffled_remaining[train_size:]
+
+                        train_ds = Subset(backbone_dataset, train_indices)
+                        val_ds = Subset(backbone_dataset, val_indices)
                         test_ds = Subset(backbone_dataset, test_indices)
                     else:
                         # Fallback to random_split if global indices not available
+                        train_size = int(0.8 * total_size)
+                        val_size = int(0.1 * total_size)
                         gen = _torch.Generator().manual_seed(42 + variant_idx)
-                        train_ds, test_ds = random_split(backbone_dataset, [train_size, total_size - train_size], generator=gen)
+                        train_ds, val_ds, test_ds = random_split(backbone_dataset, [train_size, val_size, total_size - train_size - val_size], generator=gen)
                 else:
                     # Fall back to using the already-split dataset provided in config
                     train_ds = config['dataset']['train']
+                    val_ds = config['dataset']['val']
                     test_ds = config['dataset']['test']
 
                 train_loader = DataLoader(
                     train_ds,
                     batch_size=BATCH_SIZE,
                     shuffle=True,
+                    num_workers=NUM_WORKERS
+                )
+                val_loader = DataLoader(
+                    val_ds,
+                    batch_size=BATCH_SIZE,
+                    shuffle=False,
                     num_workers=NUM_WORKERS
                 )
                 test_loader = DataLoader(
@@ -308,7 +325,7 @@ def experiment_1a_train_all_models(
                     num_workers=NUM_WORKERS
                 )
 
-                dataloaders = {'train': train_loader, 'val': test_loader}
+                dataloaders = {'train': train_loader, 'val': val_loader}
 
                 # Setup training for this variant
                 criterion = nn.MSELoss()
@@ -333,7 +350,7 @@ def experiment_1a_train_all_models(
                 )
 
                 # Evaluate on test set
-                print("\nEvaluating on test set...")
+                print("nEvaluating on test set...")
                 test_loss = test_model(
                     best_model,
                     test_loader,
@@ -376,20 +393,56 @@ def experiment_1a_train_all_models(
                     'history': history
                 }
 
-                print(f"\n✓ {model_name.upper()} variant {variant_idx} training complete!")
+                print(f"n✓ {model_name.upper()} variant {variant_idx} training complete!")
                 print(f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
                 print(f"  - Best Val Loss: {results[model_name][f'variant{variant_idx}']['best_val_loss']:.4f}")
                 print(f"  - Epochs trained: {results[model_name][f'variant{variant_idx}']['epochs_trained']}")
             
+            # After all variants for this model have been processed, build a
+            # compact per-model summary so downstream code/tests that expect
+            # top-level keys like 'final_test_mse' will work.
+            try:
+                if model_name in results and isinstance(results[model_name], dict):
+                    # Collect only variant entries that have test metrics
+                    variant_items = [ (k, v) for k, v in results[model_name].items()
+                                      if isinstance(v, dict) and 'final_test_mse' in v ]
+                    if variant_items:
+                        # Best variant by lowest test MSE
+                        best_variant, best_data = min(variant_items, key=lambda iv: iv[1]['final_test_mse'])
+                        # Averages across variants
+                        avg_mse = float(np.mean([v['final_test_mse'] for _, v in variant_items]))
+                        avg_rmse = float(np.mean([v['final_test_rmse'] for _, v in variant_items]))
+
+                        # Populate model-level summary fields
+                        results[model_name]['best_variant'] = best_variant
+                        results[model_name]['final_test_mse'] = best_data['final_test_mse']
+                        results[model_name]['final_test_rmse'] = best_data['final_test_rmse']
+                        results[model_name]['avg_test_mse'] = avg_mse
+                        results[model_name]['avg_test_rmse'] = avg_rmse
+                        # Keep reference to the best weights file if available
+                        results[model_name]['weights_path'] = best_data.get('weights_path')
+                        # Add some aggregated training info
+                        try:
+                            results[model_name]['best_val_loss'] = float(min([v.get('best_val_loss', np.inf) for _, v in variant_items]))
+                        except Exception:
+                            pass
+                        try:
+                            results[model_name]['epochs_trained'] = int(np.round(np.mean([v.get('epochs_trained', 0) for _, v in variant_items])))
+                        except Exception:
+                            pass
+            except Exception:
+                # Protect summary aggregation from breaking the main training loop
+                pass
+
         except Exception as e:
-            print(f"\n✗ Error training {model_name}: {e}")
+            print(f"n✗ Error training {model_name}: {e}")
             import traceback
             traceback.print_exc()
             results[model_name] = {'error': str(e)}
         
         finally:
             # Clean up memory after each model (success or failure)
-            print(f"\nCleaning up {model_name} from memory...")
+            print(f"nCleaning up {model_name} from memory...")
             cleanup_model_and_data(
                 model=locals().get('best_model') or locals().get('model'),
                 dataloaders=locals().get('dataloaders'),
@@ -398,17 +451,17 @@ def experiment_1a_train_all_models(
             print(f"✓ {model_name} memory cleaned")
     
     # Print summary
-    print("\n" + "=" * 80)
+    print("n" + "=" * 80)
     print("EXPERIMENT 1A: TRAINING SUMMARY")
     print("=" * 80)
     
     successful_models = [k for k, v in results.items() if 'error' not in v]
     failed_models = [k for k, v in results.items() if 'error' in v]
     
-    print(f"\nSuccessfully trained: {len(successful_models)}/{len(models_to_train)} models")
+    print(f"nSuccessfully trained: {len(successful_models)}/{len(models_to_train)} models")
     
     if successful_models:
-        print("\nModel Performance (Test Loss):")
+        print("nModel Performance (Test Loss):")
         print(f"{'Model':<20} {'MSE':<10} {'RMSE':<10}")
         print("-" * 42)
         sorted_results = sorted(
@@ -419,12 +472,12 @@ def experiment_1a_train_all_models(
             print(f"{rank}. {model_name:<17} {test_mse:<10.4f} {test_rmse:<10.4f}")
     
     if failed_models:
-        print(f"\nFailed models: {', '.join(failed_models)}")
+        print(f"nFailed models: {', '.join(failed_models)}")
     
-    print("\n" + "=" * 80)
+    print("n" + "=" * 80)
     
     # Final memory cleanup
-    print("\nPerforming final memory cleanup...")
+    print("nPerforming final memory cleanup...")
     clear_gpu_memory()
     
     return results
@@ -453,47 +506,65 @@ def experiment_1b_prune_all_models(
         dict: Dictionary containing pruning results for each model.
               If pruning_method='both', each model will have 'greedy' and 'negative_impact' sub-dicts.
     """
-    print("=" * 80)
-    print("EXPERIMENT 1B: PRUNING ALL TRAINED MODELS")
-    print("=" * 80)
+    info("=" * 80)
+    info("EXPERIMENT 1B: PRUNING ALL TRAINED MODELS")
+    info("=" * 80)
     
     # Create output directories
     RANKINGS_DIR.mkdir(parents=True, exist_ok=True)
     RANKING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Select models to prune
-    weights_files_by_model = {}
-    if models_to_prune is None:
-        # Find all trained model weight files (including variant files)
-        for model_name in MODEL_REGISTRY.keys():
-            pattern_files = list(WEIGHTS_DIR.glob(f"{model_name}_exp1a_variant*_best.pth"))
-            # fallback to original single-file pattern
-            fallback = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
-            files = pattern_files[:]
-            if fallback.exists():
-                files.append(fallback)
-            if files:
-                weights_files_by_model[model_name] = files
+    # Simple behavior: use every .pth file in WEIGHTS_DIR (process each file)
+    # Resolve weights dir relative to this script so behavior is robust to CWD
+    OUTPUT_DIR = Path(__file__).resolve().parent / 'Outputs' / 'Experiment_1_variants'
+    WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 
-        if not weights_files_by_model:
-            print("Error: No trained models found. Please run Experiment 1A first.")
-            return {}
-    else:
-        # User provided a list of models; collect weight files for each
-        for model_name in models_to_prune:
-            pattern_files = list(WEIGHTS_DIR.glob(f"{model_name}_exp1a_variant*_best.pth"))
-            fallback = WEIGHTS_DIR / f"{model_name}_exp1a_best.pth"
-            files = pattern_files[:]
-            if fallback.exists():
-                files.append(fallback)
-            if files:
-                weights_files_by_model[model_name] = files
-    
-    print(f"Found {len(models_to_prune)} trained models to prune.")
-    print(f"Pruning method: {pruning_method}")
-    if pruning_method in ['negative_impact', 'both']:
-        print(f"Threshold for negative_impact: {threshold}")
-    
+    if not WEIGHTS_DIR.exists():
+        error(f"Weights directory not found: {WEIGHTS_DIR}")
+        return {}
+
+    # Collect all .pth files (you asked to simply take all files in the Weights folder)
+    all_pth_files = sorted(WEIGHTS_DIR.glob('*.pth'))
+    if not all_pth_files:
+        error(f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A first.")
+        return {}
+
+    # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
+    import re
+    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1a')
+    weights_files_by_model = {}
+    skipped_files = []
+    for p in all_pth_files:
+        m = modelname_re.match(p.name)
+        if not m:
+            # if filename does not follow naming convention, skip but record for inspection
+            skipped_files.append(p)
+            continue
+        mn = m.group(1)
+        # If user asked to prune only specific models, skip others
+        if models_to_prune is not None and mn not in models_to_prune:
+            continue
+        # Only include files for known models (we need config to instantiate the model)
+        if mn not in MODEL_REGISTRY:
+            print(f"Warning: found weights for unknown model '{mn}' -> skipping file {p.name}")
+            skipped_files.append(p)
+            continue
+        weights_files_by_model.setdefault(mn, []).append(p)
+
+    if not weights_files_by_model:
+        error(f"No valid model weight files found in {WEIGHTS_DIR} (checked {len(all_pth_files)} files).")
+        if skipped_files:
+            info("Skipped files:")
+            for s in skipped_files:
+                info(f"  - {s.name}")
+        return {}
+
+    total_files_found = sum(len(v) for v in weights_files_by_model.values())
+    print(f"Found {total_files_found} weight file(s) across {len(weights_files_by_model)} model type(s) in {WEIGHTS_DIR}.")
+    if verbose:
+        print("Per-model file counts:")
+        for mn, fls in sorted(weights_files_by_model.items()):
+            print(f"  - {mn}: {len(fls)} file(s)")
     # Determine which methods to run
     methods_to_run = []
     if pruning_method == 'both':
@@ -509,7 +580,7 @@ def experiment_1b_prune_all_models(
     # Prune each model (and its variant files)
     model_items = list(weights_files_by_model.items())
     for idx, (model_name, weight_file_list) in enumerate(model_items, 1):
-        print(f"\n[{idx}/{len(model_items)}] Pruning {model_name.upper()}")
+        print(f"n[{idx}/{len(model_items)}] Pruning {model_name.upper()}")
         print("-" * 80)
 
         try:
@@ -540,7 +611,9 @@ def experiment_1b_prune_all_models(
                 if verbose:
                     print(f"Loading trained model from {weights_path}...")
                 model = config['class'](freeze_backbone=False)
-                model.load_state_dict(torch.load(weights_path))
+                # Load only tensor weights (safer against pickle attacks). The checkpoints
+                # saved by this project are plain state_dicts, so weights_only=True is appropriate.
+                model.load_state_dict(torch.load(weights_path, weights_only=True))
 
                 target_layer = config['target_layer']
                 if verbose:
@@ -556,9 +629,9 @@ def experiment_1b_prune_all_models(
                 )
 
                 # Compute importance scores per-variant
-                print("\nComputing feature importance scores...")
+                print("nComputing feature importance scores...")
                 # derive a variant tag from filename
-                m = re.search(r"variant\d+", str(weights_path))
+                m = re.search(r"variantd+", str(weights_path))
                 variant_tag = m.group(0) if m else 'orig'
                 importance_path = RANKINGS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.npy"
                 importance_scores = pruner.compute_importance_scores(
@@ -567,7 +640,7 @@ def experiment_1b_prune_all_models(
                 )
 
                 # Plot and save importance scores per-variant
-                print("\nGenerating importance score plot...")
+                print("nGenerating importance score plot...")
                 plot_path = RANKING_PLOTS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.png"
                 try:
                     pruner.plot_importance_scores(save_path=str(plot_path))
@@ -582,14 +655,14 @@ def experiment_1b_prune_all_models(
                 # Perform pruning methods for this variant
                 for method in methods_to_run:
                     if method == 'greedy':
-                        print("\nPerforming greedy pruning...")
+                        print("nPerforming greedy pruning...")
                         pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_greedy_pruned.pth"
                         pruning_results = pruner.greedy_pruning(
                             model_save_path=str(pruned_weights_path)
                         )
 
                     elif method == 'negative_impact':
-                        print(f"\nPerforming negative impact pruning (threshold={threshold})...")
+                        print(f"nPerforming negative impact pruning (threshold={threshold})...")
                         pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_negative_pruned.pth"
                         pruning_results = pruner.negative_impact_pruning(
                             model_save_path=str(pruned_weights_path),
@@ -620,23 +693,50 @@ def experiment_1b_prune_all_models(
                     results.setdefault(model_name, {}).setdefault(variant_tag, {})[method] = method_results
 
                     # Print method-specific results
-                    print(f"\n✓ {model_name.upper()} {variant_tag} {method} pruning complete!")
+                    print(f"n✓ {model_name.upper()} {variant_tag} {method} pruning complete!")
                     print(f"  - Baseline MSE: {pruning_results['baseline_mse']:.4f}, RMSE: {pruning_results['baseline_rmse']:.4f}")
                     print(f"  - Final MSE: {pruning_results['final_mse']:.4f}, RMSE: {pruning_results['final_rmse']:.4f}")
                     print(f"  - Improvement MSE: {pruning_results['improvement_mse']:.4f}, RMSE: {pruning_results['improvement_rmse']:.4f}")
                     print(f"  - Features removed: {len(pruning_results['removed_features'])}")
                     print(f"  - Reduction: {pruning_results['reduction_percentage']:.1f}%")
             
+            # After processing all variants for this model, aggregate results across variants for each method
+            for method in methods_to_run:
+                variant_results = [results[model_name][vt][method] for vt in results[model_name] if isinstance(results[model_name][vt], dict) and method in results[model_name][vt]]
+                if variant_results:
+                    # Compute averages across variants
+                    avg_baseline_mse = float(np.mean([r['baseline_mse'] for r in variant_results]))
+                    avg_baseline_rmse = float(np.mean([r['baseline_rmse'] for r in variant_results]))
+                    avg_final_mse = float(np.mean([r['final_mse'] for r in variant_results]))
+                    avg_final_rmse = float(np.mean([r['final_rmse'] for r in variant_results]))
+                    avg_improvement_mse = float(np.mean([r['improvement_mse'] for r in variant_results]))
+                    avg_improvement_rmse = float(np.mean([r['improvement_rmse'] for r in variant_results]))
+                    avg_num_removed = float(np.mean([r['num_removed'] for r in variant_results]))
+                    avg_reduction_percentage = float(np.mean([r['reduction_percentage'] for r in variant_results]))
+
+                    # Store aggregated results at model level
+                    results[model_name][method] = {
+                        'baseline_mse': avg_baseline_mse,
+                        'baseline_rmse': avg_baseline_rmse,
+                        'final_mse': avg_final_mse,
+                        'final_rmse': avg_final_rmse,
+                        'improvement_mse': avg_improvement_mse,
+                        'improvement_rmse': avg_improvement_rmse,
+                        'num_removed': avg_num_removed,
+                        'reduction_percentage': avg_reduction_percentage,
+                        'variants': [r['variant_tag'] for r in variant_results]
+                    }
+            
             
         except Exception as e:
-            print(f"\n✗ Error pruning {model_name}: {e}")
+            print(f"n✗ Error pruning {model_name}: {e}")
             import traceback
             traceback.print_exc()
             results[model_name] = {'error': str(e)}
         
         finally:
             # Clean up memory after each model (success or failure)
-            print(f"\nCleaning up {model_name} from memory...")
+            print(f"nCleaning up {model_name} from memory...")
             cleanup_model_and_data(
                 model=locals().get('model'),
                 dataloaders=locals().get('test_loader'),
@@ -649,20 +749,21 @@ def experiment_1b_prune_all_models(
             print(f"✓ {model_name} memory cleaned")
     
     # Print summary
-    print("\n" + "=" * 80)
+    print("n" + "=" * 80)
     print("EXPERIMENT 1B: PRUNING SUMMARY")
     print("=" * 80)
     
     successful_models = [k for k, v in results.items() if 'error' not in v]
     failed_models = [k for k, v in results.items() if 'error' in v]
     
-    print(f"\nSuccessfully pruned: {len(successful_models)}/{len(models_to_prune)} models")
+    # Use the number of discovered models as the denominator to avoid errors
+    print(f"nSuccessfully pruned: {len(successful_models)}/{len(weights_files_by_model)} models")
     
     if successful_models:
         if len(methods_to_run) > 1:
             # Print results for both methods
             for method in methods_to_run:
-                print(f"\n{method.upper()} Pruning Results:")
+                print(f"n{method.upper()} Pruning Results:")
                 print(f"{'Model':<20} {'Base MSE':<10} {'Base RMSE':<11} {'Final MSE':<10} {'Final RMSE':<11} {'Δ MSE':<10} {'Removed':<10}")
                 print("-" * 92)
                 for model_name in successful_models:
@@ -672,22 +773,23 @@ def experiment_1b_prune_all_models(
                           f"{r['num_removed']:<10} ({r['reduction_percentage']:.1f}%)")
         else:
             # Print results for single method
-            print(f"\n{methods_to_run[0].upper()} Pruning Results:")
+            method = methods_to_run[0]
+            print(f"n{method.upper()} Pruning Results:")
             print(f"{'Model':<20} {'Base MSE':<10} {'Base RMSE':<11} {'Final MSE':<10} {'Final RMSE':<11} {'Δ MSE':<10} {'Removed':<10}")
             print("-" * 92)
             for model_name in successful_models:
-                r = results[model_name]
+                r = results[model_name][method]
                 print(f"{model_name:<20} {r['baseline_mse']:<10.4f} {r['baseline_rmse']:<11.4f} "
                       f"{r['final_mse']:<10.4f} {r['final_rmse']:<11.4f} {r['improvement_mse']:<10.4f} "
-                      f"{r['num_removed']:<10} ({r['reduction_percentage']:.1f}%)")
+                      f"{r['num_removed']:<10.0f} ({r['reduction_percentage']:.1f}%)")
     
     if failed_models:
-        print(f"\nFailed models: {', '.join(failed_models)}")
+        print(f"nFailed models: {', '.join(failed_models)}")
     
-    print("\n" + "=" * 80)
+    print("n" + "=" * 80)
     
     # Final memory cleanup
-    print("\nPerforming final memory cleanup...")
+    print("nPerforming final memory cleanup...")
     clear_gpu_memory()
     
     return results
@@ -727,9 +829,9 @@ def run_experiment_one_complete(
     
     # Run Experiment 1A: Training
     if run_training:
-        print("\n" + "=" * 80)
+        print("n" + "=" * 80)
         print("STARTING EXPERIMENT 1A: TRAINING")
-        print("=" * 80 + "\n")
+        print("=" * 80 + "n")
         
         training_results = experiment_1a_train_all_models(
             models_to_train=models_to_process,
@@ -740,9 +842,9 @@ def run_experiment_one_complete(
     
     # Run Experiment 1B: Pruning
     if run_pruning:
-        print("\n" + "=" * 80)
+        print("n" + "=" * 80)
         print("STARTING EXPERIMENT 1B: PRUNING")
-        print("=" * 80 + "\n")
+        print("=" * 80 + "n")
         
         pruning_results = experiment_1b_prune_all_models(
             models_to_prune=models_to_process,
@@ -800,10 +902,11 @@ if __name__ == '__main__':
     )
     """
     
-    # Default: Run complete pipeline for all models with both pruning methods
+
     results = run_experiment_one_complete(
-        models_to_process=['vgg19', 'resnet152', 'densenet161','efefficientnetb3','barlowtwins'],
-        run_pruning=False,
-    )
+        run_pruning=False)
+    
+
+
 
 

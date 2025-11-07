@@ -88,7 +88,9 @@ def test_train_only():
                     # Instantiate model, load weights, and evaluate with additional metrics
                     model_cls = experiment_one.MODEL_REGISTRY['vgg16']['class']
                     model = model_cls(freeze_backbone=False)
-                    model.load_state_dict(torch.load(weights_path))
+                    # The test environment loads saved state_dicts; use weights_only=True to avoid
+                    # unpickling arbitrary objects (matches how state_dicts are saved in this repo).
+                    model.load_state_dict(torch.load(weights_path, weights_only=True))
 
                     dataset = experiment_one.MODEL_REGISTRY['vgg16']['dataset']
                     test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
@@ -192,7 +194,8 @@ def test_complete_pipeline():
                 if weights_path:
                     model_cls = experiment_one.MODEL_REGISTRY['vgg16']['class']
                     model = model_cls(freeze_backbone=False)
-                    model.load_state_dict(torch.load(weights_path))
+                    # Load only tensor weights from saved state_dict
+                    model.load_state_dict(torch.load(weights_path, weights_only=True))
 
                     dataset = experiment_one.MODEL_REGISTRY['vgg16']['dataset']
                     test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)

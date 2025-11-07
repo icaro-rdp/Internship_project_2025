@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-def print_model_structure():
+def print_model_structure(models_to_print=None):
     """Print the structure of all models."""
     
     try:
@@ -34,25 +34,33 @@ def print_model_structure():
         inceptionv3 = InceptionV3AuthenticityPredictor()
         efficientnetb3 = EfficientNetB3AuthenticityPredictor()
         barlowtwins = BarlowTwinsAuthenticityPredictor()
-        print("\nModel Structures:")
-        # print("\nVGG16AuthenticityPredictor:\n", vgg16)
-        # print("\nVGG19AuthenticityPredictor:\n", vgg19)
-        # print("\nResNet152AuthenticityPredictor:\n", resnet152)
-        # print("\nDenseNet161AuthenticityPredictor:\n", densenet161)
-        # print("\nInceptionV3AuthenticityPredictor:\n", inceptionv3)
-        print("\nEfficientNetB3AuthenticityPredictor:\n", efficientnetb3)
-        # print("\nBarlowTwinsAuthenticityPredictor:\n", barlowtwins)
         
+        models = {
+            'VGG16': vgg16,
+            'VGG19': vgg19,
+            'ResNet152': resnet152,
+            'DenseNet161': densenet161,
+            'InceptionV3': inceptionv3,
+            'EfficientNetB3': efficientnetb3,
+            'BarlowTwins': barlowtwins
+        }
+
+        for model_name, model in models.items():
+            if models_to_print and model_name not in models_to_print:
+                continue
+            print(f"\nModel Structure: {model_name}")
+            print(model)
+
         return True
     except Exception as e:
-        print(f"✗ Model import failed: {e}")
+        print(f"✗ Error importing models: {e}")    
         return False
 
 
 if __name__ == '__main__':
-    print("Testing model imports and structures...")
-    success = print_model_structure()
+    # Specify models to print or None for all
+    success = print_model_structure(models_to_print=None)
     if success:
-        print("\n✓ Model structure printed successfully")
+        print("\nAll model structures printed successfully.")
     else:
-        print("\n✗ Failed to print model structure")
+        print("\nFailed to print some model structures.")

@@ -134,7 +134,8 @@ def evaluate_command(args):
     
     # Load weights
     if args.weights:
-        model.load_state_dict(torch.load(args.weights))
+        # Load only tensor weights (safer). The CLI expects a state_dict saved via torch.save(model.state_dict()).
+        model.load_state_dict(torch.load(args.weights, weights_only=True))
         print(f"Loaded weights from: {args.weights}")
     else:
         print("Warning: No weights specified, using randomly initialized model")

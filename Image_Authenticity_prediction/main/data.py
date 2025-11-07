@@ -6,7 +6,7 @@ from PIL import Image
 import os
 from pathlib import Path
 import numpy as np
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 from typing import Optional, Tuple, Callable, Dict, Union
 from torch import Tensor
 
@@ -115,42 +115,60 @@ denseNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(csv_file_n
 # Set seed reproducibility
 GENERATOR: torch.Generator = torch.Generator().manual_seed(42)
 torch.manual_seed(42)
-torch.cuda.manual_seed(42) 
+torch.cuda.manual_seed(42)
 np.random.seed(42)
 
-imagenet_total_size: int = len(imageNet_dataset)
-imagenet_train_size: int = int(0.8 * imagenet_total_size)
-imagenet_test_size: int = imagenet_total_size - imagenet_train_size
+# Create a single deterministic 3-way split (train / val / test) and apply the
+# same indices to all dataset variants so that comparisons across models are
+# performed on identical data points. Fractions are configurable below.
+TRAIN_FRAC = 0.8
+VAL_FRAC = 0.1
+TEST_FRAC = 0.1
 
-imagenet_train_ds, imagenet_test_ds = random_split(
-    imageNet_dataset,
-    [imagenet_train_size, imagenet_test_size],
-    generator=GENERATOR 
-)
+total_size: int = len(imageNet_dataset)
+if total_size != len(denseNet_dataset):
+    # The two datasets are expected to be created from the same CSV; if they
+    # differ in size something is wrong — fail early with a helpful message.
+    raise ValueError(
+        f"Dataset size mismatch: imageNet_dataset={len(imageNet_dataset)} vs denseNet_dataset={len(denseNet_dataset)}"
+    )
 
+train_size = int(TRAIN_FRAC * total_size)
+val_size = int(VAL_FRAC * total_size)
+# Remaining elements go to test to ensure sum of sizes equals total
+test_size = total_size - train_size - val_size
 
-densenet_total_size: int = len(denseNet_dataset)
-densenet_train_size: int = int(0.8 * densenet_total_size)
-densenet_test_size: int = densenet_total_size - densenet_train_size
+# Build one deterministic permutation of indices and slice it
+perm = torch.randperm(total_size, generator=GENERATOR).tolist()
+train_idx = perm[:train_size]
+val_idx = perm[train_size:train_size + val_size]
+test_idx = perm[train_size + val_size:]
 
-densenet_train_ds, densenet_test_ds = random_split(
-    denseNet_dataset,
-    [densenet_train_size, densenet_test_size],
-    generator=GENERATOR 
-)
+from torch.utils.data import Subset
+
+imagenet_train_ds = Subset(imageNet_dataset, train_idx)
+imagenet_val_ds = Subset(imageNet_dataset, val_idx)
+imagenet_test_ds = Subset(imageNet_dataset, test_idx)
+
+densenet_train_ds = Subset(denseNet_dataset, train_idx)
+densenet_val_ds = Subset(denseNet_dataset, val_idx)
+densenet_test_ds = Subset(denseNet_dataset, test_idx)
 
 IMAGENET_DATASET: Dict[str, Dataset] = {
     'train': imagenet_train_ds,
+    'val': imagenet_val_ds,
     'test': imagenet_test_ds
 }
 
 DENSENET_DATASET: Dict[str, Dataset] = {
     'train': densenet_train_ds,
+    'val': densenet_val_ds,
     'test': densenet_test_ds
 }
 
 INCEPTIONV3_DATASET: Dict[str, Dataset] = {
     'train': densenet_train_ds,
+    'val': densenet_val_ds,
     'test': densenet_test_ds
 }
 
