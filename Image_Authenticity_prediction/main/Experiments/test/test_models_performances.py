@@ -226,11 +226,13 @@ def test_models_on_testset():
 
 if __name__ == '__main__':
     # Allow running as a standalone script
-    WEIGHTS_PATH = project_root / 'main' / 'Experiments'/'Outputs'/'Experiment_1_variants' / 'Weights'
+    WEIGHTS_PATH = project_root / 'main' / 'Experiments'/'Outputs'/'Experiment_1' / 'Weights'
     s = evaluate_weights_on_testset(WEIGHTS_PATH)
     # Save detailed summary next to weights for later inspection
     out_path = WEIGHTS_PATH.parent / 'models_test_summary.json'
     with open(out_path, 'w') as fh:
         json.dump(s, fh, indent=2)
     print(f"\nSaved detailed summary to: {out_path}")
+    
+
     

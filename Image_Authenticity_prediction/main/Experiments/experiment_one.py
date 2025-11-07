@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import gc
+import time
 
 # Add main package to path - go up from  Experiments/ -> main/ -> Image_Authenticity_prediction/
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -16,7 +17,6 @@ from main.Models import (
     VGG19AuthenticityPredictor,
     ResNet152AuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
-    InceptionV3AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
     BarlowTwinsAuthenticityPredictor
 )
@@ -28,7 +28,6 @@ from main.train import train_model, test_model, plot_loss_history
 from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
-    INCEPTIONV3_DATASET,
     BATCH_SIZE,
     NUM_WORKERS,
     imageNet_dataset,
@@ -173,7 +172,8 @@ def cleanup_model_and_data(model, dataloaders=None, optimizer=None):
 def experiment_1a_train_all_models(
     models_to_train=None,
     save_plots=True,
-    verbose=True
+    verbose=True,
+    global_test_indices=None
 ):
     """
     Experiment 1A: Train all model architectures with early stopping.
@@ -183,6 +183,8 @@ def experiment_1a_train_all_models(
                                          If None, trains all models.
         save_plots (bool): Whether to save training history plots.
         verbose (bool): Whether to print detailed progress.
+        global_test_indices (list, optional): Pre-defined global test indices.
+                                              If None, creates them internally.
     
     Returns:
         dict: Dictionary containing training results for each model.
@@ -203,15 +205,18 @@ def experiment_1a_train_all_models(
     # all models and variants. We derive it from the imageNet_dataset length
     # (both imageNet_dataset and denseNet_dataset are built from the same CSV
     # so indices align).
-    try:
-        total_size = len(imageNet_dataset)
-        test_size = int(0.2 * total_size)
-        # Use seed 42 for global test selection as requested
-        gen_global = torch.Generator().manual_seed(42)
-        perm = torch.randperm(total_size, generator=gen_global).tolist()
-        GLOBAL_TEST_INDICES = perm[:test_size]
-    except Exception:
-        GLOBAL_TEST_INDICES = None
+    if global_test_indices is None:
+        try:
+            total_size = len(imageNet_dataset)
+            test_size = int(0.2 * total_size)
+            # Use seed 42 for global test selection as requested
+            gen_global = torch.Generator().manual_seed(42)
+            perm = torch.randperm(total_size, generator=gen_global).tolist()
+            GLOBAL_TEST_INDICES = perm[:test_size]
+        except Exception:
+            GLOBAL_TEST_INDICES = None
+    else:
+        GLOBAL_TEST_INDICES = global_test_indices
 
     # Select models to train
     if models_to_train is None:
@@ -222,7 +227,7 @@ def experiment_1a_train_all_models(
     
     # Train each model
     for idx, model_name in enumerate(models_to_train, 1):
-        print(f"n[{idx}/{len(models_to_train)}] Training {model_name.upper()}")
+        print(f"\n[{idx}/{len(models_to_train)}] Training {model_name.upper()}")
         print("-" * 80)
         
         try:
@@ -246,7 +251,7 @@ def experiment_1a_train_all_models(
 
             # Train variants
             for variant_idx in range(1, variants_per_model + 1):
-                print(f"nVariant {variant_idx}/{variants_per_model} for {model_name}")
+                print(f"\nVariant {variant_idx}/{variants_per_model} for {model_name}")
 
                 # Initialize model for this variant
                 if verbose:
@@ -350,7 +355,7 @@ def experiment_1a_train_all_models(
                 )
 
                 # Evaluate on test set
-                print("nEvaluating on test set...")
+                print("\nEvaluating on test set...")
                 test_loss = test_model(
                     best_model,
                     test_loader,
@@ -393,7 +398,7 @@ def experiment_1a_train_all_models(
                     'history': history
                 }
 
-                print(f"n✓ {model_name.upper()} variant {variant_idx} training complete!")
+                print(f"\n✓ {model_name.upper()} variant {variant_idx} training complete!")
                 print(f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
                 print(f"  - Best Val Loss: {results[model_name][f'variant{variant_idx}']['best_val_loss']:.4f}")
                 print(f"  - Epochs trained: {results[model_name][f'variant{variant_idx}']['epochs_trained']}")
@@ -435,14 +440,14 @@ def experiment_1a_train_all_models(
                 pass
 
         except Exception as e:
-            print(f"n✗ Error training {model_name}: {e}")
+            print(f"\n✗ Error training {model_name}: {e}")
             import traceback
             traceback.print_exc()
             results[model_name] = {'error': str(e)}
         
         finally:
             # Clean up memory after each model (success or failure)
-            print(f"nCleaning up {model_name} from memory...")
+            print(f"\nCleaning up {model_name} from memory...")
             cleanup_model_and_data(
                 model=locals().get('best_model') or locals().get('model'),
                 dataloaders=locals().get('dataloaders'),
@@ -451,33 +456,40 @@ def experiment_1a_train_all_models(
             print(f"✓ {model_name} memory cleaned")
     
     # Print summary
-    print("n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("EXPERIMENT 1A: TRAINING SUMMARY")
     print("=" * 80)
     
-    successful_models = [k for k, v in results.items() if 'error' not in v]
+    # Collect all successful variants
+    all_variants = []
+    for model_name, model_results in results.items():
+        if 'error' in model_results:
+            continue
+        for variant_key, variant_data in model_results.items():
+            if isinstance(variant_data, dict) and 'final_test_mse' in variant_data:
+                all_variants.append((f"{model_name}_{variant_key}", variant_data['final_test_mse'], variant_data['final_test_rmse']))
+    
+    successful_variants = len(all_variants)
+    total_expected = len(models_to_train) * variants_per_model
     failed_models = [k for k, v in results.items() if 'error' in v]
     
-    print(f"nSuccessfully trained: {len(successful_models)}/{len(models_to_train)} models")
+    print(f"\nSuccessfully trained: {successful_variants}/{total_expected} variants")
     
-    if successful_models:
-        print("nModel Performance (Test Loss):")
-        print(f"{'Model':<20} {'MSE':<10} {'RMSE':<10}")
-        print("-" * 42)
-        sorted_results = sorted(
-            [(k, v['final_test_mse'], v['final_test_rmse']) for k, v in results.items() if 'error' not in v],
-            key=lambda x: x[1]  # Sort by MSE
-        )
-        for rank, (model_name, test_mse, test_rmse) in enumerate(sorted_results, 1):
-            print(f"{rank}. {model_name:<17} {test_mse:<10.4f} {test_rmse:<10.4f}")
+    if all_variants:
+        print("\nVariant Performance (Test Loss):")
+        print(f"{'Variant':<25} {'MSE':<10} {'RMSE':<10}")
+        print("-" * 47)
+        sorted_variants = sorted(all_variants, key=lambda x: x[1])  # Sort by MSE
+        for rank, (variant_name, test_mse, test_rmse) in enumerate(sorted_variants, 1):
+            print(f"{rank}. {variant_name:<22} {test_mse:<10.4f} {test_rmse:<10.4f}")
     
     if failed_models:
-        print(f"nFailed models: {', '.join(failed_models)}")
+        print(f"\nFailed models: {', '.join(failed_models)}")
     
-    print("n" + "=" * 80)
+    print("\n" + "=" * 80)
     
     # Final memory cleanup
-    print("nPerforming final memory cleanup...")
+    print("\nPerforming final memory cleanup...")
     clear_gpu_memory()
     
     return results
@@ -488,9 +500,10 @@ def experiment_1a_train_all_models(
 
 def experiment_1b_prune_all_models(
     models_to_prune=None,
-    pruning_method='both',
+    pruning_method='greedy',
     threshold=0.0,
-    verbose=True
+    verbose=True,
+    global_test_indices=None
 ):
     """
     Experiment 1B: Prune trained models using feature importance analysis.
@@ -501,6 +514,8 @@ def experiment_1b_prune_all_models(
         pruning_method (str): Pruning method to use ('greedy', 'negative_impact', or 'both').
         threshold (float): Threshold for negative_impact pruning (ignored for greedy).
         verbose (bool): Whether to print detailed progress.
+        global_test_indices (list, optional): Pre-defined global test indices.
+                                              If None, falls back to config dataset.
     
     Returns:
         dict: Dictionary containing pruning results for each model.
@@ -580,20 +595,50 @@ def experiment_1b_prune_all_models(
     # Prune each model (and its variant files)
     model_items = list(weights_files_by_model.items())
     for idx, (model_name, weight_file_list) in enumerate(model_items, 1):
-        print(f"n[{idx}/{len(model_items)}] Pruning {model_name.upper()}")
+        print(f"\n[{idx}/{len(model_items)}] Pruning {model_name.upper()}")
         print("-" * 80)
 
         try:
             config = MODEL_REGISTRY[model_name]
 
             # Prepare test loader (same for all variants unless dataset differs)
-            dataset = config['dataset']
-            test_loader = DataLoader(
-                dataset['test'],
-                batch_size=BATCH_SIZE,
-                shuffle=False,
-                num_workers=NUM_WORKERS
-            )
+            # Use global test indices if provided, else fallback to config dataset
+            if global_test_indices is not None:
+                # Determine the base full dataset for this model
+                backbone_dataset = None
+                if config['dataset'] is IMAGENET_DATASET:
+                    backbone_dataset = imageNet_dataset
+                elif config['dataset'] is DENSENET_DATASET:
+                    backbone_dataset = denseNet_dataset
+                else:
+                    backbone_dataset = None
+                
+                if backbone_dataset is not None:
+                    test_ds = Subset(backbone_dataset, global_test_indices)
+                    test_loader = DataLoader(
+                        test_ds,
+                        batch_size=BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=NUM_WORKERS
+                    )
+                else:
+                    # Fallback
+                    dataset = config['dataset']
+                    test_loader = DataLoader(
+                        dataset['test'],
+                        batch_size=BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=NUM_WORKERS
+                    )
+            else:
+                # Fallback to original
+                dataset = config['dataset']
+                test_loader = DataLoader(
+                    dataset['test'],
+                    batch_size=BATCH_SIZE,
+                    shuffle=False,
+                    num_workers=NUM_WORKERS
+                )
 
             # Setup criterion and device
             criterion = nn.MSELoss()
@@ -629,9 +674,9 @@ def experiment_1b_prune_all_models(
                 )
 
                 # Compute importance scores per-variant
-                print("nComputing feature importance scores...")
+                print("\nComputing feature importance scores...")
                 # derive a variant tag from filename
-                m = re.search(r"variantd+", str(weights_path))
+                m = re.search(r"variant\d+", str(weights_path))
                 variant_tag = m.group(0) if m else 'orig'
                 importance_path = RANKINGS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.npy"
                 importance_scores = pruner.compute_importance_scores(
@@ -640,7 +685,7 @@ def experiment_1b_prune_all_models(
                 )
 
                 # Plot and save importance scores per-variant
-                print("nGenerating importance score plot...")
+                print("\nGenerating importance score plot...")
                 plot_path = RANKING_PLOTS_DIR / f"{model_name}_exp1b_{variant_tag}_importance_scores.png"
                 try:
                     pruner.plot_importance_scores(save_path=str(plot_path))
@@ -655,14 +700,14 @@ def experiment_1b_prune_all_models(
                 # Perform pruning methods for this variant
                 for method in methods_to_run:
                     if method == 'greedy':
-                        print("nPerforming greedy pruning...")
+                        print("\nPerforming greedy pruning...")
                         pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_greedy_pruned.pth"
                         pruning_results = pruner.greedy_pruning(
                             model_save_path=str(pruned_weights_path)
                         )
 
                     elif method == 'negative_impact':
-                        print(f"nPerforming negative impact pruning (threshold={threshold})...")
+                        print(f"\nPerforming negative impact pruning (threshold={threshold})...")
                         pruned_weights_path = WEIGHTS_DIR / f"{model_name}_exp1b_{variant_tag}_negative_pruned.pth"
                         pruning_results = pruner.negative_impact_pruning(
                             model_save_path=str(pruned_weights_path),
@@ -693,7 +738,7 @@ def experiment_1b_prune_all_models(
                     results.setdefault(model_name, {}).setdefault(variant_tag, {})[method] = method_results
 
                     # Print method-specific results
-                    print(f"n✓ {model_name.upper()} {variant_tag} {method} pruning complete!")
+                    print(f"\n✓ {model_name.upper()} {variant_tag} {method} pruning complete!")
                     print(f"  - Baseline MSE: {pruning_results['baseline_mse']:.4f}, RMSE: {pruning_results['baseline_rmse']:.4f}")
                     print(f"  - Final MSE: {pruning_results['final_mse']:.4f}, RMSE: {pruning_results['final_rmse']:.4f}")
                     print(f"  - Improvement MSE: {pruning_results['improvement_mse']:.4f}, RMSE: {pruning_results['improvement_rmse']:.4f}")
@@ -729,14 +774,14 @@ def experiment_1b_prune_all_models(
             
             
         except Exception as e:
-            print(f"n✗ Error pruning {model_name}: {e}")
+            print(f"\n✗ Error pruning {model_name}: {e}")
             import traceback
             traceback.print_exc()
             results[model_name] = {'error': str(e)}
         
         finally:
             # Clean up memory after each model (success or failure)
-            print(f"nCleaning up {model_name} from memory...")
+            print(f"\nCleaning up {model_name} from memory...")
             cleanup_model_and_data(
                 model=locals().get('model'),
                 dataloaders=locals().get('test_loader'),
@@ -749,7 +794,7 @@ def experiment_1b_prune_all_models(
             print(f"✓ {model_name} memory cleaned")
     
     # Print summary
-    print("n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("EXPERIMENT 1B: PRUNING SUMMARY")
     print("=" * 80)
     
@@ -757,13 +802,13 @@ def experiment_1b_prune_all_models(
     failed_models = [k for k, v in results.items() if 'error' in v]
     
     # Use the number of discovered models as the denominator to avoid errors
-    print(f"nSuccessfully pruned: {len(successful_models)}/{len(weights_files_by_model)} models")
+    print(f"\nSuccessfully pruned: {len(successful_models)}/{len(weights_files_by_model)} models")
     
     if successful_models:
         if len(methods_to_run) > 1:
             # Print results for both methods
             for method in methods_to_run:
-                print(f"n{method.upper()} Pruning Results:")
+                print(f"\n{method.upper()} Pruning Results:")
                 print(f"{'Model':<20} {'Base MSE':<10} {'Base RMSE':<11} {'Final MSE':<10} {'Final RMSE':<11} {'Δ MSE':<10} {'Removed':<10}")
                 print("-" * 92)
                 for model_name in successful_models:
@@ -774,7 +819,7 @@ def experiment_1b_prune_all_models(
         else:
             # Print results for single method
             method = methods_to_run[0]
-            print(f"n{method.upper()} Pruning Results:")
+            print(f"\n{method.upper()} Pruning Results:")
             print(f"{'Model':<20} {'Base MSE':<10} {'Base RMSE':<11} {'Final MSE':<10} {'Final RMSE':<11} {'Δ MSE':<10} {'Removed':<10}")
             print("-" * 92)
             for model_name in successful_models:
@@ -784,12 +829,12 @@ def experiment_1b_prune_all_models(
                       f"{r['num_removed']:<10.0f} ({r['reduction_percentage']:.1f}%)")
     
     if failed_models:
-        print(f"nFailed models: {', '.join(failed_models)}")
+        print(f"\nFailed models: {', '.join(failed_models)}")
     
-    print("n" + "=" * 80)
+    print("\n" + "=" * 80)
     
     # Final memory cleanup
-    print("nPerforming final memory cleanup...")
+    print("\nPerforming final memory cleanup...")
     clear_gpu_memory()
     
     return results
@@ -822,6 +867,16 @@ def run_experiment_one_complete(
         dict: Dictionary containing results from both experiments.
               Structure: {'training': {...}, 'pruning': {...}}
     """
+    # Create global test indices to ensure consistency between training and pruning
+    try:
+        total_size = len(imageNet_dataset)
+        test_size = int(0.2 * total_size)
+        gen_global = torch.Generator().manual_seed(42)
+        perm = torch.randperm(total_size, generator=gen_global).tolist()
+        global_test_indices = perm[:test_size]
+    except Exception:
+        global_test_indices = None
+    
     results = {
         'training': None,
         'pruning': None
@@ -829,28 +884,30 @@ def run_experiment_one_complete(
     
     # Run Experiment 1A: Training
     if run_training:
-        print("n" + "=" * 80)
+        print("\n" + "=" * 80)
         print("STARTING EXPERIMENT 1A: TRAINING")
-        print("=" * 80 + "n")
+        print("=" * 80 + "\n")
         
         training_results = experiment_1a_train_all_models(
             models_to_train=models_to_process,
             save_plots=True,
-            verbose=True
+            verbose=True,
+            global_test_indices=global_test_indices
         )
         results['training'] = training_results
     
     # Run Experiment 1B: Pruning
     if run_pruning:
-        print("n" + "=" * 80)
+        print("\n" + "=" * 80)
         print("STARTING EXPERIMENT 1B: PRUNING")
-        print("=" * 80 + "n")
+        print("=" * 80 + "\n")
         
         pruning_results = experiment_1b_prune_all_models(
             models_to_prune=models_to_process,
             pruning_method=pruning_method,
             threshold=threshold,
-            verbose=True
+            verbose=True,
+            global_test_indices=global_test_indices
         )
         results['pruning'] = pruning_results
     
@@ -864,7 +921,7 @@ def run_experiment_one_complete(
 if __name__ == '__main__':
     
     """
-    Isntruction to run Experiment 1:
+    Instruction to run Experiment 1:
     ===========================================================================
     - cd to the Image_Authenticity_prediction/main/Experiments/ directory
     - activate your Python environment : conda activate <your_env>
@@ -902,11 +959,21 @@ if __name__ == '__main__':
     )
     """
     
-
-    results = run_experiment_one_complete(
-        run_pruning=False)
+    # Start timer
+    start_time = time.time()
     
-
-
-
-
+    results = run_experiment_one_complete(
+        run_training=True,
+        run_pruning=True,
+        pruning_method='both',
+        threshold=0.0
+    )
+    
+    # End timer and calculate elapsed time
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
+    # Format elapsed time as H:M:S
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print(f"\nTotal execution time: {int(hours):02d}:{int(minutes):02d}:{seconds:.2f}")
