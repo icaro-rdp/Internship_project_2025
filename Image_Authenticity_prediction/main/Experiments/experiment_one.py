@@ -1063,7 +1063,7 @@ def experiment_one_test_models(models_to_test=None, verbose=True,
                 if isinstance(variant_data, dict) and 'test_mse' in variant_data:
                     
                     # Parse variant_tag to separate variant from pruning type
-                    pruning_type = "N/A"
+                    pruning_type = "Baseline"
                     display_variant = variant_tag
                     
                     if "greedy_pruned" in variant_tag:
@@ -1233,10 +1233,11 @@ if __name__ == '__main__':
     # Start timer
     start_time = time.time()
     
+    # Change the following line to configure which parts to run your experiment
     results = run_experiment_one_complete(
-        models_to_process=['vgg19'],
         run_training=False,
-        run_pruning=True,
+        run_pruning=False,
+        run_testing=True,
     )
     
     # End timer and calculate elapsed time
