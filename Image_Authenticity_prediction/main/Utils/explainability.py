@@ -3,6 +3,8 @@ import torch
 import numpy as np
 import itertools
 import math
+from .normalization import normalize_data
+from .logger import info, warn, error, debug
 
 class GradCAM:
     """
@@ -16,6 +18,7 @@ class GradCAM:
         self.hooks = []
         self.model.eval()
         self.register_hooks()
+        self.relu = True
     
     def register_hooks(self):
         """ Attaches forward and backward hooks to the target layer. """
@@ -61,9 +64,13 @@ class GradCAM:
         
         # 2.5. Check if gradients and activations were captured
         if self.gradients is None:
-            raise RuntimeError("Gradients not captured. Check hook registration and target layer.")
+            msg = "Gradients not captured. Check hook registration and target layer."
+            warn(msg)
+            raise RuntimeError(msg)
         if self.activations is None:
-            raise RuntimeError("Activations not captured. Check hook registration.")
+            msg = "Activations not captured. Check hook registration."
+            warn(msg)
+            raise RuntimeError(msg)
         
         # 3. Get gradients and activations
         gradients = self.gradients.cpu().numpy()[0]  # (C, H_feat, W_feat)
@@ -78,11 +85,12 @@ class GradCAM:
             cam += w * activations[i, :, :]
         
         # 6. Apply ReLU
-        cam = np.maximum(cam, 0)
+        if self.relu:
+            cam = np.maximum(cam, 0)
         
         # 7. Resize CAM to original input image size 
         
-        # 7.1 Convert numpy array to tensor
+        #Convert numpy array to tensor
         cam_tensor = torch.tensor(cam)
         
         # Add batch (B=1) and channel (C=1) dimensions for interpolate
@@ -104,16 +112,18 @@ class GradCAM:
         # Shape is now (H, W)
         cam = cam_resized.squeeze().cpu().numpy()
         
-        # 8. Normalize CAM to [0, 1] for visualization
-        if cam.max() > cam.min():
-            cam = (cam - cam.min()) / (cam.max() - cam.min())
-        elif cam.max() != 0: 
-             cam = cam / cam.max()
-            
+        # 8. Normalize CAM
+        if self.relu:
+            cam = normalize_data(cam, min_range=0, max_range=1)
+        else:
+            cam = normalize_data(cam, min_range=-1, max_range=1)
+
+                 
         return cam
 
     def cleanup(self):
         """ Removes the hooks to free up resources. """
+        info("Removing GradCAM hooks.")
         for hook in self.hooks:
             hook.remove()
         self.hooks = []

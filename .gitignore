@@ -37,6 +37,7 @@ ENV/
 
 #Output directories
 */main/Experiments/Outputs/*
+Image_Authenticity_prediction/main/Experiments/Outputs
 
 # Model files and datasets
 Models/*/Weights

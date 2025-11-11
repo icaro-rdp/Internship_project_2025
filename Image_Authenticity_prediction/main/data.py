@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader, random_split, Subset
 from typing import Optional, Tuple, Callable, Dict, Union
 from torch import Tensor
 
-
 class ImageAuthenticityDataset(Dataset):
     """Dataset for image quality assessment."""
 
@@ -104,6 +103,7 @@ DENSENET_TRANSFORM: transforms.Compose = transforms.Compose([
 
 ANNOTATION_FILE: str = 'real_images_annotations.csv'
 BATCH_SIZE: int = 64
+SINGLE_BATCH_SIZE: int = 1
 NUM_WORKERS: int = 20
 
 
@@ -144,7 +144,6 @@ train_idx = perm[:train_size]
 val_idx = perm[train_size:train_size + val_size]
 test_idx = perm[train_size + val_size:]
 
-from torch.utils.data import Subset
 
 imagenet_train_ds = Subset(imageNet_dataset, train_idx)
 imagenet_val_ds = Subset(imageNet_dataset, val_idx)
