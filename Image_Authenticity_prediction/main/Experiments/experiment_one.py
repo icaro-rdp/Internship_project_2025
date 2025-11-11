@@ -822,7 +822,7 @@ def experiment_one_test_models(models_to_test=None, verbose=True,
         error(f"Weights directory not found: {WEIGHTS_DIR}")
         return {}
         
-    # Collect all .pth files (you asked to simply take all files in the Weights folder)
+    # Collect all .pth files 
     all_pth_files = sorted(WEIGHTS_DIR.glob('*.pth'))
     
     if not all_pth_files:

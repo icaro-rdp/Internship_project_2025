@@ -85,16 +85,16 @@ MODEL_REGISTRY = {
 # Training hyperparameters
 
 # Output directories
-OUTPUT_DIR = Path('Outputs/Outouts/Experiment_2')
-GRADCAM_DIR = OUTPUT_DIR / 'GradCAM_Maps'
-
+OUTPUT_DIR = Path('Outputs/Experiment_2_variants')
+XAI_MAPS_OUTPUT = OUTPUT_DIR / 'GradCAM_Maps'
+WEIGHTS_DIR = OUTPUT_DIR = Path('Outputs/Experiment_1_variants/Weights')
 
 
 # ============================================================================
-# Experiment 2A: GradCAM-based explainability
+# Experiment 2: Explainability Methods / GradCAM - Multiscale Pixel Masking
 # ============================================================================
 
-def experiment_2a_gradcam(model_name, config, save_plots=False, show_plots=False, save_maps=True):
+def generate_explainability_maps(xai_method="both",save_plots=False, show_plots=False, save_maps=True, verbose=True, models_to_test=None):
     """
     Conducts Experiment 2A using GradCAM for explainability.
         
@@ -113,63 +113,105 @@ def experiment_2a_gradcam(model_name, config, save_plots=False, show_plots=False
     print("=" * 80)
 
     #create output directories
-    GRADCAM_DIR.mkdir(parents=True, exist_ok=True)
+    XAI_MAPS_OUTPUT.mkdir(parents=True, exist_ok=True)
     # Resolve weights dir relative to this script so behavior is robust to CWD
-    OUTPUT_DIR = Path(__file__).resolve().parent / 'Outputs' / 'Experiment_1_variants'
-    WEIGHTS_DIR = OUTPUT_DIR / 'Weights'
 
-# ============================================================================
-# Experiment 2B: Multiscale-pixel-masking based explainability
-# ============================================================================
+    if not WEIGHTS_DIR.exists():
+        error(f"Weights directory not found: {WEIGHTS_DIR}")
+        return {}
+    
+    # Collect all .pth files 
+    all_pth_files = sorted(WEIGHTS_DIR.glob('*.pth'))
+    print(f"Found {len(all_pth_files)} weight files in {WEIGHTS_DIR}")
 
-def experiment_2b_multiscale_pixel_masking(model_name, config, save_plots=False, show_plots=False, save_maps=True):
-    pass  # Implementation of Experiment 2B goes here
-
+    if not all_pth_files:
+        error(f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A and 1B first.")
+        return {}
+    
+    # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
+    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1')
+    weights_files_by_model = {}
+    skipped_files = []
+    
+    for p in all_pth_files:
+        m = modelname_re.match(p.name)
+        if not m:
+            # if filename does not follow naming convention, skip but record for inspection
+            skipped_files.append(p)
+            continue
+            
+        mn = m.group(1)
+        
+        # If user asked to test only specific models, skip others
+        if models_to_test is not None and mn not in models_to_test:
+            continue
+            
+        # Only include files for known models (we need config to instantiate the model)
+        if mn not in MODEL_REGISTRY:
+            warn(f"Found weights for unknown model '{mn}' -> skipping file {p.name}")
+            skipped_files.append(p)
+            continue
+            
+        weights_files_by_model.setdefault(mn, []).append(p)
+        
+    if not weights_files_by_model:
+        error(f"No valid model weight files found in {WEIGHTS_DIR} (checked {len(all_pth_files)} files).")
+        if skipped_files:
+            info("Skipped files:")
+            for s in skipped_files:
+                info(f" - {s.name}")
+        return {}
+        
+    total_files_found = sum(len(v) for v in weights_files_by_model.values())
+    info(f"Found {total_files_found} weight file(s) across {len(weights_files_by_model)} model type(s) in {WEIGHTS_DIR}.")
+    
+    if verbose:
+        info("Per-model file counts:")
+        for mn, fls in sorted(weights_files_by_model.items()):
+            info(f" - {mn}: {len(fls)} file(s)")
+    
+    
 # ============================================================================
 # Full pipeline execution for Experiment 2
 # ============================================================================
 
-def run_experiment_2(save_plots=False, show_plots=False, save_maps=True, explainability_method='both'):
+def run_experiment_2(models=None,save_plots=False, show_plots=False, save_maps=True, xai_methods='both'):
     """
     Runs the full pipeline for Experiment 2, handling different explainability methods.
     """
     # Create output directories if they don't exist
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    CAM_DIR.mkdir(parents=True, exist_ok=True)
+    XAI_MAPS_OUTPUT.mkdir(parents=True, exist_ok=True)
 
-    for model_name, config in MODEL_REGISTRY.items():
-        info(f"--- Processing model: {model_name.upper()} ---")
 
-        run_gradcam = explainability_method in ['gradcam', 'both']
-        run_masking = explainability_method in ['multiscale_pixel_masking', 'both']
+    run_gradcam = xai_methods in ['gradcam', 'both']
+    run_masking = xai_methods in ['multiscale_pixel_masking', 'both']
 
-        if not run_gradcam and not run_masking:
-            warn(f"Unknown or no explainability method specified: '{explainability_method}'. Skipping model.")
-            continue
+    if not run_gradcam and not run_masking:
+        warn(f"Unknown or no explainability method specified: '{xai_methods}'. Skipping model.")
+        return
 
-        if run_gradcam:
-            info(f"Starting GradCAM explainability for {model_name}")
-            experiment_2a_gradcam(
-                model_name=model_name,
-                config=config,
-                save_plots=save_plots,
-                show_plots=show_plots,
-                save_maps=save_maps
-            )
-        
-        if run_masking:
-            info(f"Starting Multiscale Pixel Masking explainability for {model_name}")
-            experiment_2b_multiscale_pixel_masking(
-                model_name=model_name,
-                config=config,
-                save_plots=save_plots,
-                show_plots=show_plots,
-                save_maps=save_maps
-            )
+    if run_gradcam:
+        info(f"Starting GradCAM explainability maps generation...")
+        generate_explainability_maps(
+            xai_method='gradcam',
+            save_plots=save_plots,
+            show_plots=show_plots,
+            save_maps=save_maps
+        )
+    
+    if run_masking:
+        info(f"Starting Multiscale Pixel Masking explainability maps generation...")
+        generate_explainability_maps(
+            xai_method='multiscale_pixel_masking',
+            save_plots=save_plots,
+            show_plots=show_plots,
+            save_maps=save_maps
+        )
 
     info("--- Experiment 2 Complete ---")
     if save_maps:
-        info(f"All explainability maps saved in {CAM_DIR}")
+        info(f"All explainability maps saved in {XAI_MAPS_OUTPUT}")
     if show_plots:
         info("Plots were displayed during the run.")
     if save_plots:
@@ -185,10 +227,11 @@ if __name__ == '__main__':
     start_time = time.time()
     
     run_experiment_2(
+        models=None,  # Use all models in MODEL_REGISTRY
         save_plots=False,
         show_plots=False,
         save_maps=True,
-        explainability_method='gradcam'  # Options: 'gradcam', 'multiscale_pixel_masking', 'both'
+        xai_methods='gradcam'  # Options: 'gradcam', 'multiscale_pixel_masking', 'both'
     )
      
     # End timer and calculate elapsed time
