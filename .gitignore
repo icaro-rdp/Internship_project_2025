@@ -39,6 +39,9 @@ ENV/
 */main/Experiments/Outputs/*
 Image_Authenticity_prediction/main/Experiments/Outputs
 
+#Test 
+*/main/Experiments/test/*
+
 # Model files and datasets
 Models/*/Weights
 Models/*/Ranking_arrays
