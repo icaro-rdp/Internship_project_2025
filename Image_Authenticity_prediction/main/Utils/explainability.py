@@ -257,7 +257,8 @@ class MultiscalePixelMasking(ModelsExplainer):
         Calculates the full multiscale saliency map for a single image.
         This method fulfills the ModelsExplainer "contract".
         
-        Returns (saliency_map_numpy, original_score).
+        Returns:
+            np.ndarray: Normalized saliency map with shape (H, W).
         """
         # 1. Prepare image and get original score
         if image_tensor.dim() == 3:
@@ -272,9 +273,9 @@ class MultiscalePixelMasking(ModelsExplainer):
             # Use target_index to get the correct score
             original_score = original_output[0, target_index].item()
 
-        info(
-            "MPM: baseline score %.4f (target index %d, sigmas=%s, batch=%d)"
-            % (original_score, target_index, list(self.sigma_list), self.pixel_batch_size)
+        debug(
+            "MPM: prepared run (target index %d, sigmas=%s, batch=%d)"
+            % (target_index, list(self.sigma_list), self.pixel_batch_size)
         )
 
         img_size = img_tensor_base.shape[2:]
@@ -351,8 +352,7 @@ class MultiscalePixelMasking(ModelsExplainer):
                 % (saliency_map_numpy.min(), saliency_map_numpy.max())
             )
         
-        # Return both the map and the original score as per the docstring
-        return saliency_map_numpy, original_score
+        return saliency_map_numpy
 
     def _progress(self, iterable, desc):
         if self.use_tqdm and _tqdm is not None:

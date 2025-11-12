@@ -85,8 +85,9 @@ MODEL_REGISTRY = {
 # XAI method specific configurations
 CONFIG = {
     'sigma_values' : [3, 5, 9, 17, 33, 65],
+    'sigma_values_test' : [3, 17, 65],
     'mask_value':0,
-    'pixel_batch_size':128
+    'pixel_batch_size': 512
 }
 # Training hyperparameters
 
@@ -325,16 +326,19 @@ def generate_explainability_maps(
                     for img_idx, (img, label) in enumerate(test_loader):
                         img = img.to(device)
                         label = label.to(device)
-                        
+                        info(f"Generating MPM map for image {img_idx+1} with model {model_name} {variant_tag}...")
                         mpm = MultiscalePixelMasking(
                             model=model,
-                            sigma_list=CONFIG['sigma_values'],
+                            sigma_list=CONFIG['sigma_values_test'],
                             pixel_batch_size=CONFIG['pixel_batch_size'],
                             mask_value=CONFIG['mask_value'])
                         
                         mpm_map = mpm.generate_map(img, target_index=0)
                         maps.append(mpm_map)
-
+                        
+                        # for testing, limit to first 2 images
+                        if img_idx >= 1:
+                            break
                     if save_maps:
                         print(f"Saving Multiscale Pixel Masking map for {model_name})...")
                         maps_array = np.array(maps)
