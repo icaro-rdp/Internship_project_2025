@@ -85,7 +85,8 @@ MODEL_REGISTRY = {
 # XAI method specific configurations
 CONFIG = {
     'sigma_values' : [3, 5, 9, 17, 33, 65],
-    'mask_value':0
+    'mask_value':0,
+    'pixel_batch_size':128
 }
 # Training hyperparameters
 
@@ -327,10 +328,11 @@ def generate_explainability_maps(
                         
                         mpm = MultiscalePixelMasking(
                             model=model,
-                            sigma_values=CONFIG['sigma_values'],
+                            sigma_list=CONFIG['sigma_values'],
+                            pixel_batch_size=CONFIG['pixel_batch_size'],
                             mask_value=CONFIG['mask_value'])
                         
-                        mpm_map = mpm.generate_map(img, label)
+                        mpm_map = mpm.generate_map(img, target_index=0)
                         maps.append(mpm_map)
 
                     if save_maps:
@@ -381,7 +383,7 @@ def run_experiment_2(
 
 
     run_gradcam = xai_methods in ['gradcam', 'both']
-    run_masking = xai_methods in ['multiscale_pixel_masking', 'both']
+    run_masking = xai_methods in ['mpm', 'both']
 
     if not run_gradcam and not run_masking:
         warn(f"Unknown or no explainability method specified: '{xai_methods}'. Skipping model.")
@@ -450,7 +452,7 @@ if __name__ == '__main__':
         save_plots=False,
         show_plots=False,
         save_maps=True,
-        xai_methods='gradcam',  # Options: 'gradcam', 'multiscale_pixel_masking', 'both'
+        xai_methods='mpm',  # Options: 'gradcam', 'mpm', 'both'
         variants='greedy'  # Options: 'all', 'base', 'greedy', 'negative', 'orig'
     )
      

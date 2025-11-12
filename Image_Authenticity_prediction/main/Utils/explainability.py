@@ -5,6 +5,13 @@ import torch.nn as nn
 import numpy as np
 import itertools
 import math
+import importlib
+
+try:
+    _tqdm_module = importlib.import_module("tqdm.auto")
+    _tqdm = getattr(_tqdm_module, "tqdm", None)
+except Exception:
+    _tqdm = None
 from .normalization import normalize_data
 from .logger import info, warn, error, debug
 from abc import ABC, abstractmethod
@@ -220,7 +227,7 @@ class MultiscalePixelMasking(ModelsExplainer):
     """
     Implements Multiscale Occlusion Saliency, inheriting from ModelsExplainer.
     """
-    def __init__(self, model, sigma_list, pixel_batch_size, mask_value=0.0):
+    def __init__(self, model, sigma_list, pixel_batch_size, mask_value=0.0, use_tqdm=True):
         # 1. Run the parent's __init__ (handles model, device, eval())
         super().__init__(model)
         
@@ -228,6 +235,9 @@ class MultiscalePixelMasking(ModelsExplainer):
         self.sigma_list = sigma_list
         self.pixel_batch_size = pixel_batch_size
         self.mask_value = mask_value
+        self.use_tqdm = bool(use_tqdm and _tqdm is not None)
+        if use_tqdm and _tqdm is None:
+            warn("tqdm is not available; disabling progress bars for MultiscalePixelMasking.")
 
     @staticmethod
     def _generate_mask(img_size, center, sigma, device):
@@ -262,17 +272,23 @@ class MultiscalePixelMasking(ModelsExplainer):
             # Use target_index to get the correct score
             original_score = original_output[0, target_index].item()
 
+        info(
+            "MPM: baseline score %.4f (target index %d, sigmas=%s, batch=%d)"
+            % (original_score, target_index, list(self.sigma_list), self.pixel_batch_size)
+        )
+
         img_size = img_tensor_base.shape[2:]
         saliency_map_final = torch.zeros(img_size, dtype=torch.float32, device=self.device)
 
         # 2. Main Occlusion Loop
-        for sigma in self.sigma_list:
+        sigma_progress = self._progress(self.sigma_list, desc="MPM sigma levels")
+        for sigma in sigma_progress:
             saliency_map_sigma = torch.zeros(img_size, dtype=torch.float32, device=self.device)
             all_pixel_coords = list(itertools.product(range(img_size[0]), range(img_size[1])))
             total_pixels = len(all_pixel_coords)
             num_batches = math.ceil(total_pixels / self.pixel_batch_size)
-            
-            for batch_idx in range(num_batches):
+            batch_progress = self._progress(range(num_batches), desc=f"MPM sigma {sigma}")
+            for batch_idx in batch_progress:
                 batch_start_idx = batch_idx * self.pixel_batch_size
                 batch_end_idx = min(total_pixels, (batch_idx + 1) * self.pixel_batch_size)
                 current_coords_batch = all_pixel_coords[batch_start_idx:batch_end_idx]
@@ -280,13 +296,19 @@ class MultiscalePixelMasking(ModelsExplainer):
 
                 if actual_batch_size == 0: continue
 
-                masked_images_list = []
+                # Create a list of [1, 1, H, W] masks
+                masks_list = []
                 for y_coord, x_coord in current_coords_batch:
-                    mask = self._generate_mask(img_size, (x_coord, y_coord), sigma, self.device)
-                    masked_image = img_tensor_base * mask + self.mask_value * (1 - mask)
-                    masked_images_list.append(masked_image)
+                    masks_list.append(
+                        self._generate_mask(img_size, (x_coord, y_coord), sigma, self.device)
+                    )
                 
-                batch_of_masked_images = torch.cat(masked_images_list, dim=0)
+                # Stack into a single [B, 1, H, W] tensor
+                batch_of_masks = torch.cat(masks_list, dim=0)
+
+                # Perform one batched masking operation.
+                # Broadcasting ( [1, C, H, W] * [B, 1, H, W] ) -> [B, C, H, W]
+                batch_of_masked_images = img_tensor_base * batch_of_masks + self.mask_value * (1 - batch_of_masks)
 
                 with torch.no_grad():
                     output_batch, _ = self.model(batch_of_masked_images)
@@ -302,6 +324,16 @@ class MultiscalePixelMasking(ModelsExplainer):
                     saliency_map_sigma[y, x] = saliency_value
 
             saliency_map_final += saliency_map_sigma
+            self._close_progress(batch_progress)
+            sigma_min = saliency_map_sigma.min().item()
+            sigma_max = saliency_map_sigma.max().item()
+            sigma_mean = saliency_map_sigma.mean().item()
+            debug(
+                "MPM: sigma=%d stats -> min %.4f | max %.4f | mean %.4f"
+                % (sigma, sigma_min, sigma_max, sigma_mean)
+            )
+
+        self._close_progress(sigma_progress)
 
         # 3. Normalize and Return Results
         saliency_map_numpy = saliency_map_final.cpu().numpy()
@@ -309,6 +341,26 @@ class MultiscalePixelMasking(ModelsExplainer):
         if normalize:
             # Use the same normalization function as GradCAM for consistency
             saliency_map_numpy = normalize_data(saliency_map_numpy, min_range=-1, max_range=1)
+            debug(
+                "MPM: normalized aggregated map -> range [%.4f, %.4f]"
+                % (saliency_map_numpy.min(), saliency_map_numpy.max())
+            )
+        else:
+            debug(
+                "MPM: returned raw aggregated map -> range [%.4f, %.4f]"
+                % (saliency_map_numpy.min(), saliency_map_numpy.max())
+            )
         
-        return saliency_map_numpy
-    
+        # Return both the map and the original score as per the docstring
+        return saliency_map_numpy, original_score
+
+    def _progress(self, iterable, desc):
+        if self.use_tqdm and _tqdm is not None:
+            return _tqdm(iterable, desc=desc, leave=False)
+        return iterable
+
+    @staticmethod
+    def _close_progress(progress_obj):
+        close = getattr(progress_obj, "close", None)
+        if callable(close):
+            close()
