@@ -150,6 +150,10 @@ class VGG16AuthenticityPredictor(nn.Module):
         # Load pre-trained VGG16
         vgg = vgg16(weights=VGG16_Weights.DEFAULT)
         
+        for module in vgg.modules():
+            if isinstance(module, nn.ReLU):
+                module.inplace = False
+    
         # Freeze backbone if requested
         if freeze_backbone:
             for param in vgg.features.parameters():
@@ -182,6 +186,10 @@ class VGG19AuthenticityPredictor(nn.Module):
         super().__init__()
         # Load pre-trained VGG16
         vgg = vgg19(weights=VGG19_Weights.DEFAULT)
+        
+        for module in vgg.modules():
+            if isinstance(module, nn.ReLU):
+                module.inplace = False
         
         # Freeze backbone if requested
         if freeze_backbone:

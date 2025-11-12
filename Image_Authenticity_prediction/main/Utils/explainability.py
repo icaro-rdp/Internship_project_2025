@@ -1,6 +1,7 @@
 # --- Imports ---
 import torch.nn.functional as F
 import torch
+import torch.nn as nn
 import numpy as np
 import itertools
 import math
@@ -72,7 +73,7 @@ class GradCAM(ModelsExplainer):
         super().__init__(model)
         
         # 2. Add Grad-CAM specific attributes
-        self.target_layer = target_layer
+        self.target_layer = self._resolve_target_layer(target_layer)
         self.gradients = None
         self.activations = None
         self.hooks = []
@@ -80,6 +81,41 @@ class GradCAM(ModelsExplainer):
         
         # 3. Run Grad-CAM specific setup
         self.register_hooks()
+
+    def _resolve_target_layer(self, target_layer):
+        """Converts a string path into a module reference if needed."""
+        if isinstance(target_layer, nn.Module):
+            return target_layer
+
+        if not isinstance(target_layer, str):
+            raise TypeError(
+                "target_layer must be either an nn.Module or a dotted string path "
+                f"(got type {type(target_layer).__name__})."
+            )
+
+        module = self.model
+        for attr in target_layer.split('.'):
+            # Allow integer indexing for Sequential-style containers
+            if attr.isdigit():
+                index = int(attr)
+                if not hasattr(module, '__getitem__'):
+                    raise AttributeError(
+                        f"Module '{module.__class__.__name__}' does not support indexing but received '{attr}'."
+                    )
+                module = module[index]
+            else:
+                if not hasattr(module, attr):
+                    raise AttributeError(
+                        f"Module '{module.__class__.__name__}' has no attribute '{attr}' while resolving target layer '{target_layer}'."
+                    )
+                module = getattr(module, attr)
+
+            if not isinstance(module, nn.Module):
+                raise TypeError(
+                    f"Resolved component '{attr}' within '{target_layer}' is not an nn.Module (obtained type {type(module).__name__})."
+                )
+
+        return module
     
     def register_hooks(self):
         """ Attaches forward and backward hooks to the target layer. """
