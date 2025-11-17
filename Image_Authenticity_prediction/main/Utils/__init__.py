@@ -1,15 +1,37 @@
-"""
-Utilities module containing helper functions for explainability and pruning.
+"""Utilities exposed by :mod:`main.Utils`.
+
+This module performs lazy attribute loading so that importing
+``Image_Authenticity_prediction.main.Utils`` does not immediately import heavy
+PyTorch dependencies. Each utility is pulled in only when accessed.
 """
 
-from .explainability import GradCAM, MultiscalePixelMasking
-from .pruning import FeatureMapsPruner
-from .cleanup import clear_gpu_memory, cleanup_model_and_data
+from importlib import import_module
+from typing import Any, Dict, List, Tuple
 
-__all__ = [
-    'GradCAM',
-    'MultiscalePixelMasking',
-    'FeatureMapsPruner',
-    'clear_gpu_memory',
-    'cleanup_model_and_data',
-]
+_EXPORT_MAP: Dict[str, Tuple[str, str]] = {
+    "GradCAM": ("explainability", "GradCAM"),
+    "MultiscalePixelMasking": ("explainability", "MultiscalePixelMasking"),
+    "FeatureMapsPruner": ("pruning", "FeatureMapsPruner"),
+    "clear_gpu_memory": ("cleanup", "clear_gpu_memory"),
+    "cleanup_model_and_data": ("cleanup", "cleanup_model_and_data"),
+}
+
+__all__ = sorted(_EXPORT_MAP.keys())
+
+
+def __getattr__(name: str) -> Any:
+    """Import the requested utility on demand and cache it."""
+
+    try:
+        module_name, attr_name = _EXPORT_MAP[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(f"{__name__}.{module_name}")
+    attr = getattr(module, attr_name)
+    globals()[name] = attr
+    return attr
+
+
+def __dir__() -> List[str]:
+    return sorted(set(__all__) | set(globals().keys()))

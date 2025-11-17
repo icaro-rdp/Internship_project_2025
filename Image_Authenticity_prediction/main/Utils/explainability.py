@@ -75,7 +75,7 @@ class GradCAM(ModelsExplainer):
     """
     Implements Grad-CAM, inheriting shared logic from ModelsExplainer.
     """
-    def __init__(self, model, target_layer):
+    def __init__(self, model, target_layer, relu=True):
         # 1. Run the parent's __init__ (handles model, device, eval())
         super().__init__(model)
         
@@ -84,7 +84,7 @@ class GradCAM(ModelsExplainer):
         self.gradients = None
         self.activations = None
         self.hooks = []
-        self.relu = True
+        self.relu = bool(relu)
         
         # 3. Run Grad-CAM specific setup
         self.register_hooks()
@@ -186,10 +186,22 @@ class GradCAM(ModelsExplainer):
         cam = np.zeros(activations.shape[1:], dtype=np.float32)
         for i, w in enumerate(weights):
             cam += w * activations[i, :, :]
+
+        raw_min = float(cam.min())
+        raw_max = float(cam.max())
+        grad_min = float(gradients.min())
+        grad_max = float(gradients.max())
+        act_min = float(activations.min())
+        act_max = float(activations.max())
         
         # 6. Apply ReLU
         if self.relu:
             cam = np.maximum(cam, 0)
+            post_min = float(cam.min())
+            post_max = float(cam.max())
+        else:
+            post_min = None
+            post_max = None
         
         # 7. Resize CAM
         cam_tensor = torch.tensor(cam).unsqueeze(0).unsqueeze(0)
@@ -207,6 +219,20 @@ class GradCAM(ModelsExplainer):
             cam = normalize_data(cam, min_range=0, max_range=1)
         else:
             cam = normalize_data(cam, min_range=-1, max_range=1)
+
+        final_min = float(cam.min())
+        final_max = float(cam.max())
+
+        if self.relu:
+            debug(
+                "GradCAM stats -> raw[%.4f, %.4f] post_relu[%.4f, %.4f] final[%.4f, %.4f] gradients[%.4f, %.4f] activations[%.4f, %.4f]"
+                % (raw_min, raw_max, post_min, post_max, final_min, final_max, grad_min, grad_max, act_min, act_max)
+            )
+        else:
+            debug(
+                "GradCAM stats -> raw[%.4f, %.4f] final[%.4f, %.4f] gradients[%.4f, %.4f] activations[%.4f, %.4f]"
+                % (raw_min, raw_max, final_min, final_max, grad_min, grad_max, act_min, act_max)
+            )
                  
         return cam
 
