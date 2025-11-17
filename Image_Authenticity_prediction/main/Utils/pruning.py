@@ -344,6 +344,54 @@ class FeatureMapsPruner:
         else:
             plt.show()
 
+def check_pruning_statistics(original_model: nn.Module,
+                             pruned_model: nn.Module,
+                             layer_name: str, save_json=True) -> Dict[str, Any]:
+    """
+    Compares the original and pruned models to report on the number of
+    non-zero parameters in the specified layer.
+
+    Args:
+        original_model: The original unpruned model.
+        pruned_model: The pruned model.
+        layer_name: The name of the layer to analyze.
+        save_json: Whether to save the statistics as a JSON file.
+
+    Returns:
+        A dictionary with statistics about the pruning.
+    """
+    dict_modules_orig = dict(original_model.named_modules())
+    dict_modules_pruned = dict(pruned_model.named_modules())
+    if layer_name not in dict_modules_orig or layer_name not in dict_modules_pruned:
+        raise ValueError(f"Layer '{layer_name}' not found in one of the models.")
+    layer_orig = dict_modules_orig[layer_name]
+    layer_pruned = dict_modules_pruned[layer_name]
+    def count_nonzero_params(layer: nn.Module) -> int:
+        nonzero = 0
+        for param in layer.parameters():
+            nonzero += torch.count_nonzero(param).item()
+        return nonzero
+    orig_nonzero = count_nonzero_params(layer_orig)
+    pruned_nonzero = count_nonzero_params(layer_pruned)
+    total_params = sum(p.numel() for p in layer_orig.parameters())
+    reduction = orig_nonzero - pruned_nonzero
+    reduction_pct = (reduction / total_params) * 100 if total_params > 0 else 0.0
+    stats = {
+        'layer_name': layer_name,
+        'original_nonzero_params': orig_nonzero,
+        'pruned_nonzero_params': pruned_nonzero,
+        'total_params': total_params,
+        'reduction_in_nonzero_params': reduction,
+        'reduction_percentage': reduction_pct
+    }
+    if save_json:
+        import json
+        save_path = f'pruning_statistics_{layer_name.replace(".", "_")}.json'
+        with open(save_path, 'w') as f:
+            json.dump(stats, f, indent=4)
+        print(f"Pruning statistics saved to {save_path}")
+    return stats
+
 #! Example usage:
 # import torch
 # import torch.nn as nn

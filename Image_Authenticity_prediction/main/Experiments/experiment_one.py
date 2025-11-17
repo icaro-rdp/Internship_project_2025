@@ -28,6 +28,7 @@ from main.Models import (
 
 # Import utilities
 from main.Utils import FeatureMapsPruner
+from main.Utils.pruning import check_pruning_statistics
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, debug
 from main.train import train_model, test_model, plot_loss_history
@@ -959,6 +960,49 @@ def experiment_one_test_models(models_to_test=None, verbose=True,
                     'krcc': test_results['krcc'],
                     'weights_path': str(weights_path)
                 }
+
+                pruning_stats = None
+                if "exp1b_" in variant_tag and ("greedy_pruned" in variant_tag or "negative_pruned" in variant_tag):
+                    variant_match = re.search(r'variant(\d+)', variant_tag)
+                    if variant_match:
+                        variant_index = variant_match.group(1)
+                        baseline_weights_path = WEIGHTS_DIR / f"{model_name}_exp1a_variant{variant_index}_best.pth"
+                        if baseline_weights_path.exists():
+                            try:
+                                original_model = config['class'](freeze_backbone=False)
+                                original_model.load_state_dict(torch.load(baseline_weights_path, map_location='cpu', weights_only=True))
+
+                                pruned_model_for_stats = config['class'](freeze_backbone=False)
+                                pruned_model_for_stats.load_state_dict(torch.load(weights_path, map_location='cpu', weights_only=True))
+
+                                pruning_stats = check_pruning_statistics(
+                                    original_model=original_model,
+                                    pruned_model=pruned_model_for_stats,
+                                    layer_name=config['target_layer'],
+                                    save_json=False
+                                )
+
+                                reduction_pct = pruning_stats.get('reduction_percentage')
+                                if reduction_pct is not None:
+                                    info(f" - Pruning stats computed for {variant_tag}: reduction {reduction_pct:.2f}%")
+                            except Exception as stat_err:
+                                warn(f"Failed to compute pruning statistics for {weights_path.name}: {stat_err}")
+                                pruning_stats = {'error': str(stat_err)}
+                            finally:
+                                try:
+                                    del original_model
+                                    del pruned_model_for_stats
+                                except NameError:
+                                    pass
+                        else:
+                            warn(f"Original weights not found for {weights_path.name}: expected {baseline_weights_path.name}")
+                            pruning_stats = {'error': f'Original weights missing: {str(baseline_weights_path)}'}
+                    else:
+                        warn(f"Could not infer baseline variant for pruned weights {weights_path.name}")
+                        pruning_stats = {'error': 'Failed to parse variant index from pruned weight filename.'}
+
+                if pruning_stats is not None:
+                    results[model_name][variant_tag]['pruning_statistics'] = pruning_stats
                 
                 info(f"✓ {model_name.upper()} {variant_tag} testing complete!")
                 plcc_str = f"{test_results['plcc']:.4f}" if test_results['plcc'] is not None else "N/A"

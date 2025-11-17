@@ -336,9 +336,6 @@ def generate_explainability_maps(
                         mpm_map = mpm.generate_map(img, target_index=0)
                         maps.append(mpm_map)
                         
-                        # for testing, limit to first 2 images
-                        if img_idx >= 1:
-                            break
                     if save_maps:
                         print(f"Saving Multiscale Pixel Masking map for {model_name})...")
                         maps_array = np.array(maps)
@@ -960,7 +957,7 @@ if __name__ == '__main__':
     # # set_level('DEBUG') # Uncomment to enable debug logging
     run_experiment_2(
     variants='greedy',
-    xai_methods='gradcam', 
+    xai_methods='mpm', 
     )
 
     # End timer and calculate elapsed time
