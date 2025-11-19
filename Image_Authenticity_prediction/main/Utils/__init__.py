@@ -14,6 +14,7 @@ _EXPORT_MAP: Dict[str, Tuple[str, str]] = {
     "FeatureMapsPruner": ("pruning", "FeatureMapsPruner"),
     "clear_gpu_memory": ("cleanup", "clear_gpu_memory"),
     "cleanup_model_and_data": ("cleanup", "cleanup_model_and_data"),
+    "visualize_and_save_saliency": ("visualization", "visualize_and_save_saliency"),
 }
 
 __all__ = sorted(_EXPORT_MAP.keys())

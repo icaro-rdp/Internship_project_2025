@@ -31,8 +31,12 @@ from main.Models import (
 from main.Utils.explainability import GradCAM, MultiscalePixelMasking
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, debug, set_level
-from main.Utils.comparisons import compare_heatmaps, uniform_heatmaps
-from main.Utils.visualization import visualize_similarity_matrix
+from main.Utils.comparisons import (
+    compare_heatmaps, 
+    uniform_heatmaps,
+    visualize_similarity_matrix,
+    visualize_similarity_distribution
+)
 from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
@@ -200,7 +204,7 @@ def generate_explainability_maps(
         return {}
     
     # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
-    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1')
+    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1b_variant1_greedy_pruned')
     weights_files_by_model = {}
     skipped_files = []
     
@@ -381,6 +385,42 @@ def _load_heatmap(path: Path) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
+def _create_prototype_heatmap(variant_paths: Dict[str, Path]) -> np.ndarray:
+    """Create a prototype heatmap by averaging across all variants of a model.
+    
+    Args:
+        variant_paths: Dictionary mapping variant names to their heatmap file paths.
+                      Each file contains an array of shape (N, H, W).
+    
+    Returns:
+        np.ndarray: Averaged heatmap across all variants, shape (N, H, W).
+    """
+    if not variant_paths:
+        raise ValueError("No variant paths provided for prototype creation")
+    
+    # Load all variant heatmaps
+    variant_arrays = []
+    for variant_name, path in sorted(variant_paths.items()):
+        arr = _load_heatmap(path)
+        info(f"Loading variant '{variant_name}' with shape {arr.shape} for prototype")
+        variant_arrays.append(arr)
+    
+    # Find minimum number of images across all variants
+    min_images = min(arr.shape[0] for arr in variant_arrays)
+    
+    # Trim all arrays to the same number of images and stack
+    trimmed_arrays = [arr[:min_images] for arr in variant_arrays]
+    
+    # Stack variants along a new axis: (n_variants, n_images, H, W)
+    stacked = np.stack(trimmed_arrays, axis=0)
+    
+    # Average across variants (axis=0) to get prototype: (n_images, H, W)
+    prototype = np.mean(stacked, axis=0)
+    
+    info(f"Created prototype heatmap from {len(variant_arrays)} variants with shape {prototype.shape}")
+    return prototype
+
+
 def _split_model_variant(stem: str) -> Tuple[str, str]:
     """Split a stored heatmap stem into (model, variant)."""
     if "_" not in stem:
@@ -502,32 +542,40 @@ def _compare_context(
 
 def compare_explainability_maps(
     methods: Optional[Sequence[str]] = None,
-    metrics: Sequence[str] = ("mse", "correlation", "cosine", "ssim", "emd"),
+    metrics: Sequence[str] = ("correlation",),  # Default to correlation only
     target_resolution: Optional[Tuple[int, int]] = (224, 224),
     save_json: bool = True,
-    comparison_kinds: Sequence[str] = ("cross_methods", "inter_model", "intra_model_variants"),
+    comparison_kinds: Sequence[str] = ("inter_model", "intra_model_variants"),
     show_comparison_plots: bool = True,
+    save_plots: bool = True,
+    plot_output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Conduct Experiment 2B by comparing explainability maps saved on disk.
 
-    Typical usage patterns:
-        # Compare GradCAM maps across different models and variants
-        compare_explainability_maps(
-            methods=("gradcam",),
-            comparison_kinds=("inter_model", "intra_model_variants"),
-        )
+    For inter_model comparison, creates prototype heatmaps by averaging across
+    all variants of each model architecture before performing comparisons.
 
-        # Check GradCAM vs MPM agreement (cosine similarity only)
-        compare_explainability_maps(
-            methods=("gradcam", "multiscale_pixel_masking"),
-            metrics=("cosine",),
-            comparison_kinds=("cross_methods",),
-        )
+    Args:
+        methods: XAI methods to compare. If None, uses all available methods.
+        metrics: Similarity metrics to compute (default: correlation only).
+        target_resolution: Target (H, W) for heatmap alignment.
+        save_json: Whether to save comparison results as JSON.
+        comparison_kinds: Types of comparisons to perform.
+        show_comparison_plots: Whether to generate matplotlib figures.
+        save_plots: Whether to save generated plots to disk.
+        plot_output_dir: Directory to save plots. If None, uses OUTPUT_DIR / 'Plots'.
+    
+    Returns:
+        Dictionary containing comparison results and optionally figures.
     """
 
     print("=" * 80)
     info("EXPERIMENT 2B: EXPLAINABILITY MAPS COMPARISON")
     print("=" * 80)
+
+    if plot_output_dir is None:
+        plot_output_dir = OUTPUT_DIR / 'Plots'
+    plot_output_dir.mkdir(parents=True, exist_ok=True)
 
     method_dirs = {
         "gradcam": GRADCAM_OUTPUT,
@@ -551,17 +599,16 @@ def compare_explainability_maps(
     else:
         requested_kinds.update(kind.lower() for kind in comparison_kinds)
 
-    valid_kinds = {"cross_methods", "inter_model", "intra_model_variants"}
+    valid_kinds = {"inter_model", "intra_model_variants"}
     invalid_kinds = requested_kinds - valid_kinds
     if invalid_kinds:
         warn(f"Unknown comparison kinds {sorted(invalid_kinds)}. Supported kinds: {sorted(valid_kinds)}")
         requested_kinds -= invalid_kinds
     if not requested_kinds:
-        requested_kinds = {"cross_methods"}
+        requested_kinds = {"inter_model", "intra_model_variants"}
 
     # Collect map files per method keyed by model+variant stem
     method_files: Dict[str, Dict[str, Path]] = {}
-    method_variant_groups: Dict[str, Dict[str, Dict[str, Path]]] = {}
     method_model_groups: Dict[str, Dict[str, Dict[str, Path]]] = {}
 
     for method in available_methods:
@@ -572,17 +619,15 @@ def compare_explainability_maps(
             continue
 
         stem_map: Dict[str, Path] = {}
-        variant_groups: Dict[str, Dict[str, Path]] = defaultdict(dict)
         model_groups: Dict[str, Dict[str, Path]] = defaultdict(dict)
+        
         for f in files:
             stem = f.stem.replace("_maps", "")
             stem_map[stem] = f
             model_name, variant = _split_model_variant(stem)
-            variant_groups[variant][model_name] = f
             model_groups[model_name][variant] = f
 
         method_files[method] = stem_map
-        method_variant_groups[method] = {variant: dict(model_map) for variant, model_map in variant_groups.items()}
         method_model_groups[method] = {model: dict(variant_map) for model, variant_map in model_groups.items()}
 
     if not method_files:
@@ -593,115 +638,138 @@ def compare_explainability_maps(
     figures: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
-    # Cross-method comparisons (same model variant, different methods)
-    # ------------------------------------------------------------------
-    if "cross_methods" in requested_kinds:
-        if len(method_files) < 2:
-            warn("Cross-method comparison requires at least two methods with saved maps. Skipping this kind.")
-        else:
-            common_stems = set.intersection(*(set(files.keys()) for files in method_files.values()))
-            if not common_stems:
-                warn("No common model variants found across the selected methods for cross-method comparison.")
-            else:
-                cross_overall: Dict[str, Dict[str, list]] = {}
-                per_variant_results: Dict[str, Dict[str, Any]] = {}
-                for stem in sorted(common_stems):
-                    label_to_path = {method: method_files[method][stem] for method in method_files}
-                    context_summary = _compare_context(
-                        label_to_path=label_to_path,
-                        metrics=metrics,
-                        target_resolution=target_resolution,
-                        overall_accumulator=cross_overall,
-                    )
-                    if context_summary:
-                        per_variant_results[stem] = {
-                            "summary": context_summary,
-                            "source_files": {method: str(method_files[method][stem]) for method in method_files},
-                        }
-
-                if per_variant_results:
-                    overall_summary = {
-                        metric: {pair: _summarise(values) for pair, values in pair_dict.items()}
-                        for metric, pair_dict in cross_overall.items()
-                        if pair_dict
-                    }
-                    block = {
-                        "per_variant": per_variant_results,
-                        "overall": overall_summary,
-                        "methods_compared": sorted(method_files.keys()),
-                        "metrics": list(metrics),
-                    }
-                    results_payload["cross_methods"] = block
-                    if show_comparison_plots:
-                        for metric in metrics:
-                            matrix = overall_summary.get(metric)
-                            if matrix:
-                                labels = _labels_from_summary(matrix)
-                                if labels:
-                                    indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
-                                    if not indexed_matrix:
-                                        continue
-                                    figures[f"cross_methods_{metric}"] = visualize_similarity_matrix(
-                                        results={"summary": {metric: indexed_matrix}},
-                                        model_names=labels,
-                                        metric=metric,
-                                        stat="mean",
-                                        annotate=True,
-                                    )
-                else:
-                    warn("Cross-method comparison produced no results.")
-
-    # ------------------------------------------------------------------
-    # Inter-model comparisons (same method, different models for each variant)
+    # Inter-model comparisons with prototype heatmaps
     # ------------------------------------------------------------------
     if "inter_model" in requested_kinds:
+        info("Creating prototype heatmaps by averaging across model variants...")
+        
         inter_model_payload: Dict[str, Any] = {}
-        for method, variant_map in method_variant_groups.items():
-            method_overall: Dict[str, Dict[str, list]] = {}
-            variant_results: Dict[str, Dict[str, Any]] = {}
-            for variant, model_paths in sorted(variant_map.items()):
-                if len(model_paths) < 2:
+        
+        for method, model_map in method_model_groups.items():
+            info(f"Processing inter-model comparison for method: {method}")
+            
+            # Create prototype heatmaps for each model
+            model_prototypes: Dict[str, np.ndarray] = {}
+            
+            for model_name, variant_paths in sorted(model_map.items()):
+                if not variant_paths:
+                    warn(f"No variants found for model '{model_name}'. Skipping.")
                     continue
-                context_summary = _compare_context(
-                    label_to_path=model_paths,
-                    metrics=metrics,
-                    target_resolution=target_resolution,
-                    overall_accumulator=method_overall,
-                )
-                if context_summary:
-                    variant_results[variant] = {
-                        "summary": context_summary,
-                        "source_files": {model: str(path) for model, path in model_paths.items()},
-                    }
-
-            if variant_results:
-                overall_summary = {
-                    metric: {pair: _summarise(values) for pair, values in pair_dict.items()}
-                    for metric, pair_dict in method_overall.items()
-                    if pair_dict
-                }
-                block = {
-                    "per_variant": variant_results,
-                    "overall": overall_summary,
-                    "metrics": list(metrics),
-                }
-                inter_model_payload[method] = block
-                if show_comparison_plots:
-                    for metric in metrics:
-                        matrix = overall_summary.get(metric)
-                        if matrix:
-                            labels = _labels_from_summary(matrix)
-                            if labels:
-                                indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
-                                if not indexed_matrix:
-                                    continue
-                                figures[f"inter_model_{method}_{metric}"] = visualize_similarity_matrix(
+                
+                try:
+                    prototype = _create_prototype_heatmap(variant_paths)
+                    model_prototypes[model_name] = prototype
+                    info(f"✓ Created prototype for {model_name} from {len(variant_paths)} variants")
+                except Exception as e:
+                    error(f"Failed to create prototype for {model_name}: {e}")
+                    continue
+            
+            if len(model_prototypes) < 2:
+                warn(f"Need at least 2 model prototypes for comparison. Found {len(model_prototypes)}. Skipping {method}.")
+                continue
+            
+            # Align all prototypes to common resolution and image count
+            min_images = min(arr.shape[0] for arr in model_prototypes.values())
+            
+            if target_resolution is None:
+                target_h = max(arr.shape[1] for arr in model_prototypes.values())
+                target_w = max(arr.shape[2] for arr in model_prototypes.values())
+            else:
+                target_h, target_w = target_resolution
+            
+            aligned_prototypes = {}
+            prototype_arrays = []
+            model_names_ordered = []
+            
+            for model_name, prototype in sorted(model_prototypes.items()):
+                aligned = uniform_heatmaps(prototype, height=target_h, width=target_w, num_images=min_images)
+                aligned_prototypes[model_name] = aligned
+                prototype_arrays.append(aligned)
+                model_names_ordered.append(model_name)
+            
+            # Perform comparison on prototype arrays
+            info(f"Comparing {len(prototype_arrays)} model prototypes with metrics: {metrics}")
+            comparison = compare_heatmaps(prototype_arrays, metrics=metrics)
+            
+            # Build summary with human-readable labels
+            overall_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
+            overall_per_image: Dict[str, Dict[str, np.ndarray]] = {}
+            
+            for metric in metrics:
+                metric_summary: Dict[str, Dict[str, float]] = {}
+                metric_per_image: Dict[str, np.ndarray] = {}
+                
+                summary_block = comparison["summary"].get(metric, {})
+                per_image_block = comparison["per_image"].get(metric, {})
+                
+                for pair_key, stats in summary_block.items():
+                    i_str, j_str = pair_key.split("_vs_")
+                    pair_label = f"{model_names_ordered[int(i_str)]}_vs_{model_names_ordered[int(j_str)]}"
+                    metric_summary[pair_label] = {k: float(v) for k, v in stats.items()}
+                    
+                    # Store per-image data for distribution plots
+                    if pair_key in per_image_block:
+                        metric_per_image[pair_label] = per_image_block[pair_key]
+                
+                if metric_summary:
+                    overall_summary[metric] = metric_summary
+                if metric_per_image:
+                    overall_per_image[metric] = metric_per_image
+            
+            block = {
+                "overall": overall_summary,
+                "metrics": list(metrics),
+                "models_compared": model_names_ordered,
+                "n_variants_per_model": {model: len(variant_paths) for model, variant_paths in model_map.items()},
+                "prototype_shapes": {model: list(proto.shape) for model, proto in aligned_prototypes.items()},
+            }
+            inter_model_payload[method] = block
+            
+            # Generate plots
+            if show_comparison_plots:
+                for metric in metrics:
+                    matrix = overall_summary.get(metric)
+                    if matrix:
+                        labels = _labels_from_summary(matrix)
+                        if labels:
+                            # Similarity matrix
+                            indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
+                            if indexed_matrix:
+                                fig_matrix = visualize_similarity_matrix(
                                     results={"summary": {metric: indexed_matrix}},
                                     model_names=labels,
                                     metric=metric,
                                     stat="mean",
                                     annotate=True,
                                 )
+                                fig_key = f"inter_model_{method}_{metric}_matrix"
+                                figures[fig_key] = fig_matrix
+                                
+                                if save_plots:
+                                    plot_path = plot_output_dir / f"{fig_key}.png"
+                                    fig_matrix.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    info(f"Saved plot: {plot_path}")
+                            
+                            # Distribution histogram
+                            if metric in overall_per_image:
+                                comparison_for_viz = {
+                                    "per_image": {metric: overall_per_image[metric]},
+                                    "summary": {metric: matrix}
+                                }
+                                
+                                fig_dist = visualize_similarity_distribution(
+                                    results=comparison_for_viz,
+                                    metric=metric,
+                                    bins=40,
+                                    figsize=(14, 6)
+                                )
+                                fig_key = f"inter_model_{method}_{metric}_distribution"
+                                figures[fig_key] = fig_dist
+                                
+                                if save_plots:
+                                    plot_path = plot_output_dir / f"{fig_key}.png"
+                                    fig_dist.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    info(f"Saved plot: {plot_path}")
 
         if inter_model_payload:
             results_payload["inter_model"] = inter_model_payload
@@ -752,13 +820,20 @@ def compare_explainability_maps(
                                 indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
                                 if not indexed_matrix:
                                     continue
-                                figures[f"intra_model_{method}_{metric}"] = visualize_similarity_matrix(
+                                fig_matrix = visualize_similarity_matrix(
                                     results={"summary": {metric: indexed_matrix}},
                                     model_names=labels,
                                     metric=metric,
                                     stat="mean",
                                     annotate=True,
                                 )
+                                fig_key = f"intra_model_{method}_{metric}_matrix"
+                                figures[fig_key] = fig_matrix
+                                
+                                if save_plots:
+                                    plot_path = plot_output_dir / f"{fig_key}.png"
+                                    fig_matrix.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    info(f"Saved plot: {plot_path}")
 
         if intra_model_payload:
             results_payload["intra_model_variants"] = intra_model_payload
@@ -779,7 +854,7 @@ def compare_explainability_maps(
             warn(f"Could not write Experiment 2B summary to disk: {exc}")
 
     if show_comparison_plots and figures:
-        info("Comparison figures generated: %s" % sorted(figures.keys()))
+        info(f"Generated {len(figures)} comparison figures: {sorted(figures.keys())}")
 
     return {"results": results_payload, "figures": figures} if show_comparison_plots else results_payload
 
@@ -955,9 +1030,18 @@ if __name__ == '__main__':
 
     # Example: Run only the comparison step using existing maps for gradcam intra model and inter model variants.
     # # set_level('DEBUG') # Uncomment to enable debug logging
+
+   
+
     run_experiment_2(
+    models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161','barlowtwins'],
     variants='greedy',
-    xai_methods='mpm', 
+    xai_methods='both',
+    comparison_only=True,  # Set to True to skip map generation
+    comparison_kinds=["inter_model", "intra_model_variants"],
+    comparison_metrics=["correlation"],
+    show_comparison_plots=True,
+    save_comparison_json=True,
     )
 
     # End timer and calculate elapsed time
