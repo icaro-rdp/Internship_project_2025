@@ -37,6 +37,7 @@ from main.Utils.comparisons import (
     visualize_similarity_matrix,
     visualize_similarity_distribution
 )
+from main.Utils.visualization import visualize_similarity_matrix
 from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
@@ -94,7 +95,11 @@ CONFIG = {
     'sigma_values' : [3, 5, 9, 17, 33, 65],
     'sigma_values_test' : [3, 17, 65],
     'mask_value':0,
-    'pixel_batch_size': 512
+    'pixel_batch_size': 256,
+    'max_test_images': None,  # Set to an integer to limit processing (e.g., 50 for testing)
+    'gradcam_save_interval': 50,  # Save intermediate results every N images
+    'mpm_save_interval': 10,  # Save intermediate results every N images (MPM is slower)
+    'max_maps_in_memory': 100  # Maximum number of maps to keep in RAM before forcing save
 }
 # Training hyperparameters
 
@@ -204,7 +209,7 @@ def generate_explainability_maps(
         return {}
     
     # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
-    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1b_variant1_greedy_pruned')
+    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1')
     weights_files_by_model = {}
     skipped_files = []
     
@@ -259,8 +264,16 @@ def generate_explainability_maps(
             config = MODEL_REGISTRY[model_name]
             
             dataset = config['dataset']
+            test_dataset = dataset['test']
+            
+            # Optionally limit the number of test images for faster testing
+            if CONFIG.get('max_test_images') is not None:
+                max_imgs = min(CONFIG['max_test_images'], len(test_dataset))
+                test_dataset = Subset(test_dataset, range(max_imgs))
+                info(f"Limiting test set to {max_imgs} images")
+            
             test_loader = DataLoader(
-                dataset['test'],
+                test_dataset,
                 batch_size=SINGLE_BATCH_SIZE,
                 shuffle=False,
                 num_workers=NUM_WORKERS
@@ -273,6 +286,7 @@ def generate_explainability_maps(
             for weights_path in weight_file_list:
                 # prepare the naming convention for outputs
                 m = re.search(r"exp1a_variant\d+|exp1b_variant\d+_greedy_pruned|exp1b_variant\d+_negative_pruned|orig", str(weights_path))
+               
                 variant_tag = m.group(0) if m else 'orig'
                 model_name_output = f"{model_name}_{variant_tag}"
 
@@ -298,6 +312,9 @@ def generate_explainability_maps(
                     print("Running GradCAM...")
                     # for each image in test set, generate GradCAM map
                     maps = []
+                    intermediate_save_interval = CONFIG.get('gradcam_save_interval', 50)
+                    gradcam_map_path = GRADCAM_OUTPUT / f"{model_name_output}_maps.npy"
+                    
                     for img_idx, (img, label) in enumerate(test_loader):
                         img = img.to(device)
                         label = label.to(device)
@@ -309,28 +326,75 @@ def generate_explainability_maps(
                         )
                         gradcam_map = gradcam.generate_map(img, target_index=0)
                         gradcam.cleanup()
-                        print (f"GradCAM map shape: {gradcam_map.shape}")
-                        maps.append(gradcam_map)
+                        
+                        # Move to CPU and convert to numpy immediately to free GPU memory
+                        maps.append(gradcam_map.cpu().numpy() if isinstance(gradcam_map, torch.Tensor) else gradcam_map)
+                        
+                        if (img_idx + 1) % 10 == 0:
+                            print(f"Processed {img_idx + 1} images for GradCAM...")
+                        
+                        # Intermediate save to avoid losing progress
+                        if save_maps and (img_idx + 1) % intermediate_save_interval == 0:
+                            print(f"Intermediate save at {img_idx + 1} images...")
+                            maps_array = np.array(maps)
+                            temp_path = GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                            np.save(temp_path, maps_array)
+                            del maps_array
+                            # Only clear GPU cache after saves (less frequent)
+                            torch.cuda.empty_cache()
+                            gc.collect()
 
                     if save_maps:
-                        # Save the numpy array to disk
-                        print(f"Saving GradCAM map for {model_name} with shape {np.array(maps).shape}...")
+                        # Final save
+                        print(f"Final save: GradCAM map for {model_name} with {len(maps)} images...")
                         maps_array = np.array(maps)
-                        gradcam_map_path = GRADCAM_OUTPUT / f"{model_name_output}_maps.npy"
                         np.save(gradcam_map_path, maps_array)
+                        
+                        # Remove temp file if it exists
+                        temp_path = GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                        if temp_path.exists():
+                            temp_path.unlink()
+                        
                         variant_result['gradcam_map_path'] = str(gradcam_map_path)
-                    variant_result['gradcam_sample_count'] = len(maps)
-
+                        del maps_array
                     
+                    variant_result['gradcam_sample_count'] = len(maps)
+                    del maps
+                    # Clear cache once at the end of all GradCAM processing
+                    torch.cuda.empty_cache()
 
                 if run_masking:
                     print("Running Multiscale Pixel Masking...")
                     # for each image in test set, generate MPM map
                     maps = []
+                    intermediate_save_interval = CONFIG.get('mpm_save_interval', 10)
+                    max_images_in_memory = CONFIG.get('max_maps_in_memory', 100)
+                    mpm_map_path = MPM_OUTPUT / f"{model_name_output}_maps.npy"
+                    
+                    # Check if we have a partial save to resume from
+                    temp_path = MPM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                    start_idx = 0
+                    if temp_path.exists():
+                        try:
+                            existing_maps = np.load(temp_path)
+                            maps = list(existing_maps)
+                            start_idx = len(maps)
+                            info(f"Resuming from {start_idx} previously processed images...")
+                            del existing_maps
+                        except Exception as e:
+                            warn(f"Could not load temp file, starting fresh: {e}")
+                            start_idx = 0
+                            maps = []
+                    
                     for img_idx, (img, label) in enumerate(test_loader):
+                        # Skip already processed images if resuming
+                        if img_idx < start_idx:
+                            continue
+                            
                         img = img.to(device)
                         label = label.to(device)
-                        info(f"Generating MPM map for image {img_idx+1} with model {model_name} {variant_tag}...")
+                        info(f"Generating MPM map for image {img_idx+1}/{len(test_loader.dataset)} with model {model_name} {variant_tag}...")
+                        
                         mpm = MultiscalePixelMasking(
                             model=model,
                             sigma_list=CONFIG['sigma_values_test'],
@@ -338,15 +402,49 @@ def generate_explainability_maps(
                             mask_value=CONFIG['mask_value'])
                         
                         mpm_map = mpm.generate_map(img, target_index=0)
-                        maps.append(mpm_map)
+                        
+                        # Move to CPU and convert to numpy immediately to free GPU memory
+                        mpm_map_np = mpm_map.cpu().numpy() if isinstance(mpm_map, torch.Tensor) else mpm_map
+                        maps.append(mpm_map_np)
+                        
+                        # Clean up MPM object (but don't call expensive cache clearing every iteration)
+                        del mpm, mpm_map, mpm_map_np, img, label
+                        
+                        # Intermediate save to avoid losing progress
+                        if save_maps and (img_idx + 1) % intermediate_save_interval == 0:
+                            print(f"Intermediate save at {img_idx + 1} images...")
+                            maps_array = np.array(maps)
+                            np.save(temp_path, maps_array)
+                            info(f"Saved {len(maps)} maps to temporary file")
+                            del maps_array
+                            # Only clear GPU cache after saves (less frequent)
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                        
+                        # If we've accumulated too many maps in memory, save and clear
+                        if len(maps) >= max_images_in_memory and not save_maps:
+                            warn(f"Reached memory limit ({max_images_in_memory} maps). Consider enabling save_maps.")
+                            break
                         
                     if save_maps:
-                        print(f"Saving Multiscale Pixel Masking map for {model_name})...")
+                        # Final save
+                        print(f"Final save: MPM map for {model_name} with {len(maps)} images...")
                         maps_array = np.array(maps)
-                        mpm_map_path = MPM_OUTPUT / f"{model_name_output}_maps.npy"
                         np.save(mpm_map_path, maps_array)
+                        info(f"Saved final {len(maps)} maps to {mpm_map_path}")
+                        
+                        # Remove temp file if it exists
+                        if temp_path.exists():
+                            temp_path.unlink()
+                            info(f"Removed temporary file")
+                        
                         variant_result['mpm_map_path'] = str(mpm_map_path)
+                        del maps_array
+                    
                     variant_result['mpm_sample_count'] = len(maps)
+                    del maps
+                    # Clear cache once at the end of all MPM processing
+                    torch.cuda.empty_cache()
                          
         except Exception as e:
             error(f"Error testing {model_name}: {e}")
@@ -1026,23 +1124,20 @@ if __name__ == '__main__':
     # run_experiment_2()
 
     # Example: evaluate only GradCAM explainability for DenseNet variants and compute cross-method comparisons later
-    # run_experiment_2(models=('densenet161',), xai_methods='gradcam', variants=('orig', 'greedy'))
+    
+    set_level('DEBUG') # Uncomment to enable debug logging
+    run_experiment_2(models=('densenet161',), xai_methods='mpm', variants=( 'greedy'),show_plots=False, save_plots=False,save_maps=True)
 
-    # Example: Run only the comparison step using existing maps for gradcam intra model and inter model variants.
-    # # set_level('DEBUG') # Uncomment to enable debug logging
-
-   
-
-    run_experiment_2(
-    models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161','barlowtwins'],
-    variants='greedy',
-    xai_methods='both',
-    comparison_only=True,  # Set to True to skip map generation
-    comparison_kinds=["inter_model", "intra_model_variants"],
-    comparison_metrics=["correlation"],
-    show_comparison_plots=True,
-    save_comparison_json=True,
-    )
+    # run_experiment_2(
+    # models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161','barlowtwins'],
+    # variants='greedy',
+    # xai_methods='both',
+    # comparison_only=True,  # Set to True to skip map generation
+    # comparison_kinds=["inter_model", "intra_model_variants"],
+    # comparison_metrics=["correlation"],
+    # show_comparison_plots=True,
+    # save_comparison_json=True,
+    # )
 
     # End timer and calculate elapsed time
     end_time = time.time()
