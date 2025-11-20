@@ -21,6 +21,7 @@ MetricName = str
 PairKey = str
 UniformedHeatmaps = np.ndarray
 
+
 class MetricSummary(TypedDict):
     mean: float
     std: float
@@ -28,8 +29,10 @@ class MetricSummary(TypedDict):
     max: float
     median: float
 
+
 PerImageResults = Dict[MetricName, Dict[PairKey, np.ndarray]]
 SummaryResults = Dict[MetricName, Dict[PairKey, MetricSummary]]
+
 
 class ComparisonResults(TypedDict):
     per_image: PerImageResults
@@ -43,12 +46,12 @@ def uniform_heatmaps(
     num_images: Optional[int] = None,
 ) -> np.ndarray:
     """Reshape heatmaps to a common spatial resolution.
-    
+
     Args:
         heatmap_array (np.ndarray): Array of shape (B, H, W) containing heatmaps.
         height (int): Target height for resizing.
         width (int): Target width for resizing.
-        num_images (Optional[int]): If provided, limits the number of heatmaps processed.    
+        num_images (Optional[int]): If provided, limits the number of heatmaps processed.
     Returns:
         np.ndarray: Resized heatmaps of shape (B', height, width), where B' is min(B, num_images).
     """
@@ -79,7 +82,9 @@ def uniform_heatmaps(
             raise ValueError(
                 f"Each heatmap in the array must be 2D. Found heatmap at index {idx} with shape {current_heatmap.shape}"
             )
-        resized_heatmaps[idx] = cv2.resize(current_heatmap, resize_shape, interpolation=cv2.INTER_LINEAR)
+        resized_heatmaps[idx] = cv2.resize(
+            current_heatmap, resize_shape, interpolation=cv2.INTER_LINEAR
+        )
 
     return resized_heatmaps
 
@@ -89,7 +94,7 @@ def compare_heatmaps(
     metrics: Sequence[str] = ("mse", "correlation", "cosine", "ssim", "emd"),
 ) -> ComparisonResults:
     """Compare similarity between multiple heatmap collections.
-    
+
     Args:
         heatmap_arrays (Sequence[np.ndarray]): List of heatmap arrays to compare. Each array should have shape (B, H, W).
         metrics (Sequence[str]): List of metrics to compute. Supported metrics: "mse", "correlation", "cosine", "ssim", "emd".
@@ -108,7 +113,9 @@ def compare_heatmaps(
 
     for idx, array in enumerate(heatmap_arrays):
         if array.shape != reference_shape:
-            raise ValueError(f"Array {idx} has shape {array.shape}, expected {reference_shape}")
+            raise ValueError(
+                f"Array {idx} has shape {array.shape}, expected {reference_shape}"
+            )
 
     # Flatten arrays once for vectorized operations (Shape: N_images x Flattened_Dim)
     flat_arrays = [arr.reshape(n_images, -1) for arr in heatmap_arrays]
@@ -124,7 +131,7 @@ def compare_heatmaps(
 
     for i, j in array_pairs:
         pair_key = f"{i}_vs_{j}"
-        
+
         flat1 = flat_arrays[i]
         flat2 = flat_arrays[j]
 
@@ -148,9 +155,7 @@ def compare_heatmaps(
             for k in range(n_images):
                 # Use data_range=2.0 because heatmaps are normalized between -1 and 1
                 ssims[k] = ssim(
-                    heatmap_arrays[i][k], 
-                    heatmap_arrays[j][k], 
-                    data_range=2.0 
+                    heatmap_arrays[i][k], heatmap_arrays[j][k], data_range=2.0
                 )
             per_image["ssim"][pair_key] = ssims
 
@@ -158,7 +163,7 @@ def compare_heatmaps(
             emds = np.zeros(n_images, dtype=float)
             for k in range(n_images):
                 # Shift values to be strictly positive for valid distribution comparison
-                dist1 = flat1[k] + 1.0001 
+                dist1 = flat1[k] + 1.0001
                 dist2 = flat2[k] + 1.0001
                 emds[k] = wasserstein_distance(dist1, dist2)
             per_image["emd"][pair_key] = emds
@@ -186,10 +191,10 @@ def visualize_similarity_matrix(
     figsize: Tuple[float, float] = (12, 8),
     cmap: Union[str, colors.Colormap] = "coolwarm",
     annotate: bool = True,
-    plot_upper_triangle: bool = False,
+    plot_upper_triangle: bool = True,
 ) -> Figure:
     """Render a similarity matrix between models and return the figure.
-    
+
     Args:
         results (Mapping[str, Any]): Results dictionary from compare_heatmaps.
         model_names (Sequence[str]): List of model names corresponding to heatmap arrays.
@@ -204,9 +209,13 @@ def visualize_similarity_matrix(
     """
 
     if "summary" not in results:
-        raise KeyError("results must contain a 'summary' key produced by compare_heatmaps")
+        raise KeyError(
+            "results must contain a 'summary' key produced by compare_heatmaps"
+        )
 
-    summary_section = cast(Mapping[str, Mapping[str, Mapping[str, float]]], results["summary"])
+    summary_section = cast(
+        Mapping[str, Mapping[str, Mapping[str, float]]], results["summary"]
+    )
     if metric not in summary_section:
         raise ValueError(
             f"Metric '{metric}' not found in results. Available metrics: {list(summary_section.keys())}"
@@ -225,11 +234,18 @@ def visualize_similarity_matrix(
             if i < n_models and j < n_models:
                 stat_value = metrics_data.get(stat)
                 if stat_value is None:
-                    raise KeyError(f"Statistic '{stat}' not found for pair '{pair}' in metric '{metric}'")
+                    raise KeyError(
+                        f"Statistic '{stat}' not found for pair '{pair}' in metric '{metric}'"
+                    )
                 similarity_matrix[i, j] = float(stat_value)
                 similarity_matrix[j, i] = float(stat_value)
             else:
-                warn("Model indices %s, %s from pair '%s' are out of bounds. Skipping.", i, j, pair)
+                warn(
+                    "Model indices %s, %s from pair '%s' are out of bounds. Skipping.",
+                    i,
+                    j,
+                    pair,
+                )
         else:
             warn("Could not parse indices from pair '%s'. Skipping.", pair)
 
@@ -276,8 +292,12 @@ def visualize_similarity_matrix(
         ax=ax,
     )
 
-    title_metric_name = metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
-    ax.set_title(f"{title_metric_name} {stat.capitalize()} Between Heatmaps of Different Models")
+    title_metric_name = (
+        metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
+    )
+    ax.set_title(
+        f"{title_metric_name} {stat.capitalize()} Between Heatmaps of Different Models"
+    )
     fig.tight_layout()
     return fig
 
@@ -285,71 +305,135 @@ def visualize_similarity_matrix(
 def visualize_similarity_distribution(
     results: ComparisonResults,
     metric: str = "correlation",
-    figsize: Tuple[float, float] = (14, 6),
-    bins: int = 40,
+    figsize: Tuple[float, float] = (10, 6),
+    bins: Union[int, str] = "auto",
     color: str = "steelblue",
 ) -> Figure:
-    """Plot histogram of inter-model agreement and consensus-vs-controversy scatter.
-    
-    The figure consists of two subplots:
-    1. Histogram: Distribution of the mean agreement score per image.
-    2. Scatter Plot: Mean Agreement vs. Standard Deviation (Controversy) per image.
-    
+    """
+    Plot histogram of inter-variant agreement distribution.
+
     Args:
         results (Mapping[str, Any]): Results dictionary from compare_heatmaps.
         metric (str): Metric to visualize. Supported: "mse", "correlation", "cosine", "ssim", "emd".
         figsize (Tuple[float, float]): Figure size for the plot.
-        bins (int): Number of bins for the histogram.
+        bins (int or str): Number of bins for the histogram. If 'auto', uses numpy's automatic bin selection.
+            More bins = finer granularity, fewer bins = smoother distribution. Default is 40.
         color (str): Color for the histogram bars.
-        
+
     Returns:
-        Figure: Matplotlib figure containing the plots.
+        Figure: Matplotlib figure containing the histogram plot.
     """
+
+    # Validate and explain bins
+    if isinstance(bins, int):
+        if bins <= 0:
+            raise ValueError("bins must be a positive integer or 'auto'.")
+        bins_explanation = f"Using {bins} bins: finer granularity, more detail."
+    elif isinstance(bins, str):
+        if bins != "auto":
+            raise ValueError("bins must be a positive integer or 'auto'.")
+        bins_explanation = (
+            "Using 'auto' bins: numpy will choose bin count based on data."
+        )
+    else:
+        raise TypeError("bins must be int or 'auto' string.")
+
     if "per_image" not in results:
-        raise KeyError("results must contain a 'per_image' key produced by compare_heatmaps")
-    
-    per_image_section = cast(Mapping[str, Mapping[str, np.ndarray]], results["per_image"])
+        raise KeyError(
+            "results must contain a 'per_image' key produced by compare_heatmaps"
+        )
+
+    per_image_section = cast(
+        Mapping[str, Mapping[str, np.ndarray]], results["per_image"]
+    )
     if metric not in per_image_section:
         raise ValueError(
             f"Metric '{metric}' not found in results. Available metrics: {list(per_image_section.keys())}"
         )
-    
+
     metric_data = per_image_section[metric]
-    
+
     # Stack comparisons into (n_pairs, n_images)
     stacked_comparisons = np.stack(list(metric_data.values()), axis=0)
-    
+
     # Calculate statistics across pairs for each image
     agreement_means = np.mean(stacked_comparisons, axis=0)
-    agreement_stds = np.std(stacked_comparisons, axis=0)
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': [2, 1]})
-    
-    # Subplot 1: Histogram of means
-    ax1.hist(agreement_means, bins=bins, alpha=0.7, edgecolor='black', color=color)
-    ax1.axvline(np.mean(agreement_means), color='red', linestyle='--', linewidth=2, 
-               label=f'Global Mean: {np.mean(agreement_means):.3f}')
-    
-    # Adjust labels for -1 to 1 range metrics
-    if metric in ["correlation", "cosine"]:
-        ax1.set_xlim(-1.1, 1.1)
-        xlabel_text = f'Average {metric.capitalize()} (-1=Opposite, 1=Same)'
-    else:
-        metric_display = metric.upper() if metric in ("mse", "emd", "ssim") else metric.capitalize()
-        xlabel_text = f'Average {metric_display} Score'
-        
-    ax1.set_xlabel(xlabel_text)
-    ax1.set_ylabel('Number of Images')
-    ax1.set_title('Distribution of Inter-Model Agreement')
-    ax1.legend()
-    ax1.grid(alpha=0.3, axis='y')
 
-    # Subplot 2: Scatter of Mean vs Std
-    sns.scatterplot(x=agreement_means, y=agreement_stds, ax=ax2, alpha=0.6)
-    ax2.set_xlabel('Mean Agreement Score')
-    ax2.set_ylabel('Standard Deviation (Controversy)')
-    ax2.set_title('Consensus vs. Controversy Analysis')
-    ax2.grid(True, alpha=0.3)
-    
+    # Analyze the distribution to set appropriate scales
+    data_min = np.min(agreement_means)
+    data_max = np.max(agreement_means)
+    data_mean = np.mean(agreement_means)
+    data_std = np.std(agreement_means)
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot histogram
+    counts, bins_edges, patches = ax.hist(
+        agreement_means, bins=bins, alpha=0.7, edgecolor="black", color=color
+    )
+
+    # Add mean line
+    ax.axvline(
+        data_mean,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean: {data_mean:.3f} (±{data_std:.3f})",
+    )
+
+    # Set X-axis limits based on metric type and data range
+    if metric in ["correlation", "cosine"]:
+        # For correlation/cosine, use full range but consider data
+        x_margin = 0.05
+        xlim_min = max(-1.0, data_min - x_margin)
+        xlim_max = min(1.0, data_max + x_margin)
+        ax.set_xlim(xlim_min, xlim_max)
+        xlabel_text = f"Average {metric.capitalize()} Score"
+    elif metric in ["mse", "emd"]:
+        # For error metrics, start from 0 and add margin
+        x_margin = (data_max - data_min) * 0.1
+        ax.set_xlim(0, data_max + x_margin)
+        metric_display = metric.upper()
+        xlabel_text = f"Average {metric_display} Score"
+    elif metric == "ssim":
+        # SSIM ranges from -1 to 1
+        x_margin = 0.05
+        xlim_min = max(-1.0, data_min - x_margin)
+        xlim_max = min(1.0, data_max + x_margin)
+        ax.set_xlim(xlim_min, xlim_max)
+        xlabel_text = f"Average {metric.upper()} Score"
+    else:
+        # For other metrics, use data-driven limits
+        x_margin = (data_max - data_min) * 0.1
+        ax.set_xlim(data_min - x_margin, data_max + x_margin)
+        xlabel_text = f"Average {metric.capitalize()} Score"
+
+    # Set Y-axis limits based on histogram counts
+    y_max = np.max(counts)
+    y_margin = y_max * 0.1
+    ax.set_ylim(0, y_max + y_margin)
+
+    # Labels and styling
+    ax.set_xlabel(xlabel_text, fontsize=11)
+    ax.set_ylabel("Number of Images", fontsize=11)
+    ax.set_title(
+        f"Distribution of Variant Agreement ({metric.capitalize()})", fontsize=12
+    )
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.3, axis="y")
+
+    # Add bins explanation as a note below the plot
+    ax.text(
+        0.99,
+        -0.18,
+        bins_explanation,
+        fontsize=9,
+        color="gray",
+        ha="right",
+        va="top",
+        transform=ax.transAxes,
+    )
+
     fig.tight_layout()
     return fig

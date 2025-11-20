@@ -24,7 +24,7 @@ from main.Models import (
     ResNet152AuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor
+    BarlowTwinsAuthenticityPredictor,
 )
 
 # Import utilities
@@ -32,10 +32,10 @@ from main.Utils.explainability import GradCAM, MultiscalePixelMasking
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, debug, set_level
 from main.Utils.comparisons import (
-    compare_heatmaps, 
+    compare_heatmaps,
     uniform_heatmaps,
     visualize_similarity_matrix,
-    visualize_similarity_distribution
+    visualize_similarity_distribution,
 )
 from main.Utils.visualization import visualize_similarity_matrix
 from main.data import (
@@ -52,68 +52,69 @@ from main.data import (
 
 # Model registry with their configurations
 MODEL_REGISTRY = {
-    'vgg16': {
-        'class': VGG16AuthenticityPredictor,
-        'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.28',  # Last conv layer
-        'input_size': 224
+    "vgg16": {
+        "class": VGG16AuthenticityPredictor,
+        "dataset": IMAGENET_DATASET,
+        "target_layer": "features.28",  # Last conv layer
+        "input_size": 224,
     },
-    'vgg19': {
-        'class': VGG19AuthenticityPredictor,
-        'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.34',  # Last conv layer
-        'input_size': 224
+    "vgg19": {
+        "class": VGG19AuthenticityPredictor,
+        "dataset": IMAGENET_DATASET,
+        "target_layer": "features.34",  # Last conv layer
+        "input_size": 224,
     },
-    'resnet152': {
-        'class': ResNet152AuthenticityPredictor,
-        'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.7.2.conv3',  # Last residual block
-        'input_size': 224
+    "resnet152": {
+        "class": ResNet152AuthenticityPredictor,
+        "dataset": IMAGENET_DATASET,
+        "target_layer": "features.7.2.conv3",  # Last residual block
+        "input_size": 224,
     },
-    'densenet161': {
-        'class': DenseNet161AuthenticityPredictor,
-        'dataset': DENSENET_DATASET,
-        'target_layer': 'features.denseblock4.denselayer24.conv2',  # Last dense block conv layer
-        'input_size': 300
+    "densenet161": {
+        "class": DenseNet161AuthenticityPredictor,
+        "dataset": DENSENET_DATASET,
+        "target_layer": "features.denseblock4.denselayer24.conv2",  # Last dense block conv layer
+        "input_size": 300,
     },
-    'efficientnetb3': {
-        'class': EfficientNetB3AuthenticityPredictor,
-        'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.8.0',  # Last conv2d of the last block
-        'input_size': 224
+    "efficientnetb3": {
+        "class": EfficientNetB3AuthenticityPredictor,
+        "dataset": IMAGENET_DATASET,
+        "target_layer": "features.8.0",  # Last conv2d of the last block
+        "input_size": 224,
     },
-    'barlowtwins': {
-        'class': BarlowTwinsAuthenticityPredictor,
-        'dataset': IMAGENET_DATASET,
-        'target_layer': 'features.7.2.conv3',  # Last layer before avgpool
-        'input_size': 224
-    }
+    "barlowtwins": {
+        "class": BarlowTwinsAuthenticityPredictor,
+        "dataset": IMAGENET_DATASET,
+        "target_layer": "features.7.2.conv3",  # Last layer before avgpool
+        "input_size": 224,
+    },
 }
 
 # XAI method specific configurations
 CONFIG = {
-    'sigma_values' : [3, 5, 9, 17, 33, 65],
-    'sigma_values_test' : [3, 17, 65],
-    'mask_value':0,
-    'pixel_batch_size': 256,
-    'max_test_images': None,  # Set to an integer to limit processing (e.g., 50 for testing)
-    'gradcam_save_interval': 50,  # Save intermediate results every N images
-    'mpm_save_interval': 10,  # Save intermediate results every N images (MPM is slower)
-    'max_maps_in_memory': 100  # Maximum number of maps to keep in RAM before forcing save
+    "sigma_values": [3, 5, 9, 17, 33, 65],
+    "sigma_values_test": [3, 17, 65],
+    "mask_value": 0,
+    "pixel_batch_size": 256,
+    "max_test_images": None,  # Set to an integer to limit processing (e.g., 50 for testing)
+    "gradcam_save_interval": 50,  # Save intermediate results every N images
+    "mpm_save_interval": 10,  # Save intermediate results every N images (MPM is slower)
+    "max_maps_in_memory": 100,  # Maximum number of maps to keep in RAM before forcing save
 }
 # Training hyperparameters
 
 # Output directories
-OUTPUT_DIR = Path('Outputs/Experiment_2_variants')
-XAI_MAPS_OUTPUT = OUTPUT_DIR / 'XAI_Maps'
-GRADCAM_OUTPUT = XAI_MAPS_OUTPUT / 'GradCAM'
-MPM_OUTPUT = XAI_MAPS_OUTPUT / 'Multiscale_Pixel_Masking'
-WEIGHTS_DIR = Path('Outputs/Experiment_1_variants/Weights')
+OUTPUT_DIR = Path("Outputs/Experiment_2_variants")
+XAI_MAPS_OUTPUT = OUTPUT_DIR / "XAI_Maps"
+GRADCAM_OUTPUT = XAI_MAPS_OUTPUT / "GradCAM"
+MPM_OUTPUT = XAI_MAPS_OUTPUT / "Multiscale_Pixel_Masking"
+WEIGHTS_DIR = Path("Outputs/Experiment_1_variants/Weights")
 
 
 # ============================================================================
 # Experiment 2A: Explainability Methods / GradCAM - Multiscale Pixel Masking
 # ============================================================================
+
 
 def generate_explainability_maps(
     variants="all",
@@ -124,14 +125,14 @@ def generate_explainability_maps(
 ):
     """
     Conducts Experiment 2A using GradCAM for explainability.
-        
+
     Args:
         models_to_test (list or None): List of model names to test. If None, tests all models in MODEL_REGISTRY.
         model_name (str): Name of the model to use.
         config (dict): Configuration dictionary for the model.
         save_maps (bool): Whether to save explainability maps.
     variants (str|Sequence[str]): Which variants to test ('all' | 'base' | 'greedy' | 'negative' | 'orig').
-    
+
     Returns:
         None
     """
@@ -139,7 +140,7 @@ def generate_explainability_maps(
     info("EXPERIMENT 2A: GRADCAM-BASED EXPLAINABILITY")
     print("=" * 80)
 
-    #create output directories
+    # create output directories
     XAI_MAPS_OUTPUT.mkdir(parents=True, exist_ok=True)
     GRADCAM_OUTPUT.mkdir(parents=True, exist_ok=True)
     MPM_OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -199,101 +200,114 @@ def generate_explainability_maps(
     if not WEIGHTS_DIR.exists():
         error(f"Weights directory not found: {WEIGHTS_DIR}")
         return {}
-    
-    # Collect all .pth files 
-    all_pth_files = sorted(WEIGHTS_DIR.glob('*.pth'))
+
+    # Collect all .pth files
+    all_pth_files = sorted(WEIGHTS_DIR.glob("*.pth"))
     print(f"Found {len(all_pth_files)} weight files in {WEIGHTS_DIR}")
 
     if not all_pth_files:
-        error(f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A and 1B first.")
+        error(
+            f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A and 1B first."
+        )
         return {}
-    
+
     # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
-    modelname_re = re.compile(r'^([A-Za-z0-9_]+)_exp1')
+    modelname_re = re.compile(r"^([A-Za-z0-9_]+)_exp1")
     weights_files_by_model = {}
     skipped_files = []
-    
+
     for p in all_pth_files:
         m = modelname_re.match(p.name)
         if not m:
             # if filename does not follow naming convention, skip but record for inspection
             skipped_files.append(p)
             continue
-            
+
         mn = m.group(1)
-        
+
         # If user asked to test only specific models, skip others
         if models_to_test is not None and mn not in models_to_test:
             continue
-            
+
         # Only include files for known models (we need config to instantiate the model)
         if mn not in MODEL_REGISTRY:
             warn(f"Found weights for unknown model '{mn}' -> skipping file {p.name}")
             skipped_files.append(p)
             continue
-            
+
         weights_files_by_model.setdefault(mn, []).append(p)
-        
+
     if not weights_files_by_model:
-        error(f"No valid model weight files found in {WEIGHTS_DIR} (checked {len(all_pth_files)} files).")
+        error(
+            f"No valid model weight files found in {WEIGHTS_DIR} (checked {len(all_pth_files)} files)."
+        )
         if skipped_files:
             info("Skipped files:")
             for s in skipped_files:
                 info(f" - {s.name}")
         return {}
-        
+
     total_files_found = sum(len(v) for v in weights_files_by_model.values())
-    info(f"Found {total_files_found} weight file(s) across {len(weights_files_by_model)} model type(s) in {WEIGHTS_DIR}.")
-    
+    info(
+        f"Found {total_files_found} weight file(s) across {len(weights_files_by_model)} model type(s) in {WEIGHTS_DIR}."
+    )
+
     if verbose:
         info("Per-model file counts:")
         for mn, fls in sorted(weights_files_by_model.items()):
             info(f" - {mn}: {len(fls)} file(s)")
-    
-    # Results storage for numpy maps 
+
+    # Results storage for numpy maps
     results = {}
-    
+
     # run explainability on each model (and its variant files)
     model_items = list(weights_files_by_model.items())
-    
+
     for idx, (model_name, weight_file_list) in enumerate(model_items, 1):
         info(f"[{idx}/{len(model_items)}] XAI on {model_name.upper()}")
         print("-" * 80)
 
         try:
             config = MODEL_REGISTRY[model_name]
-            
-            dataset = config['dataset']
-            test_dataset = dataset['test']
-            
+
+            dataset = config["dataset"]
+            test_dataset = dataset["test"]
+
             # Optionally limit the number of test images for faster testing
-            if CONFIG.get('max_test_images') is not None:
-                max_imgs = min(CONFIG['max_test_images'], len(test_dataset))
+            if CONFIG.get("max_test_images") is not None:
+                max_imgs = min(CONFIG["max_test_images"], len(test_dataset))
                 test_dataset = Subset(test_dataset, range(max_imgs))
                 info(f"Limiting test set to {max_imgs} images")
-            
+
             test_loader = DataLoader(
                 test_dataset,
                 batch_size=SINGLE_BATCH_SIZE,
                 shuffle=False,
-                num_workers=NUM_WORKERS
+                num_workers=NUM_WORKERS,
             )
-            
+
             # Prepare results container for this model
             results[model_name] = {}
-            
+
             # Iterate over all weight files (variants) for this model
             for weights_path in weight_file_list:
                 # prepare the naming convention for outputs
-                m = re.search(r"exp1a_variant\d+|exp1b_variant\d+_greedy_pruned|exp1b_variant\d+_negative_pruned|orig", str(weights_path))
-               
-                variant_tag = m.group(0) if m else 'orig'
+                m = re.search(
+                    r"exp1a_variant\d+|exp1b_variant\d+_greedy_pruned|exp1b_variant\d+_negative_pruned|orig",
+                    str(weights_path),
+                )
+
+                variant_tag = m.group(0) if m else "orig"
                 model_name_output = f"{model_name}_{variant_tag}"
 
                 if not variant_matches(variant_tag):
                     debug(
                         "Skipping variant '%s' for model '%s' based on selection %s."
-                        % (variant_tag, model_name, sorted(selected_variants) if selected_variants else ['all'])
+                        % (
+                            variant_tag,
+                            model_name,
+                            sorted(selected_variants) if selected_variants else ["all"],
+                        )
                     )
                     continue
 
@@ -301,8 +315,8 @@ def generate_explainability_maps(
                     info(f"Loading model from {weights_path}...")
 
                 # Instantiate model and load weights
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                model = config['class'](freeze_backbone=False)
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                model = config["class"](freeze_backbone=False)
                 model.load_state_dict(torch.load(weights_path, weights_only=True))
                 model.to(device)
 
@@ -310,34 +324,40 @@ def generate_explainability_maps(
 
                 if run_gradcam:
                     print("Running GradCAM...")
-                    # for each image in test set, generate GradCAM map
                     maps = []
-                    intermediate_save_interval = CONFIG.get('gradcam_save_interval', 50)
+                    intermediate_save_interval = CONFIG.get("gradcam_save_interval", 50)
                     gradcam_map_path = GRADCAM_OUTPUT / f"{model_name_output}_maps.npy"
-                    
+
                     for img_idx, (img, label) in enumerate(test_loader):
                         img = img.to(device)
                         label = label.to(device)
 
                         gradcam = GradCAM(
-                            model=model,
-                            target_layer=config['target_layer'],
-                            relu=False
+                            model=model, target_layer=config["target_layer"], relu=False
                         )
                         gradcam_map = gradcam.generate_map(img, target_index=0)
                         gradcam.cleanup()
-                        
+
                         # Move to CPU and convert to numpy immediately to free GPU memory
-                        maps.append(gradcam_map.cpu().numpy() if isinstance(gradcam_map, torch.Tensor) else gradcam_map)
-                        
+                        maps.append(
+                            gradcam_map.cpu().numpy()
+                            if isinstance(gradcam_map, torch.Tensor)
+                            else gradcam_map
+                        )
+
                         if (img_idx + 1) % 10 == 0:
                             print(f"Processed {img_idx + 1} images for GradCAM...")
-                        
+
                         # Intermediate save to avoid losing progress
-                        if save_maps and (img_idx + 1) % intermediate_save_interval == 0:
+                        if (
+                            save_maps
+                            and (img_idx + 1) % intermediate_save_interval == 0
+                        ):
                             print(f"Intermediate save at {img_idx + 1} images...")
                             maps_array = np.array(maps)
-                            temp_path = GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                            temp_path = (
+                                GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                            )
                             np.save(temp_path, maps_array)
                             del maps_array
                             # Only clear GPU cache after saves (less frequent)
@@ -346,19 +366,23 @@ def generate_explainability_maps(
 
                     if save_maps:
                         # Final save
-                        print(f"Final save: GradCAM map for {model_name} with {len(maps)} images...")
+                        print(
+                            f"Final save: GradCAM map for {model_name} with {len(maps)} images..."
+                        )
                         maps_array = np.array(maps)
                         np.save(gradcam_map_path, maps_array)
-                        
+
                         # Remove temp file if it exists
-                        temp_path = GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                        temp_path = (
+                            GRADCAM_OUTPUT / f"{model_name_output}_maps_temp.npy"
+                        )
                         if temp_path.exists():
                             temp_path.unlink()
-                        
-                        variant_result['gradcam_map_path'] = str(gradcam_map_path)
+
+                        variant_result["gradcam_map_path"] = str(gradcam_map_path)
                         del maps_array
-                    
-                    variant_result['gradcam_sample_count'] = len(maps)
+
+                    variant_result["gradcam_sample_count"] = len(maps)
                     del maps
                     # Clear cache once at the end of all GradCAM processing
                     torch.cuda.empty_cache()
@@ -367,10 +391,10 @@ def generate_explainability_maps(
                     print("Running Multiscale Pixel Masking...")
                     # for each image in test set, generate MPM map
                     maps = []
-                    intermediate_save_interval = CONFIG.get('mpm_save_interval', 10)
-                    max_images_in_memory = CONFIG.get('max_maps_in_memory', 100)
+                    intermediate_save_interval = CONFIG.get("mpm_save_interval", 10)
+                    max_images_in_memory = CONFIG.get("max_maps_in_memory", 100)
                     mpm_map_path = MPM_OUTPUT / f"{model_name_output}_maps.npy"
-                    
+
                     # Check if we have a partial save to resume from
                     temp_path = MPM_OUTPUT / f"{model_name_output}_maps_temp.npy"
                     start_idx = 0
@@ -379,39 +403,51 @@ def generate_explainability_maps(
                             existing_maps = np.load(temp_path)
                             maps = list(existing_maps)
                             start_idx = len(maps)
-                            info(f"Resuming from {start_idx} previously processed images...")
+                            info(
+                                f"Resuming from {start_idx} previously processed images..."
+                            )
                             del existing_maps
                         except Exception as e:
                             warn(f"Could not load temp file, starting fresh: {e}")
                             start_idx = 0
                             maps = []
-                    
+
                     for img_idx, (img, label) in enumerate(test_loader):
-                        # Skip already processed images if resuming
+                        # Skip already processed images if resuming (from temp file)
                         if img_idx < start_idx:
                             continue
-                            
+
                         img = img.to(device)
                         label = label.to(device)
-                        info(f"Generating MPM map for image {img_idx+1}/{len(test_loader.dataset)} with model {model_name} {variant_tag}...")
-                        
+                        info(
+                            f"Generating MPM map for image {img_idx+1}/{len(test_loader.dataset)} with model {model_name} {variant_tag}..."
+                        )
+
                         mpm = MultiscalePixelMasking(
                             model=model,
-                            sigma_list=CONFIG['sigma_values_test'],
-                            pixel_batch_size=CONFIG['pixel_batch_size'],
-                            mask_value=CONFIG['mask_value'])
-                        
+                            sigma_list=CONFIG["sigma_values_test"],
+                            pixel_batch_size=CONFIG["pixel_batch_size"],
+                            mask_value=CONFIG["mask_value"],
+                        )
+
                         mpm_map = mpm.generate_map(img, target_index=0)
-                        
+
                         # Move to CPU and convert to numpy immediately to free GPU memory
-                        mpm_map_np = mpm_map.cpu().numpy() if isinstance(mpm_map, torch.Tensor) else mpm_map
+                        mpm_map_np = (
+                            mpm_map.cpu().numpy()
+                            if isinstance(mpm_map, torch.Tensor)
+                            else mpm_map
+                        )
                         maps.append(mpm_map_np)
-                        
-                        # Clean up MPM object (but don't call expensive cache clearing every iteration)
+
+                        # Clean up MPM object
                         del mpm, mpm_map, mpm_map_np, img, label
-                        
+
                         # Intermediate save to avoid losing progress
-                        if save_maps and (img_idx + 1) % intermediate_save_interval == 0:
+                        if (
+                            save_maps
+                            and (img_idx + 1) % intermediate_save_interval == 0
+                        ):
                             print(f"Intermediate save at {img_idx + 1} images...")
                             maps_array = np.array(maps)
                             np.save(temp_path, maps_array)
@@ -420,52 +456,58 @@ def generate_explainability_maps(
                             # Only clear GPU cache after saves (less frequent)
                             torch.cuda.empty_cache()
                             gc.collect()
-                        
+
                         # If we've accumulated too many maps in memory, save and clear
                         if len(maps) >= max_images_in_memory and not save_maps:
-                            warn(f"Reached memory limit ({max_images_in_memory} maps). Consider enabling save_maps.")
+                            warn(
+                                f"Reached memory limit ({max_images_in_memory} maps). Consider enabling save_maps."
+                            )
                             break
-                        
+
                     if save_maps:
                         # Final save
-                        print(f"Final save: MPM map for {model_name} with {len(maps)} images...")
+                        print(
+                            f"Final save: MPM map for {model_name} with {len(maps)} images..."
+                        )
                         maps_array = np.array(maps)
                         np.save(mpm_map_path, maps_array)
                         info(f"Saved final {len(maps)} maps to {mpm_map_path}")
-                        
+
                         # Remove temp file if it exists
                         if temp_path.exists():
                             temp_path.unlink()
                             info(f"Removed temporary file")
-                        
-                        variant_result['mpm_map_path'] = str(mpm_map_path)
+
+                        variant_result["mpm_map_path"] = str(mpm_map_path)
                         del maps_array
-                    
-                    variant_result['mpm_sample_count'] = len(maps)
+
+                    variant_result["mpm_sample_count"] = len(maps)
                     del maps
                     # Clear cache once at the end of all MPM processing
                     torch.cuda.empty_cache()
-                         
+
         except Exception as e:
             error(f"Error testing {model_name}: {e}")
             error(traceback.format_exc())
-                 
+
         finally:
             # Clean up memory after each model (success or failure)
             info(f"Cleaning up {model_name} from memory...")
             cleanup_model_and_data(
-                model=locals().get('model'),
-                dataloaders=locals().get('test_loader'),
-                optimizer=None
+                model=locals().get("model"),
+                dataloaders=locals().get("test_loader"),
+                optimizer=None,
             )
             clear_gpu_memory()
             info(f"✓ {model_name} memory cleaned")
 
-    return results     
+    return results
+
 
 # ============================================================================
 # Experiment 2B: Explainability Comparisons
 # ============================================================================
+
 
 def _load_heatmap(path: Path) -> np.ndarray:
     """Load heatmap array from disk and normalise shape to (N, H, W)."""
@@ -475,54 +517,62 @@ def _load_heatmap(path: Path) -> np.ndarray:
         if arr.shape[1] == 1:
             arr = arr[:, 0]
         else:
-            raise ValueError(f"Heatmap array at {path} has 4 dims but channel dimension != 1: {arr.shape}")
+            raise ValueError(
+                f"Heatmap array at {path} has 4 dims but channel dimension != 1: {arr.shape}"
+            )
     elif arr.ndim == 2:
         arr = arr[np.newaxis, ...]
     if arr.ndim != 3:
-        raise ValueError(f"Heatmap array at {path} must be 3D after processing. Found shape {arr.shape}")
+        raise ValueError(
+            f"Heatmap array at {path} must be 3D after processing. Found shape {arr.shape}"
+        )
     return arr.astype(np.float32, copy=False)
 
 
 def _create_prototype_heatmap(variant_paths: Dict[str, Path]) -> np.ndarray:
     """Create a prototype heatmap by averaging across all variants of a model.
-    
+
     Args:
         variant_paths: Dictionary mapping variant names to their heatmap file paths.
                       Each file contains an array of shape (N, H, W).
-    
+
     Returns:
         np.ndarray: Averaged heatmap across all variants, shape (N, H, W).
     """
     if not variant_paths:
         raise ValueError("No variant paths provided for prototype creation")
-    
+
     # Load all variant heatmaps
     variant_arrays = []
     for variant_name, path in sorted(variant_paths.items()):
         arr = _load_heatmap(path)
         info(f"Loading variant '{variant_name}' with shape {arr.shape} for prototype")
         variant_arrays.append(arr)
-    
+
     # Find minimum number of images across all variants
     min_images = min(arr.shape[0] for arr in variant_arrays)
-    
+
     # Trim all arrays to the same number of images and stack
     trimmed_arrays = [arr[:min_images] for arr in variant_arrays]
-    
+
     # Stack variants along a new axis: (n_variants, n_images, H, W)
     stacked = np.stack(trimmed_arrays, axis=0)
-    
+
     # Average across variants (axis=0) to get prototype: (n_images, H, W)
     prototype = np.mean(stacked, axis=0)
-    
-    info(f"Created prototype heatmap from {len(variant_arrays)} variants with shape {prototype.shape}")
+
+    info(
+        f"Created prototype heatmap from {len(variant_arrays)} variants with shape {prototype.shape}"
+    )
     return prototype
 
 
 def _split_model_variant(stem: str) -> Tuple[str, str]:
     """Split a stored heatmap stem into (model, variant)."""
     if "_" not in stem:
-        warn(f"Could not split stem '{stem}' into model and variant; defaulting variant to 'default'.")
+        warn(
+            f"Could not split stem '{stem}' into model and variant; defaulting variant to 'default'."
+        )
         return stem, "default"
     model_name, variant = stem.split("_", 1)
     return model_name, variant
@@ -531,11 +581,23 @@ def _split_model_variant(stem: str) -> Tuple[str, str]:
 def _summarise(values: Sequence[float]) -> Dict[str, float]:
     """Compute summary statistics while dropping NaNs."""
     if not values:
-        return {"mean": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan"), "median": float("nan")}
+        return {
+            "mean": float("nan"),
+            "std": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+            "median": float("nan"),
+        }
     arr = np.asarray(values, dtype=np.float64)
     arr = arr[~np.isnan(arr)]
     if arr.size == 0:
-        return {"mean": float("nan"), "std": float("nan"), "min": float("nan"), "max": float("nan"), "median": float("nan")}
+        return {
+            "mean": float("nan"),
+            "std": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+            "median": float("nan"),
+        }
     return {
         "mean": float(np.mean(arr)),
         "std": float(np.std(arr)),
@@ -565,13 +627,15 @@ def _reindex_summary_for_visualization(
     for pair_label, stats in summary.items():
         parts = pair_label.split("_vs_")
         if len(parts) != 2:
-            warn(f"Unexpected pair label format '{pair_label}' for visualization. Skipping.")
+            warn(
+                f"Unexpected pair label format '{pair_label}' for visualization. Skipping."
+            )
             continue
         left, right = parts
         if left not in index_lookup or right not in index_lookup:
             warn(
-                "Pair '%s' references labels not present in the provided label list %s. Skipping." %
-                (pair_label, labels)
+                "Pair '%s' references labels not present in the provided label list %s. Skipping."
+                % (pair_label, labels)
             )
             continue
         indexed_key = f"{index_lookup[left]}_vs_{index_lookup[right]}"
@@ -588,7 +652,9 @@ def _compare_context(
     """Compare heatmaps for a specific grouping and update global accumulators."""
 
     if len(label_to_path) < 2:
-        warn("Comparison context skipped because fewer than two heatmaps were provided.")
+        warn(
+            "Comparison context skipped because fewer than two heatmaps were provided."
+        )
         return {}
 
     labels = []
@@ -662,7 +728,7 @@ def compare_explainability_maps(
         show_comparison_plots: Whether to generate matplotlib figures.
         save_plots: Whether to save generated plots to disk.
         plot_output_dir: Directory to save plots. If None, uses OUTPUT_DIR / 'Plots'.
-    
+
     Returns:
         Dictionary containing comparison results and optionally figures.
     """
@@ -672,7 +738,7 @@ def compare_explainability_maps(
     print("=" * 80)
 
     if plot_output_dir is None:
-        plot_output_dir = OUTPUT_DIR / 'Plots'
+        plot_output_dir = OUTPUT_DIR / "Plots"
     plot_output_dir.mkdir(parents=True, exist_ok=True)
 
     method_dirs = {
@@ -685,9 +751,13 @@ def compare_explainability_maps(
     else:
         requested_methods = [m.strip().lower() for m in methods]
 
-    available_methods = [m for m in requested_methods if method_dirs.get(m, Path()).exists()]
+    available_methods = [
+        m for m in requested_methods if method_dirs.get(m, Path()).exists()
+    ]
     if not available_methods:
-        warn("None of the requested explainability methods have saved maps. Aborting comparisons.")
+        warn(
+            "None of the requested explainability methods have saved maps. Aborting comparisons."
+        )
         return {}
 
     metrics = tuple(dict.fromkeys(metrics))
@@ -700,7 +770,9 @@ def compare_explainability_maps(
     valid_kinds = {"inter_model", "intra_model_variants"}
     invalid_kinds = requested_kinds - valid_kinds
     if invalid_kinds:
-        warn(f"Unknown comparison kinds {sorted(invalid_kinds)}. Supported kinds: {sorted(valid_kinds)}")
+        warn(
+            f"Unknown comparison kinds {sorted(invalid_kinds)}. Supported kinds: {sorted(valid_kinds)}"
+        )
         requested_kinds -= invalid_kinds
     if not requested_kinds:
         requested_kinds = {"inter_model", "intra_model_variants"}
@@ -718,7 +790,7 @@ def compare_explainability_maps(
 
         stem_map: Dict[str, Path] = {}
         model_groups: Dict[str, Dict[str, Path]] = defaultdict(dict)
-        
+
         for f in files:
             stem = f.stem.replace("_maps", "")
             stem_map[stem] = f
@@ -726,7 +798,9 @@ def compare_explainability_maps(
             model_groups[model_name][variant] = f
 
         method_files[method] = stem_map
-        method_model_groups[method] = {model: dict(variant_map) for model, variant_map in model_groups.items()}
+        method_model_groups[method] = {
+            model: dict(variant_map) for model, variant_map in model_groups.items()
+        }
 
     if not method_files:
         warn("No comparison data available after scanning directories.")
@@ -740,89 +814,103 @@ def compare_explainability_maps(
     # ------------------------------------------------------------------
     if "inter_model" in requested_kinds:
         info("Creating prototype heatmaps by averaging across model variants...")
-        
+
         inter_model_payload: Dict[str, Any] = {}
-        
+
         for method, model_map in method_model_groups.items():
             info(f"Processing inter-model comparison for method: {method}")
-            
+
             # Create prototype heatmaps for each model
             model_prototypes: Dict[str, np.ndarray] = {}
-            
+
             for model_name, variant_paths in sorted(model_map.items()):
                 if not variant_paths:
                     warn(f"No variants found for model '{model_name}'. Skipping.")
                     continue
-                
+
                 try:
                     prototype = _create_prototype_heatmap(variant_paths)
                     model_prototypes[model_name] = prototype
-                    info(f"✓ Created prototype for {model_name} from {len(variant_paths)} variants")
+                    info(
+                        f"✓ Created prototype for {model_name} from {len(variant_paths)} variants"
+                    )
                 except Exception as e:
                     error(f"Failed to create prototype for {model_name}: {e}")
                     continue
-            
+
             if len(model_prototypes) < 2:
-                warn(f"Need at least 2 model prototypes for comparison. Found {len(model_prototypes)}. Skipping {method}.")
+                warn(
+                    f"Need at least 2 model prototypes for comparison. Found {len(model_prototypes)}. Skipping {method}."
+                )
                 continue
-            
+
             # Align all prototypes to common resolution and image count
             min_images = min(arr.shape[0] for arr in model_prototypes.values())
-            
+
             if target_resolution is None:
                 target_h = max(arr.shape[1] for arr in model_prototypes.values())
                 target_w = max(arr.shape[2] for arr in model_prototypes.values())
             else:
                 target_h, target_w = target_resolution
-            
+
             aligned_prototypes = {}
             prototype_arrays = []
             model_names_ordered = []
-            
+
             for model_name, prototype in sorted(model_prototypes.items()):
-                aligned = uniform_heatmaps(prototype, height=target_h, width=target_w, num_images=min_images)
+                aligned = uniform_heatmaps(
+                    prototype, height=target_h, width=target_w, num_images=min_images
+                )
                 aligned_prototypes[model_name] = aligned
                 prototype_arrays.append(aligned)
                 model_names_ordered.append(model_name)
-            
+
             # Perform comparison on prototype arrays
-            info(f"Comparing {len(prototype_arrays)} model prototypes with metrics: {metrics}")
+            info(
+                f"Comparing {len(prototype_arrays)} model prototypes with metrics: {metrics}"
+            )
             comparison = compare_heatmaps(prototype_arrays, metrics=metrics)
-            
+
             # Build summary with human-readable labels
             overall_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
             overall_per_image: Dict[str, Dict[str, np.ndarray]] = {}
-            
+
             for metric in metrics:
                 metric_summary: Dict[str, Dict[str, float]] = {}
                 metric_per_image: Dict[str, np.ndarray] = {}
-                
+
                 summary_block = comparison["summary"].get(metric, {})
                 per_image_block = comparison["per_image"].get(metric, {})
-                
+
                 for pair_key, stats in summary_block.items():
                     i_str, j_str = pair_key.split("_vs_")
                     pair_label = f"{model_names_ordered[int(i_str)]}_vs_{model_names_ordered[int(j_str)]}"
                     metric_summary[pair_label] = {k: float(v) for k, v in stats.items()}
-                    
+
                     # Store per-image data for distribution plots
                     if pair_key in per_image_block:
                         metric_per_image[pair_label] = per_image_block[pair_key]
-                
+
                 if metric_summary:
                     overall_summary[metric] = metric_summary
                 if metric_per_image:
                     overall_per_image[metric] = metric_per_image
-            
+
             block = {
                 "overall": overall_summary,
                 "metrics": list(metrics),
                 "models_compared": model_names_ordered,
-                "n_variants_per_model": {model: len(variant_paths) for model, variant_paths in model_map.items()},
-                "prototype_shapes": {model: list(proto.shape) for model, proto in aligned_prototypes.items()},
+                "n_variants_per_model": {
+                    model: len(variant_paths)
+                    for model, variant_paths in model_map.items()
+                },
+                "prototype_shapes": {
+                    model: list(proto.shape)
+                    for model, proto in aligned_prototypes.items()
+                },
             }
             inter_model_payload[method] = block
-            
+
             # Generate plots
             if show_comparison_plots:
                 for metric in metrics:
@@ -831,7 +919,9 @@ def compare_explainability_maps(
                         labels = _labels_from_summary(matrix)
                         if labels:
                             # Similarity matrix
-                            indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
+                            indexed_matrix = _reindex_summary_for_visualization(
+                                matrix, labels
+                            )
                             if indexed_matrix:
                                 fig_matrix = visualize_similarity_matrix(
                                     results={"summary": {metric: indexed_matrix}},
@@ -842,31 +932,35 @@ def compare_explainability_maps(
                                 )
                                 fig_key = f"inter_model_{method}_{metric}_matrix"
                                 figures[fig_key] = fig_matrix
-                                
+
                                 if save_plots:
                                     plot_path = plot_output_dir / f"{fig_key}.png"
-                                    fig_matrix.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    fig_matrix.savefig(
+                                        plot_path, dpi=300, bbox_inches="tight"
+                                    )
                                     info(f"Saved plot: {plot_path}")
-                            
+
                             # Distribution histogram
                             if metric in overall_per_image:
                                 comparison_for_viz = {
                                     "per_image": {metric: overall_per_image[metric]},
-                                    "summary": {metric: matrix}
+                                    "summary": {metric: matrix},
                                 }
-                                
+
                                 fig_dist = visualize_similarity_distribution(
                                     results=comparison_for_viz,
                                     metric=metric,
                                     bins=40,
-                                    figsize=(14, 6)
+                                    figsize=(14, 6),
                                 )
                                 fig_key = f"inter_model_{method}_{metric}_distribution"
                                 figures[fig_key] = fig_dist
-                                
+
                                 if save_plots:
                                     plot_path = plot_output_dir / f"{fig_key}.png"
-                                    fig_dist.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    fig_dist.savefig(
+                                        plot_path, dpi=300, bbox_inches="tight"
+                                    )
                                     info(f"Saved plot: {plot_path}")
 
         if inter_model_payload:
@@ -894,12 +988,17 @@ def compare_explainability_maps(
                 if context_summary:
                     model_results[model] = {
                         "summary": context_summary,
-                        "source_files": {variant: str(path) for variant, path in variant_paths.items()},
+                        "source_files": {
+                            variant: str(path)
+                            for variant, path in variant_paths.items()
+                        },
                     }
 
             if model_results:
                 overall_summary = {
-                    metric: {pair: _summarise(values) for pair, values in pair_dict.items()}
+                    metric: {
+                        pair: _summarise(values) for pair, values in pair_dict.items()
+                    }
                     for metric, pair_dict in method_overall.items()
                     if pair_dict
                 }
@@ -915,7 +1014,9 @@ def compare_explainability_maps(
                         if matrix:
                             labels = _labels_from_summary(matrix)
                             if labels:
-                                indexed_matrix = _reindex_summary_for_visualization(matrix, labels)
+                                indexed_matrix = _reindex_summary_for_visualization(
+                                    matrix, labels
+                                )
                                 if not indexed_matrix:
                                     continue
                                 fig_matrix = visualize_similarity_matrix(
@@ -927,10 +1028,12 @@ def compare_explainability_maps(
                                 )
                                 fig_key = f"intra_model_{method}_{metric}_matrix"
                                 figures[fig_key] = fig_matrix
-                                
+
                                 if save_plots:
                                     plot_path = plot_output_dir / f"{fig_key}.png"
-                                    fig_matrix.savefig(plot_path, dpi=300, bbox_inches='tight')
+                                    fig_matrix.savefig(
+                                        plot_path, dpi=300, bbox_inches="tight"
+                                    )
                                     info(f"Saved plot: {plot_path}")
 
         if intra_model_payload:
@@ -939,7 +1042,9 @@ def compare_explainability_maps(
             warn("Intra-model variant comparison produced no results.")
 
     if not results_payload:
-        warn("No comparison results were generated. Ensure the requested data exists on disk.")
+        warn(
+            "No comparison results were generated. Ensure the requested data exists on disk."
+        )
         return {}
 
     if save_json:
@@ -954,21 +1059,31 @@ def compare_explainability_maps(
     if show_comparison_plots and figures:
         info(f"Generated {len(figures)} comparison figures: {sorted(figures.keys())}")
 
-    return {"results": results_payload, "figures": figures} if show_comparison_plots else results_payload
+    return (
+        {"results": results_payload, "figures": figures}
+        if show_comparison_plots
+        else results_payload
+    )
+
 
 # ============================================================================
 # Full pipeline execution for Experiment 2
 # ============================================================================
+
 
 def run_experiment_2(
     models=None,
     save_plots=False,
     show_plots=False,
     save_maps=True,
-    variants='all',
-    xai_methods='both',
+    variants="all",
+    xai_methods="both",
     comparison_only=False,
-    comparison_kinds: Sequence[str] = ("cross_methods", "inter_model", "intra_model_variants"),
+    comparison_kinds: Sequence[str] = (
+        "cross_methods",
+        "inter_model",
+        "intra_model_variants",
+    ),
     comparison_metrics: Sequence[str] = ("mse", "correlation", "cosine", "ssim", "emd"),
     comparison_target_resolution: Optional[Tuple[int, int]] = (224, 224),
     save_comparison_json: bool = True,
@@ -1000,19 +1115,19 @@ def run_experiment_2(
     if isinstance(xai_methods, str):
         method_key = xai_methods.strip().lower()
     elif xai_methods is None:
-        method_key = 'both'
+        method_key = "both"
     else:
         warn("xai_methods must be a string identifier. Defaulting to 'both'.")
-        method_key = 'both'
+        method_key = "both"
 
     # Normalise aliases to match available explainability methods
     alias_map = {
-        'gradcam': 'gradcam',
-        'both': 'both',
-        'all': 'both',
-        'mpm': 'multiscale_pixel_masking',
-        'multiscale_pixel_masking': 'multiscale_pixel_masking',
-        'masking': 'multiscale_pixel_masking',
+        "gradcam": "gradcam",
+        "both": "both",
+        "all": "both",
+        "mpm": "multiscale_pixel_masking",
+        "multiscale_pixel_masking": "multiscale_pixel_masking",
+        "masking": "multiscale_pixel_masking",
     }
 
     if method_key not in alias_map:
@@ -1024,23 +1139,27 @@ def run_experiment_2(
 
     normalised_method = alias_map[method_key]
 
-    run_gradcam = normalised_method in ['gradcam', 'both']
-    run_masking = normalised_method in ['multiscale_pixel_masking', 'both']
+    run_gradcam = normalised_method in ["gradcam", "both"]
+    run_masking = normalised_method in ["multiscale_pixel_masking", "both"]
 
     methods_to_compare: Sequence[str]
-    if normalised_method == 'both':
-        methods_to_compare = ('gradcam', 'multiscale_pixel_masking')
-    elif normalised_method == 'gradcam':
-        methods_to_compare = ('gradcam',)
+    if normalised_method == "both":
+        methods_to_compare = ("gradcam", "multiscale_pixel_masking")
+    elif normalised_method == "gradcam":
+        methods_to_compare = ("gradcam",)
     else:
-        methods_to_compare = ('multiscale_pixel_masking',)
+        methods_to_compare = ("multiscale_pixel_masking",)
 
     if not run_gradcam and not run_masking:
-        warn(f"No explainability method selected after normalisation for '{xai_methods}'.")
+        warn(
+            f"No explainability method selected after normalisation for '{xai_methods}'."
+        )
         return
 
     if comparison_only:
-        info("Skipping Experiment 2A generation; running comparisons using existing maps.")
+        info(
+            "Skipping Experiment 2A generation; running comparisons using existing maps."
+        )
         comparison_result = compare_explainability_maps(
             methods=methods_to_compare,
             metrics=comparison_metrics,
@@ -1074,7 +1193,7 @@ def run_experiment_2(
     if run_gradcam:
         info(f"Starting GradCAM explainability maps generation...")
         generate_explainability_maps(
-            xai_method='gradcam',
+            xai_method="gradcam",
             save_maps=save_maps,
             variants=variants,
             models_to_test=models_to_test,
@@ -1083,7 +1202,7 @@ def run_experiment_2(
     if run_masking:
         info(f"Starting Multiscale Pixel Masking explainability maps generation...")
         generate_explainability_maps(
-            xai_method='multiscale_pixel_masking',
+            xai_method="multiscale_pixel_masking",
             save_maps=save_maps,
             variants=variants,
             models_to_test=models_to_test,
@@ -1110,11 +1229,9 @@ def run_experiment_2(
     if save_plots:
         info(f"All plots were saved in {OUTPUT_DIR}")
     return comparison_result
-        
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Example run: adjust parameters as needed
 
     # Start timer
@@ -1124,9 +1241,16 @@ if __name__ == '__main__':
     # run_experiment_2()
 
     # Example: evaluate only GradCAM explainability for DenseNet variants and compute cross-method comparisons later
-    
-    set_level('DEBUG') # Uncomment to enable debug logging
-    run_experiment_2(models=('densenet161',), xai_methods='mpm', variants=( 'greedy'),show_plots=False, save_plots=False,save_maps=True)
+
+    set_level("DEBUG")  # Uncomment to enable debug logging
+    run_experiment_2(
+        models=("densenet161",),
+        xai_methods="mpm",
+        variants=("greedy"),
+        show_plots=False,
+        save_plots=False,
+        save_maps=True,
+    )
 
     # run_experiment_2(
     # models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161','barlowtwins'],

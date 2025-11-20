@@ -48,6 +48,9 @@ Models/*/Ranking_arrays
 Models/*/*/Weights
 Models/*/*/Ranking_arrays
 
+# Github Copilot files
+.github/
+
 # Ignore saliency_experiment_outputs by default
 Models/*/saliency_experiment_outputs/*
 Models/*/*/saliency_experiment_outputs/*
@@ -72,3 +75,4 @@ config.ini
 # Images
 Heatmap_images
 TranSalNet
+
