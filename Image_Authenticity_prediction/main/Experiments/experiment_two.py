@@ -1243,25 +1243,25 @@ if __name__ == "__main__":
     # Example: evaluate only GradCAM explainability for DenseNet variants and compute cross-method comparisons later
 
     set_level("DEBUG")  # Uncomment to enable debug logging
-    run_experiment_2(
-        models=("densenet161",),
-        xai_methods="mpm",
-        variants=("greedy"),
-        show_plots=False,
-        save_plots=False,
-        save_maps=True,
-    )
 
-    # run_experiment_2(
-    # models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161','barlowtwins'],
-    # variants='greedy',
-    # xai_methods='both',
-    # comparison_only=True,  # Set to True to skip map generation
-    # comparison_kinds=["inter_model", "intra_model_variants"],
-    # comparison_metrics=["correlation"],
-    # show_comparison_plots=True,
-    # save_comparison_json=True,
-    # )
+    print("prova")
+    run_experiment_2(
+        models=[
+            "vgg16",
+            "resnet152",
+            "vgg19",
+            "efficientnetb3",
+            "densenet161",
+            "barlowtwins",
+        ],
+        variants="greedy",
+        xai_methods="both",
+        comparison_only=True,  # Set to True to skip map generation
+        comparison_kinds=["inter_model", "intra_model_variants"],
+        comparison_metrics=["correlation"],
+        show_comparison_plots=True,
+        save_comparison_json=True,
+    )
 
     # End timer and calculate elapsed time
     end_time = time.time()
