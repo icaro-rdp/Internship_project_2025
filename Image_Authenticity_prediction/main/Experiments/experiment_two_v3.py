@@ -32,8 +32,11 @@ from main.Utils.logger import info, warn, error, set_level
 from main.Utils.comparisons import (
     compare_heatmaps,
     uniform_heatmaps,
+)
+from main.Utils.visualization import (
     visualize_similarity_matrix,
     visualize_similarity_distribution,
+    visualize_violin_distribution,
 )
 from main.data import IMAGENET_DATASET, DENSENET_DATASET, SINGLE_BATCH_SIZE, NUM_WORKERS
 
@@ -245,7 +248,10 @@ def save_plots_for_result(comp_res, labels, method, scope_name, metrics):
                 plt.close(fig_mat)
 
             fig_dist = visualize_similarity_distribution(comp_res, metric=metric)
-            if fig_dist:
+            if fig_dist and scope_name not in [
+                "between_model_architectures",
+                "cross_methods",
+            ]:
                 out_name = f"{method}_{scope_name}_{metric}_distribution.png"
                 fig_dist.savefig(DIRS["plots"] / out_name, bbox_inches="tight")
                 plt.close(fig_dist)
@@ -283,6 +289,9 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
         valid_protos = []
         intra_res = {}
 
+        # Container for violin plot data: {metric: {model_name: [values]}}
+        intra_model_stats = defaultdict(lambda: defaultdict(list))
+
         # --- 1. Intra-Model & Prototype Creation ---
         for m_name, variants_dict in groups.items():
             var_names = list(variants_dict.keys())
@@ -305,6 +314,17 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                 comp_res["variants"] = var_names
                 intra_res[m_name] = comp_res
 
+                # Collect data for violin plots
+                for metric in metrics:
+                    if metric in comp_res["summary"]:
+                        # Extract 'mean' values from pairwise comparisons
+                        values = [
+                            d["mean"]
+                            for d in comp_res["summary"][metric].values()
+                            if "mean" in d
+                        ]
+                        intra_model_stats[metric][m_name].extend(values)
+
                 save_plots_for_result(
                     comp_res, var_names, method, f"within_{m_name}", metrics
                 )
@@ -318,6 +338,23 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
 
             del loaded_vars
             gc.collect()
+
+        # Generate Violin Plots for Intra-Model Analysis
+        if intra_model_stats:
+            for metric, model_data in intra_model_stats.items():
+                try:
+                    fig_violin = visualize_violin_distribution(
+                        model_data, metric=metric
+                    )
+                    if fig_violin:
+                        out_name = f"{method}_intra_model_{metric}_violin.png"
+                        fig_violin.savefig(
+                            DIRS["plots"] / out_name, bbox_inches="tight"
+                        )
+                        plt.close(fig_violin)
+                        info(f"Saved violin plot: {out_name}")
+                except Exception as e:
+                    warn(f"Could not save violin plot for {method} ({metric}): {e}")
 
         if intra_res:
             results[f"{method}_within_model_variants"] = intra_res
@@ -477,5 +514,4 @@ if __name__ == "__main__":
         comparison_kinds=("between_model_architectures", "within_model_variants"),
         comparison_metrics=("correlation",),
         save_comparison_json=True,
-        save_plots=True,
     )
