@@ -90,6 +90,15 @@ XAI_PARAMS = {
     "mpm_interval": 10,
 }
 
+MODEL_ORDER = [
+    "barlowtwins",
+    "resnet152",
+    "densenet161",
+    "efficientnetb3",
+    "vgg16",
+    "vgg19",
+]
+
 
 def setup_directories():
     for p in DIRS.values():
@@ -237,11 +246,20 @@ def load_and_resize_map(path, target_res):
 
 
 def save_plots_for_result(comp_res, labels, method, scope_name, metrics):
+    """Save visualization plots with consistent model ordering."""
+    # Sort labels according to MODEL_ORDER
+    ordered_labels = sorted(
+        labels,
+        key=lambda x: MODEL_ORDER.index(x) if x in MODEL_ORDER else len(MODEL_ORDER),
+    )
+
     for metric in metrics:
         if metric not in comp_res["summary"]:
             continue
         try:
-            fig_mat = visualize_similarity_matrix(comp_res, labels, metric=metric)
+            fig_mat = visualize_similarity_matrix(
+                comp_res, ordered_labels, metric=metric
+            )
             if fig_mat:
                 out_name = f"{method}_{scope_name}_{metric}_matrix.png"
                 fig_mat.savefig(DIRS["plots"] / out_name, bbox_inches="tight")
@@ -344,7 +362,16 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
             for metric, model_data in intra_model_stats.items():
                 try:
                     fig_violin = visualize_violin_distribution(
-                        model_data, metric=metric
+                        model_data,
+                        metric=metric,
+                        custom_model_order=[
+                            "barlowtwins",
+                            "resnet152",
+                            "densenet161",
+                            "efficientnetb3",
+                            "vgg19",
+                            "vgg16",
+                        ],
                     )
                     if fig_violin:
                         out_name = f"{method}_intra_model_{metric}_violin.png"
@@ -362,15 +389,22 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
         # --- 2. Between-Model Architectures Comparison ---
         if "between_model_architectures" in kinds and len(prototypes) > 1:
             info(f"[{method}] Comparing Prototypes...")
-            proto_list = [prototypes[m] for m in valid_protos]
+            # Sort valid_protos according to MODEL_ORDER
+            valid_protos_sorted = sorted(
+                valid_protos,
+                key=lambda x: (
+                    MODEL_ORDER.index(x) if x in MODEL_ORDER else len(MODEL_ORDER)
+                ),
+            )
+            proto_list = [prototypes[m] for m in valid_protos_sorted]
 
             comp_res = compare_heatmaps(proto_list, metrics=metrics)
-            comp_res["models"] = valid_protos
+            comp_res["models"] = valid_protos_sorted
             results[f"{method}_between_model_architectures"] = comp_res
 
             save_plots_for_result(
                 comp_res,
-                valid_protos,
+                valid_protos_sorted,
                 method,
                 "between_model_architectures",
                 metrics,
@@ -499,15 +533,15 @@ def run_experiment_2(
 
 
 if __name__ == "__main__":
-    set_level("DEBUG")
+    set_level("INFO")
     run_experiment_2(
         models=[
-            "vgg16",
-            "resnet152",
-            "efficientnetb3",
-            "vgg19",
             "barlowtwins",
+            "resnet152",
             "densenet161",
+            "efficientnetb3",
+            "vgg16",
+            "vgg19",
         ],
         xai_methods="both",
         comparison_only=True,

@@ -25,7 +25,8 @@ def visualize_similarity_matrix(
     figsize: Tuple[int, int] = (12, 8),
     cmap: Union[str, colors.Colormap] = "coolwarm",
     annotate: bool = True,
-    plot_upper_triangle: bool = True,
+    plot_only_lower_triangle: bool = True,
+    keep_diagonal: bool = False,
 ) -> Figure:
     """
     Visualize similarity matrix between models.
@@ -88,23 +89,69 @@ def visualize_similarity_matrix(
         cbar_label = f"{metric.capitalize()} {stat.capitalize()}"
 
     mask: Optional[np.ndarray] = None
-    if plot_upper_triangle:  # Parameter now implies plotting ONLY ONE triangle
-        # To plot the LOWER triangle, we mask the UPPER triangle.
-        # k=1 means exclude the diagonal from the mask.
+    if plot_only_lower_triangle:
         mask = np.triu(np.ones_like(similarity_matrix, dtype=bool), k=1)
+    if not keep_diagonal:
+        np.fill_diagonal(mask, True)
+
+    # Initialize labels
+    xticklabels = model_names
+    yticklabels = model_names
+
+    if plot_only_lower_triangle and not keep_diagonal:
+        # Slice matrix: remove Top Row (1:) and Right Column (:-1)
+        similarity_matrix = similarity_matrix[1:, :-1]
+
+        # Slice mask to match dimensions
+        if mask is not None:
+            mask = mask[1:, :-1]
+
+        # Adjust labels:
+        yticklabels = model_names[1:]
+        xticklabels = model_names[:-1]
 
     ax = sns.heatmap(
         similarity_matrix,
         annot=annotate,
         fmt=".2f",
         cmap=current_cmap,
-        xticklabels=model_names,
-        yticklabels=model_names,
+        xticklabels=xticklabels,
+        yticklabels=yticklabels,
         cbar_kws={"label": cbar_label},
         mask=mask,
         vmin=custom_vmin,
         vmax=custom_vmax,
+        linecolor="white",
+        linewidths=0.5,
     )
+
+    # Remove individually black lined cells if mask is applied
+    mesh = ax.collections[0]
+
+    n_rows, n_cols = similarity_matrix.shape
+
+    # Get / expand per-cell edgecolors
+    edgecolors = mesh.get_edgecolors()
+    if len(edgecolors) == 1:
+        # One color repeated: expand to one per cell
+        edgecolors = np.repeat(edgecolors, n_rows * n_cols, axis=0)
+
+    for i in range(n_rows * n_cols):
+        r = i // n_cols  # row index
+        c = i % n_cols  # column index
+
+        if r >= c:  # lower triangle incl. diagonal
+            debug(f"Keeping edgecolor for cell ({r}, {c})")
+            edgecolors[i] = (1, 1, 1, 1)  # black, opaque
+        else:  # upper triangle
+            debug(f"Making edgecolor transparent for cell ({r}, {c})")
+            edgecolors[i] = (0, 0, 0, 0)  # fully transparent
+
+    mesh.set_edgecolors(edgecolors)
+    mesh.set_linewidth(0.5)
+
+    # ----------------------------------------
+
     title_metric_name = (
         metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
     )
@@ -245,6 +292,7 @@ def visualize_violin_distribution(
     metric: str,
     figsize: Tuple[float, float] = (16, 5),  # Wide for side-by-side
     palette: str = "muted",
+    custom_model_order: Optional[Sequence[str]] = None,
 ) -> Figure:
     """
     Creates faceted violin plots with independent scales, containing
@@ -262,8 +310,11 @@ def visualize_violin_distribution(
 
     df = pd.DataFrame(records)
 
-    # 2. Sort Order (Median)
-    order = df.groupby("Model")["Value"].median().sort_values().index
+    # 2. Sort Order (Median) or Custom
+    if custom_model_order:
+        order = custom_model_order
+    else:
+        order = df.groupby("Model")["Value"].median().sort_values().index
 
     # 3. Create FacetGrid (Independent Y-Axes)
     g = sns.FacetGrid(
@@ -322,7 +373,7 @@ def visualize_violin_distribution(
 
     # Global Title
     g.fig.suptitle(
-        f"Distribution of {metric.capitalize()}",
+        f"Distribution of {metric.capitalize()} Scores Across Architectures",
         y=1.05,
         fontsize=14,
     )
