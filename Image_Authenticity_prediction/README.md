@@ -152,7 +152,147 @@ python -m Image_Authenticity_prediction evaluate \
 
 ### Running Experiments
 
-Use the Python API for custom experiments:
+#### Experiment One: Model Training, Pruning, and Testing
+
+Experiment One provides a complete pipeline for training multiple model variants, pruning them using feature importance analysis, and testing their performance.
+
+**Run the complete pipeline:**
+```bash
+# Run all phases for all models (training, pruning with both methods, and testing)
+python -m Image_Authenticity_prediction experiment-one --train --prune --test
+
+# Run only training for specific models
+python -m Image_Authenticity_prediction experiment-one --train --models vgg16 resnet152
+
+# Run only pruning with greedy method
+python -m Image_Authenticity_prediction experiment-one --prune --pruning-method greedy
+
+# Run only testing
+python -m Image_Authenticity_prediction experiment-one --test
+
+# Run training and greedy pruning for specific models
+python -m Image_Authenticity_prediction experiment-one \
+    --train --prune \
+    --models vgg16 vgg19 resnet152 \
+    --pruning-method greedy
+
+# Run all phases with negative impact pruning and custom threshold
+python -m Image_Authenticity_prediction experiment-one \
+    --train --prune --test \
+    --pruning-method negative_impact \
+    --threshold 0.1
+```
+
+**Experiment One Options:**
+- `--models`: Specific models to process (vgg16, vgg19, resnet152, densenet161, efficientnetb3, barlowtwins)
+- `--train`: Run training phase (trains 10 variants per model)
+- `--prune`: Run pruning phase on trained models
+- `--test`: Run testing phase to evaluate trained and pruned models
+- `--pruning-method`: Pruning strategy (greedy, negative_impact, both)
+- `--threshold`: Threshold for negative_impact pruning (default: 0.0)
+
+**What Experiment One Does:**
+1. **Training (1A)**: Trains 10 variants of each model with different random seeds and data splits
+2. **Pruning (1B)**: Analyzes feature importance and removes redundant/harmful features
+3. **Testing**: Evaluates all trained and pruned models on the test set with comprehensive metrics
+
+**Output Structure:**
+```
+Image_Authenticity_prediction/main/Experiments/Outputs/Experiment_1_variants/
+├── Weights/                    # Model weights for all variants
+├── Ranking_arrays/             # Feature importance scores
+├── Ranking_Plots/             # Importance score visualizations
+├── Training_Plots/            # Training curves
+├── Training_History/          # Training history data
+└── Test_Results/              # Test evaluation results
+```
+
+#### Experiment Two: XAI Heatmap Generation and Comparison
+
+Experiment Two generates explainability heatmaps using GradCAM and Multiscale Pixel Masking, then compares them across models and methods.
+
+**Generate heatmaps:**
+```bash
+# Generate both GradCAM and MPM heatmaps for all models and variants
+python -m Image_Authenticity_prediction experiment-two \
+    --xai-methods both \
+    --variants all
+
+# Generate only GradCAM heatmaps for specific models
+python -m Image_Authenticity_prediction experiment-two \
+    --xai-methods gradcam \
+    --models vgg16 resnet152 \
+    --variants base
+
+# Generate only MPM heatmaps for greedy pruned variants
+python -m Image_Authenticity_prediction experiment-two \
+    --xai-methods mpm \
+    --variants greedy
+```
+
+**Run comparison analysis:**
+```bash
+# Run comparison only (requires pre-generated heatmaps)
+python -m Image_Authenticity_prediction experiment-two --comparison-only
+
+# Compare between model architectures
+python -m Image_Authenticity_prediction experiment-two \
+    --comparison-only \
+    --comparison-kinds between_model_architectures \
+    --comparison-metrics correlation ssim
+
+# Compare within model variants
+python -m Image_Authenticity_prediction experiment-two \
+    --comparison-only \
+    --comparison-kinds within_model_variants \
+    --comparison-metrics correlation
+
+# Compare across XAI methods
+python -m Image_Authenticity_prediction experiment-two \
+    --comparison-only \
+    --comparison-kinds cross_methods \
+    --comparison-metrics correlation ssim rmse
+
+# Run multiple comparison types with custom resolution
+python -m Image_Authenticity_prediction experiment-two \
+    --comparison-only \
+    --comparison-kinds between_model_architectures within_model_variants \
+    --comparison-metrics correlation ssim \
+    --target-resolution 256,256
+```
+
+**Experiment Two Options:**
+- `--models`: Specific models to process (default: all)
+- `--xai-methods`: XAI methods to use (gradcam, mpm, both)
+- `--variants`: Variants to process (all, orig, base, greedy, negative)
+- `--save-maps` / `--no-save-maps`: Control heatmap saving
+- `--comparison-only`: Skip generation, only run comparisons
+- `--run-comparison`: Run comparison after generation
+- `--comparison-kinds`: Types of comparisons (between_model_architectures, within_model_variants, cross_methods)
+- `--comparison-metrics`: Metrics to use (correlation, ssim, rmse, scc)
+- `--target-resolution`: Target resolution for comparison (e.g., "224,224")
+
+**What Experiment Two Does:**
+1. **Generation**: Creates GradCAM and/or MPM heatmaps for specified models and variants
+2. **Comparison**: Analyzes similarity between heatmaps using various metrics
+3. **Visualization**: Generates similarity matrices, distributions, and violin plots
+
+**Output Structure:**
+```
+Image_Authenticity_prediction/main/Experiments/Outputs/Experiment_2_variants/
+├── XAI_Maps/
+│   ├── GradCAM/               # GradCAM heatmaps (.npy files)
+│   └── Multiscale_Pixel_Masking/  # MPM heatmaps (.npy files)
+├── Plots/                     # Comparison visualizations
+│   ├── *_matrix.png          # Similarity matrices
+│   ├── *_distribution.png    # Distribution plots
+│   └── *_violin.png          # Violin plots
+└── experiment_2b_comparison.json  # Comparison results
+```
+
+### Using the Python API
+
+For custom experiments, you can use the Python API directly:
 
 ```python
 import sys
@@ -190,6 +330,35 @@ best_model, history = train_model(
 
 # Save model
 torch.save(best_model.state_dict(), 'Weights/my_model.pth')
+```
+
+**Run experiments programmatically:**
+
+```python
+# Experiment One
+from Image_Authenticity_prediction.main.Experiments.experiment_one import run_experiment_one_complete
+
+results = run_experiment_one_complete(
+    models_to_process=['vgg16', 'resnet152'],
+    run_training=True,
+    run_pruning=True,
+    run_testing=True,
+    pruning_method='both',
+    threshold=0.0
+)
+
+# Experiment Two
+from Image_Authenticity_prediction.main.Experiments.experiment_two import run_experiment_2
+
+run_experiment_2(
+    models=['vgg16', 'resnet152'],
+    xai_methods='both',
+    save_maps=True,
+    comparison_only=False,
+    comparison_kinds=('between_model_architectures', 'within_model_variants'),
+    comparison_metrics=('correlation', 'ssim'),
+    comparison_target_resolution=(224, 224)
+)
 ```
 
 ### Using Explainability Tools

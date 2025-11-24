@@ -26,39 +26,45 @@ from main.Models import (
     DenseNet161AuthenticityPredictor,
     InceptionV3AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor
+    BarlowTwinsAuthenticityPredictor,
 )
-from main.data import IMAGENET_DATASET, DENSENET_DATASET, INCEPTIONV3_DATASET, BATCH_SIZE, NUM_WORKERS
+from main.data import (
+    IMAGENET_DATASET,
+    DENSENET_DATASET,
+    INCEPTIONV3_DATASET,
+    BATCH_SIZE,
+    NUM_WORKERS,
+)
 from main.train import train_model, test_model, plot_loss_history
 from torch.utils.data import DataLoader
 
 # Model registry
 MODEL_REGISTRY = {
-    'vgg16': VGG16AuthenticityPredictor,
-    'vgg19': VGG19AuthenticityPredictor,
-    'resnet152': ResNet152AuthenticityPredictor,
-    'densenet161': DenseNet161AuthenticityPredictor,
-    'inceptionv3': InceptionV3AuthenticityPredictor,
-    'efficientnetb3': EfficientNetB3AuthenticityPredictor,
-    'barlowtwins': BarlowTwinsAuthenticityPredictor
+    "vgg16": VGG16AuthenticityPredictor,
+    "vgg19": VGG19AuthenticityPredictor,
+    "resnet152": ResNet152AuthenticityPredictor,
+    "densenet161": DenseNet161AuthenticityPredictor,
+    "inceptionv3": InceptionV3AuthenticityPredictor,
+    "efficientnetb3": EfficientNetB3AuthenticityPredictor,
+    "barlowtwins": BarlowTwinsAuthenticityPredictor,
 }
 
 # Dataset mapping based on model input requirements
 DATASET_MAPPING = {
-    'vgg16': IMAGENET_DATASET,
-    'vgg19': IMAGENET_DATASET,
-    'resnet152': IMAGENET_DATASET,
-    'efficientnetb3': IMAGENET_DATASET,
-    'barlowtwins': IMAGENET_DATASET,
-    'densenet161': DENSENET_DATASET,
-    'inceptionv3': INCEPTIONV3_DATASET
+    "vgg16": IMAGENET_DATASET,
+    "vgg19": IMAGENET_DATASET,
+    "resnet152": IMAGENET_DATASET,
+    "efficientnetb3": IMAGENET_DATASET,
+    "barlowtwins": IMAGENET_DATASET,
+    "densenet161": DENSENET_DATASET,
+    "inceptionv3": INCEPTIONV3_DATASET,
 }
 
 
-def load_config(config_path='Configs/config.yaml'):
+def load_config(config_path="Configs/config.yaml"):
     """Load configuration from YAML file."""
     config_file = Path(__file__).parent / config_path
-    with open(config_file, 'r') as f:
+    with open(config_file, "r") as f:
         config = yaml.safe_load(f)
     return config
 
@@ -66,33 +72,36 @@ def load_config(config_path='Configs/config.yaml'):
 def train_command(args):
     """Execute training command."""
     print(f"Starting training for model: {args.model}")
-    
+
     # Load config
     config = load_config()
-    device = config['run_settings']['device']
-    
+    device = config["run_settings"]["device"]
+
     # Get model
     if args.model not in MODEL_REGISTRY:
-        print(f"Error: Model '{args.model}' not found. Available models: {list(MODEL_REGISTRY.keys())}")
+        print(
+            f"Error: Model '{args.model}' not found. Available models: {list(MODEL_REGISTRY.keys())}"
+        )
         return
-    
+
     model_class = MODEL_REGISTRY[args.model]
     model = model_class(freeze_backbone=args.freeze_backbone)
-    
+
     # Get dataset
     dataset = DATASET_MAPPING[args.model]
-    train_loader = DataLoader(dataset['train'], batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
-    test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-    
-    dataloaders = {
-        'train': train_loader,
-        'val': test_loader
-    }
-    
+    train_loader = DataLoader(
+        dataset["train"], batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
+    )
+    test_loader = DataLoader(
+        dataset["test"], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
+    )
+
+    dataloaders = {"train": train_loader, "val": test_loader}
+
     # Setup training
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    
+
     # Train
     print(f"Training on device: {device}")
     best_model, history = train_model(
@@ -102,15 +111,15 @@ def train_command(args):
         optimizer=optimizer,
         num_epochs=args.epochs,
         device=device,
-        patience=args.patience
+        patience=args.patience,
     )
-    
+
     # Save model
-    save_path = Path(config['paths']['weights_dir']) / f"{args.model}_best.pth"
+    save_path = Path(config["paths"]["weights_dir"]) / f"{args.model}_best.pth"
     save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(best_model.state_dict(), save_path)
     print(f"Model saved to: {save_path}")
-    
+
     # Plot training history
     if args.plot:
         plot_loss_history(history)
@@ -119,19 +128,21 @@ def train_command(args):
 def evaluate_command(args):
     """Execute evaluation command."""
     print(f"Evaluating model: {args.model}")
-    
+
     # Load config
     config = load_config()
-    device = config['run_settings']['device']
-    
+    device = config["run_settings"]["device"]
+
     # Get model
     if args.model not in MODEL_REGISTRY:
-        print(f"Error: Model '{args.model}' not found. Available models: {list(MODEL_REGISTRY.keys())}")
+        print(
+            f"Error: Model '{args.model}' not found. Available models: {list(MODEL_REGISTRY.keys())}"
+        )
         return
-    
+
     model_class = MODEL_REGISTRY[args.model]
     model = model_class(freeze_backbone=False)
-    
+
     # Load weights
     if args.weights:
         # Load only tensor weights (safer). The CLI expects a state_dict saved via torch.save(model.state_dict()).
@@ -139,61 +150,282 @@ def evaluate_command(args):
         print(f"Loaded weights from: {args.weights}")
     else:
         print("Warning: No weights specified, using randomly initialized model")
-    
+
     # Get dataset
     dataset = DATASET_MAPPING[args.model]
-    test_loader = DataLoader(dataset['test'], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-    
+    test_loader = DataLoader(
+        dataset["test"], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
+    )
+
     # Evaluate
     criterion = torch.nn.MSELoss()
     test_loss = test_model(model, test_loader, criterion, device)
-    test_rmse = test_loss ** 0.5  # Compute RMSE from MSE
+    test_rmse = test_loss**0.5  # Compute RMSE from MSE
     print(f"Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
+
+
+def experiment_one_command(args):
+    """Execute experiment one command."""
+    from main.Experiments.experiment_one import run_experiment_one_complete
+
+    print("=" * 80)
+    print("STARTING EXPERIMENT ONE")
+    print("=" * 80)
+    print(f"Configuration:")
+    print(f"  - Models: {args.models if args.models else 'all'}")
+    print(f"  - Run training: {args.train}")
+    print(f"  - Run pruning: {args.prune}")
+    print(f"  - Run testing: {args.test}")
+    if args.prune:
+        print(f"  - Pruning method: {args.pruning_method}")
+        print(f"  - Pruning threshold: {args.threshold}")
+    print("=" * 80)
+
+    # Run experiment
+    results = run_experiment_one_complete(
+        models_to_process=args.models,
+        run_training=args.train,
+        run_pruning=args.prune,
+        run_testing=args.test,
+        pruning_method=args.pruning_method,
+        threshold=args.threshold,
+    )
+
+    print("=" * 80)
+    print("EXPERIMENT ONE COMPLETE")
+    print("=" * 80)
+
+
+def experiment_two_command(args):
+    """Execute experiment two command."""
+    from main.Experiments.experiment_two import run_experiment_2
+
+    print("=" * 80)
+    print("STARTING EXPERIMENT TWO")
+    print("=" * 80)
+    print(f"Configuration:")
+    print(f"  - Models: {args.models if args.models else 'all'}")
+    print(f"  - XAI Methods: {args.xai_methods}")
+    print(f"  - Variants: {args.variants}")
+    print(f"  - Save maps: {args.save_maps}")
+    print(f"  - Comparison only: {args.comparison_only}")
+    if args.comparison_only or args.run_comparison:
+        print(f"  - Comparison kinds: {args.comparison_kinds}")
+        print(f"  - Comparison metrics: {args.comparison_metrics}")
+        print(f"  - Target resolution: {args.target_resolution}")
+    print("=" * 80)
+
+    # Parse comparison kinds
+    kinds = (
+        tuple(args.comparison_kinds)
+        if args.comparison_kinds
+        else ("between_model_architectures",)
+    )
+
+    # Parse comparison metrics
+    metrics = (
+        tuple(args.comparison_metrics) if args.comparison_metrics else ("correlation",)
+    )
+
+    # Parse target resolution
+    target_res = (
+        tuple(map(int, args.target_resolution.split(",")))
+        if args.target_resolution
+        else (224, 224)
+    )
+
+    # Run experiment
+    run_experiment_2(
+        models=args.models,
+        save_maps=args.save_maps,
+        variants=args.variants,
+        xai_methods=args.xai_methods,
+        comparison_only=args.comparison_only,
+        comparison_kinds=kinds,
+        comparison_metrics=metrics,
+        comparison_target_resolution=target_res,
+        save_comparison_json=True,
+    )
+
+    print("=" * 80)
+    print("EXPERIMENT TWO COMPLETE")
+    print("=" * 80)
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Image Authenticity Prediction - Training and Evaluation',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Image Authenticity Prediction - Training, Evaluation, and Experiments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
-    
+
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
     # Train command
-    train_parser = subparsers.add_parser('train', help='Train a model')
-    train_parser.add_argument('--model', type=str, required=True, 
-                             choices=list(MODEL_REGISTRY.keys()),
-                             help='Model architecture to train')
-    train_parser.add_argument('--epochs', type=int, default=50,
-                             help='Maximum number of epochs (default: 50)')
-    train_parser.add_argument('--patience', type=int, default=7,
-                             help='Early stopping patience (default: 7)')
-    train_parser.add_argument('--learning-rate', type=float, default=0.001,
-                             help='Learning rate (default: 0.001)')
-    train_parser.add_argument('--freeze-backbone', action='store_true',
-                             help='Freeze backbone weights during training')
-    train_parser.add_argument('--plot', action='store_true',
-                             help='Plot training history after training')
-    
+    train_parser = subparsers.add_parser("train", help="Train a model")
+    train_parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Model architecture to train",
+    )
+    train_parser.add_argument(
+        "--epochs", type=int, default=50, help="Maximum number of epochs (default: 50)"
+    )
+    train_parser.add_argument(
+        "--patience", type=int, default=7, help="Early stopping patience (default: 7)"
+    )
+    train_parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=0.001,
+        help="Learning rate (default: 0.001)",
+    )
+    train_parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+        help="Freeze backbone weights during training",
+    )
+    train_parser.add_argument(
+        "--plot", action="store_true", help="Plot training history after training"
+    )
+
     # Evaluate command
-    eval_parser = subparsers.add_parser('evaluate', help='Evaluate a trained model')
-    eval_parser.add_argument('--model', type=str, required=True,
-                            choices=list(MODEL_REGISTRY.keys()),
-                            help='Model architecture to evaluate')
-    eval_parser.add_argument('--weights', type=str, required=True,
-                            help='Path to model weights file')
-    
+    eval_parser = subparsers.add_parser("evaluate", help="Evaluate a trained model")
+    eval_parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Model architecture to evaluate",
+    )
+    eval_parser.add_argument(
+        "--weights", type=str, required=True, help="Path to model weights file"
+    )
+
+    # Experiment One command
+    exp1_parser = subparsers.add_parser(
+        "experiment-one", help="Run Experiment 1 (Training, Pruning, Testing)"
+    )
+    exp1_parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Specific models to process (default: all models)",
+    )
+    exp1_parser.add_argument(
+        "--train", action="store_true", help="Run training phase (Experiment 1A)"
+    )
+    exp1_parser.add_argument(
+        "--prune", action="store_true", help="Run pruning phase (Experiment 1B)"
+    )
+    exp1_parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run testing phase on trained and pruned models",
+    )
+    exp1_parser.add_argument(
+        "--pruning-method",
+        type=str,
+        default="both",
+        choices=["greedy", "negative_impact", "both"],
+        help="Pruning method to use (default: both)",
+    )
+    exp1_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.0,
+        help="Threshold for negative_impact pruning (default: 0.0)",
+    )
+
+    # Experiment Two command
+    exp2_parser = subparsers.add_parser(
+        "experiment-two",
+        help="Run Experiment 2 (XAI Heatmap Generation and Comparison)",
+    )
+    exp2_parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Specific models to process (default: all models)",
+    )
+    exp2_parser.add_argument(
+        "--xai-methods",
+        type=str,
+        default="both",
+        choices=["gradcam", "mpm", "both"],
+        help="XAI methods to use (default: both)",
+    )
+    exp2_parser.add_argument(
+        "--variants",
+        type=str,
+        default="all",
+        help="Variants to process: all, orig, base, greedy, negative (default: all)",
+    )
+    exp2_parser.add_argument(
+        "--save-maps",
+        action="store_true",
+        default=True,
+        help="Save generated heatmaps (default: True)",
+    )
+    exp2_parser.add_argument(
+        "--no-save-maps",
+        dest="save_maps",
+        action="store_false",
+        help="Do not save generated heatmaps",
+    )
+    exp2_parser.add_argument(
+        "--comparison-only",
+        action="store_true",
+        help="Only run comparison analysis (skip generation)",
+    )
+    exp2_parser.add_argument(
+        "--run-comparison", action="store_true", help="Run comparison after generation"
+    )
+    exp2_parser.add_argument(
+        "--comparison-kinds",
+        type=str,
+        nargs="+",
+        choices=[
+            "between_model_architectures",
+            "within_model_variants",
+            "cross_methods",
+        ],
+        default=["between_model_architectures"],
+        help="Types of comparisons to run (default: between_model_architectures)",
+    )
+    exp2_parser.add_argument(
+        "--comparison-metrics",
+        type=str,
+        nargs="+",
+        choices=["correlation", "ssim", "rmse", "scc"],
+        default=["correlation"],
+        help="Metrics to use for comparison (default: correlation)",
+    )
+    exp2_parser.add_argument(
+        "--target-resolution",
+        type=str,
+        default="224,224",
+        help="Target resolution for comparison as width,height (default: 224,224)",
+    )
+
     # Parse arguments
     args = parser.parse_args()
-    
-    if args.command == 'train':
+
+    if args.command == "train":
         train_command(args)
-    elif args.command == 'evaluate':
+    elif args.command == "evaluate":
         evaluate_command(args)
+    elif args.command == "experiment-one":
+        experiment_one_command(args)
+    elif args.command == "experiment-two":
+        experiment_two_command(args)
     else:
         parser.print_help()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
