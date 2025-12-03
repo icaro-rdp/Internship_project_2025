@@ -20,18 +20,18 @@ from .logger import info, warn, error, debug
 def visualize_similarity_matrix(
     results: Mapping[str, Any],
     model_names: Sequence[str],
-    metric: str = "cosine",
+    metric: str = "correlation",
     stat: str = "mean",
-    figsize: Tuple[int, int] = (12, 8),
+    figsize: Tuple[int, int] = (10, 8),
     cmap: Union[str, colors.Colormap] = "coolwarm",
     annotate: bool = True,
     plot_only_lower_triangle: bool = True,
     keep_diagonal: bool = False,
+    dpi: int = 600,
+    font_scale: float = 1.2,
 ) -> Figure:
     """
-    Visualize similarity matrix between models.
-    If plot_upper_triangle is True, it will display the LOWER triangle.
-    Color scales are automatically fixed based on the metric.
+    Visualize similarity matrix.
     """
     if metric not in results["summary"]:
         raise ValueError(
@@ -40,126 +40,165 @@ def visualize_similarity_matrix(
 
     n_models = len(model_names)
     similarity_matrix = np.zeros((n_models, n_models))
+    annot_matrix = np.empty((n_models, n_models), dtype=object)
 
+    # Initialize diagonal
     for i in range(n_models):
-        if metric == "mse" or metric == "emd":
+        if metric in ["mse", "emd"]:
             similarity_matrix[i, i] = 0.0
+            annot_matrix[i, i] = "0.00"
         else:
             similarity_matrix[i, i] = 1.0
+            annot_matrix[i, i] = "1.00"
 
+    # Fill Matrix
     for pair, metrics_data in results["summary"][metric].items():
-        model_indices = pair.split("_vs_")
-        if (
-            len(model_indices) == 2
-            and model_indices[0].isdigit()
-            and model_indices[1].isdigit()
-        ):
-            i, j = map(int, model_indices)
-            if i < n_models and j < n_models:
-                similarity_matrix[i, j] = metrics_data[stat]
-                similarity_matrix[j, i] = metrics_data[stat]
-            else:
-                warn(
-                    f"Model indices {i}, {j} from pair '{pair}' are out of bounds. Skipping."
-                )
-        else:
+        try:
+            model_indices = pair.split("_vs_")
+            if len(model_indices) == 2:
+                i, j = map(int, model_indices)
+                if i < n_models and j < n_models:
+                    val = metrics_data[stat]
+                    similarity_matrix[i, j] = val
+                    similarity_matrix[j, i] = val
+
+                    label = f"{val:.2f}"
+                    # Check for standard deviation if available
+                    std_val = metrics_data.get("std", metrics_data.get("stdev"))
+                    if std_val is not None:
+                        label += f"\n±{std_val:.2f}"
+
+                    annot_matrix[i, j] = label
+                    annot_matrix[j, i] = label
+                else:
+                    warn(f"Indices {i}, {j} out of bounds. Skipping.")
+        except ValueError:
             warn(f"Could not parse indices from pair '{pair}'. Skipping.")
 
-    plt.figure(figsize=figsize)
-    current_cmap = cmap
-    custom_vmin, custom_vmax = None, None
-    cbar_label = ""
+    # --- Plotting Configuration ---
 
-    if metric in ["cosine", "correlation", "ssim"]:
-        custom_vmin, custom_vmax = -1.0, 1.0
-        cbar_label = f"{metric.capitalize()} Similarity"
-        if cmap == "coolwarm_r":
-            current_cmap = "coolwarm"
-    elif metric == "mse":
-        custom_vmin = 0.0
-        if cmap == "coolwarm":
-            current_cmap = "coolwarm_r"
-        cbar_label = "Mean Squared Error"
-    elif metric == "emd":
-        custom_vmin = 0.0
-        if cmap == "coolwarm":
-            current_cmap = "coolwarm_r"
-        cbar_label = "Earth Mover's Distance (Wasserstein)"
-    else:
-        cbar_label = f"{metric.capitalize()} {stat.capitalize()}"
+    with sns.plotting_context("paper", font_scale=font_scale):
 
-    mask: Optional[np.ndarray] = None
-    if plot_only_lower_triangle:
-        mask = np.triu(np.ones_like(similarity_matrix, dtype=bool), k=1)
-    if not keep_diagonal:
-        np.fill_diagonal(mask, True)
+        fig = plt.figure(figsize=figsize, dpi=dpi)
 
-    # Initialize labels
-    xticklabels = model_names
-    yticklabels = model_names
+        current_cmap = cmap
+        custom_vmin, custom_vmax = None, None
+        cbar_label = ""
 
-    if plot_only_lower_triangle and not keep_diagonal:
-        # Slice matrix: remove Top Row (1:) and Right Column (:-1)
-        similarity_matrix = similarity_matrix[1:, :-1]
+        if metric in ["cosine", "correlation", "ssim"]:
+            custom_vmin, custom_vmax = -1.0, 1.0
+            cbar_label = f"{metric.capitalize()} Similarity"
+            if cmap == "coolwarm_r":
+                current_cmap = "coolwarm"
+        elif metric == "mse":
+            custom_vmin = 0.0
+            if cmap == "coolwarm":
+                current_cmap = "coolwarm_r"
+            cbar_label = "Mean Squared Error"
+        elif metric == "emd":
+            custom_vmin = 0.0
+            if cmap == "coolwarm":
+                current_cmap = "coolwarm_r"
+            cbar_label = "Earth Mover's Distance"
+        elif metric.startswith("top_percent_iou"):
+            custom_vmin, custom_vmax = 0.0, 1.0
+            cbar_label = "Intersection over Union (IoU)"
+        else:
+            cbar_label = f"{metric.capitalize()} {stat.capitalize()}"
 
-        # Slice mask to match dimensions
-        if mask is not None:
-            mask = mask[1:, :-1]
+        mask: Optional[np.ndarray] = None
+        if plot_only_lower_triangle:
+            mask = np.triu(np.ones_like(similarity_matrix, dtype=bool), k=1)
+        if not keep_diagonal:
+            np.fill_diagonal(mask, True)
 
-        # Adjust labels:
-        yticklabels = model_names[1:]
-        xticklabels = model_names[:-1]
+        # Initialize labels
+        xticklabels = list(model_names)
+        yticklabels = list(model_names)
 
-    ax = sns.heatmap(
-        similarity_matrix,
-        annot=annotate,
-        fmt=".2f",
-        cmap=current_cmap,
-        xticklabels=xticklabels,
-        yticklabels=yticklabels,
-        cbar_kws={"label": cbar_label},
-        mask=mask,
-        vmin=custom_vmin,
-        vmax=custom_vmax,
-        linecolor="white",
-        linewidths=0.5,
-    )
+        matrix_to_plot = similarity_matrix
+        annot_to_plot = annot_matrix
 
-    # Remove individually black lined cells if mask is applied
-    mesh = ax.collections[0]
+        if plot_only_lower_triangle and not keep_diagonal:
+            # Slice matrix: remove Top Row (1:) and Right Column (:-1)
+            matrix_to_plot = similarity_matrix[1:, :-1]
+            annot_to_plot = annot_matrix[1:, :-1]
 
-    n_rows, n_cols = similarity_matrix.shape
+            # Slice mask to match dimensions
+            if mask is not None:
+                mask = mask[1:, :-1]
 
-    # Get / expand per-cell edgecolors
-    edgecolors = mesh.get_edgecolors()
-    if len(edgecolors) == 1:
-        # One color repeated: expand to one per cell
-        edgecolors = np.repeat(edgecolors, n_rows * n_cols, axis=0)
+            # Adjust labels:
+            yticklabels = model_names[1:]
+            xticklabels = model_names[:-1]
 
-    for i in range(n_rows * n_cols):
-        r = i // n_cols  # row index
-        c = i % n_cols  # column index
+        ax = sns.heatmap(
+            matrix_to_plot,
+            annot=annot_to_plot if annotate else False,
+            fmt="",
+            cmap=current_cmap,
+            xticklabels=xticklabels,
+            yticklabels=yticklabels,
+            cbar_kws={
+                "label": cbar_label,
+                "shrink": 0.8,  # Shrink colorbar slightly
+                "fraction": 0.05,  # Adjust width relative to plot
+                "pad": 0.02,  # Distance from plot
+            },
+            mask=mask,
+            vmin=custom_vmin,
+            vmax=custom_vmax,
+            linecolor="white",
+            linewidths=1.0,  # Thicker lines for clearer separation in print
+        )
 
-        if r >= c:  # lower triangle incl. diagonal
-            debug(f"Keeping edgecolor for cell ({r}, {c})")
-            edgecolors[i] = (1, 1, 1, 1)  # black, opaque
-        else:  # upper triangle
-            debug(f"Making edgecolor transparent for cell ({r}, {c})")
-            edgecolors[i] = (0, 0, 0, 0)  # fully transparent
+        # --- Cosmetic Fixes for Printing ---
 
-    mesh.set_edgecolors(edgecolors)
-    mesh.set_linewidth(0.5)
+        # Rotate x-axis labels to prevent overlap
+        plt.xticks(rotation=45, ha="right", rotation_mode="anchor")
+        plt.yticks(rotation=0)
 
-    # ----------------------------------------
+        # Remove individually black lined cells if mask is applied (Existing Logic)
+        mesh = ax.collections[0]
+        n_rows, n_cols = matrix_to_plot.shape
+        edgecolors = mesh.get_edgecolors()
 
-    title_metric_name = (
-        metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
-    )
-    plt.title(
-        f"{title_metric_name} {stat.capitalize()} Between Heatmaps of Different Models"
-    )
-    plt.tight_layout()
-    return plt.gcf()
+        # Ensure we have an array of colors to modify
+        if len(edgecolors) == 1:
+            edgecolors = np.repeat(edgecolors, n_rows * n_cols, axis=0)
+
+        # Handle edge colors safely
+        try:
+            if len(edgecolors) == n_rows * n_cols:
+                for i in range(n_rows * n_cols):
+                    r = i // n_cols
+                    c = i % n_cols
+
+                    # If the cell is masked (value is masked in numpy array),
+                    # Seaborn usually handles it, but if you need manual transparency:
+                    is_masked = False
+                    if mask is not None:
+                        is_masked = mask[r, c]
+
+                    if not is_masked:
+                        edgecolors[i] = (1, 1, 1, 1)  # White borders for visible cells
+                    else:
+                        edgecolors[i] = (0, 0, 0, 0)  # Transparent for masked cells
+
+                mesh.set_edgecolors(edgecolors)
+        except Exception as e:
+            warn(f"Could not apply custom edge colors: {e}")
+
+        title_metric_name = (
+            metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
+        )
+
+        # Increase title padding for readability
+        plt.title(f"{title_metric_name} ({stat}) Comparison", pad=20, fontweight="bold")
+
+        plt.tight_layout()
+
+        return fig
 
 
 def visualize_similarity_distribution(
@@ -251,6 +290,9 @@ def visualize_similarity_distribution(
         xlim_max = min(1.0, data_max + x_margin)
         ax.set_xlim(xlim_min, xlim_max)
         xlabel_text = f"Average {metric.upper()} Score"
+    elif metric.startswith("top_percent_iou"):
+        ax.set_xlim(0.0, 1.0)
+        xlabel_text = "Average IoU Score"
     else:
         # For other metrics, use data-driven limits
         x_margin = (data_max - data_min) * 0.1
@@ -293,10 +335,21 @@ def visualize_violin_distribution(
     figsize: Tuple[float, float] = (16, 5),  # Wide for side-by-side
     palette: str = "muted",
     custom_model_order: Optional[Sequence[str]] = None,
+    dpi: int = 600,
+    font_scale: float = 1.2,
 ) -> Figure:
     """
     Creates faceted violin plots with independent scales, containing
     a narrow boxplot inside each violin.
+
+    Parameters:
+    - data: mapping from model name to sequence of metric values.
+    - metric: name of the metric (used for labels/titles).
+    - figsize: overall figure size in inches (width, height).
+    - palette: seaborn palette name.
+    - custom_model_order: optional explicit ordering of models.
+    - dpi: figure DPI for high-resolution output.
+    - font_scale: seaborn font scale applied within plotting context.
     """
     # 1. Flatten Data
     records = []
@@ -306,7 +359,9 @@ def visualize_violin_distribution(
 
     if not records:
         warn(f"No data available for violin plot of {metric}.")
-        return plt.figure(figsize=figsize)
+        # Ensure returned figure respects figsize and dpi
+        empty_fig = plt.figure(figsize=figsize, dpi=dpi)
+        return empty_fig
 
     df = pd.DataFrame(records)
 
@@ -316,75 +371,88 @@ def visualize_violin_distribution(
     else:
         order = df.groupby("Model")["Value"].median().sort_values().index
 
-    # 3. Create FacetGrid (Independent Y-Axes)
-    g = sns.FacetGrid(
-        df,
-        col="Model",
-        col_order=order,
-        sharey=False,  # Independent scales
-        height=5,
-        aspect=0.5,
-        hue="Model",
-        palette=palette,
-    )
+    # Use seaborn plotting context to control fonts
+    with sns.plotting_context("paper", font_scale=font_scale):
+        # 3. Create FacetGrid (Independent Y-Axes)
+        # We create the FacetGrid and then set the overall figure size & DPI
+        g = sns.FacetGrid(
+            df,
+            col="Model",
+            col_order=order,
+            sharey=False,  # Independent scales
+            height=5,
+            aspect=0.5,
+            hue="Model",
+            palette=palette,
+        )
 
-    # --- LAYER 1: The Violin (Shape only) ---
-    g.map_dataframe(
-        sns.violinplot,
-        y="Value",
-        inner=None,  # Turn off default inner lines
-        density_norm="width",
-        cut=0,
-        alpha=0.7,
-        linewidth=0,  # Remove outline for a cleaner look behind the box
-    )
+        # --- LAYER 1: The Violin (Shape only) ---
+        g.map_dataframe(
+            sns.violinplot,
+            y="Value",
+            inner=None,  # Turn off default inner lines
+            density_norm="width",
+            cut=0,
+            alpha=0.7,
+            linewidth=0,  # Remove outline for a cleaner look behind the box
+        )
 
-    # --- LAYER 2: The Boxplot (The "Small Box" inside) ---
-    g.map_dataframe(
-        sns.boxplot,
-        y="Value",
-        width=0.15,  # Make it narrow so it sits "inside"
-        boxprops={
-            "facecolor": "white",
-            "alpha": 0.9,
-            "edgecolor": "black",
-        },  # White box pops
-        whiskerprops={"color": "black"},
-        capprops={"color": "black"},
-        medianprops={"color": "black", "linewidth": 1.5},
-        showfliers=False,  # Don't show outlier dots (stripplot does this)
-        zorder=2,  # Ensure it draws on top of violin
-    )
+        # --- LAYER 2: The Boxplot (The "Small Box" inside) ---
+        g.map_dataframe(
+            sns.boxplot,
+            y="Value",
+            width=0.15,  # Make it narrow so it sits "inside"
+            boxprops={
+                "facecolor": "white",
+                "alpha": 0.9,
+                "edgecolor": "black",
+            },  # White box pops
+            whiskerprops={"color": "black"},
+            capprops={"color": "black"},
+            medianprops={"color": "black", "linewidth": 1.5},
+            showfliers=False,  # Don't show outlier dots (stripplot does this)
+            zorder=2,  # Ensure it draws on top of violin
+        )
 
-    # --- LAYER 3: The Strip Plot (Raw Data Dots) ---
-    g.map_dataframe(
-        sns.stripplot,
-        y="Value",
-        color="black",
-        alpha=0.3,
-        size=2,
-        jitter=True,
-        zorder=3,
-    )
+        # --- LAYER 3: The Strip Plot (Raw Data Dots) ---
+        g.map_dataframe(
+            sns.stripplot,
+            y="Value",
+            color="black",
+            alpha=0.3,
+            size=2,
+            jitter=True,
+            zorder=3,
+        )
 
-    # 4. Aesthetics
-    g.set_titles(col_template="{col_name}")
-    g.set_axis_labels("", f"{metric.capitalize()}")
+        # 4. Aesthetics
+        g.set_titles(col_template="{col_name}")
+        g.set_axis_labels("", f"{metric.capitalize()}")
 
-    # Global Title
-    g.fig.suptitle(
-        f"Distribution of {metric.capitalize()} Scores Across Architectures",
-        y=1.05,
-        fontsize=14,
-    )
+        # Global Title (scale title fontsize with font_scale)
+        g.fig.suptitle(
+            f"Distribution of {metric.capitalize()} Scores Across Architectures",
+            y=1.05,
+            fontsize=int(14 * font_scale),
+        )
 
-    # Add gridlines to every subplot
-    for ax in g.axes.flat:
-        ax.grid(axis="y", linestyle="--", alpha=0.5)
+        # Add gridlines to every subplot
+        for ax in g.axes.flat:
+            ax.grid(axis="y", linestyle="--", alpha=0.5)
 
-    plt.tight_layout()
+        # Apply requested figure size and DPI
+        try:
+            g.fig.set_size_inches(figsize)
+            g.fig.set_dpi(dpi)
+        except Exception:
+            # Fallback: create a new figure wrapper if setting fails
+            warn(
+                "Could not apply figsize/dpi to FacetGrid figure. Continuing with defaults."
+            )
 
-    return plt.gcf()
+        plt.tight_layout()
+
+    return g.fig
 
 
 def denormalize_image(

@@ -85,15 +85,55 @@ def uniform_heatmaps(
     return resized_heatmaps
 
 
+def top_percent_iou(imgA: np.ndarray, imgB: np.ndarray, p: float = 0.1) -> float:
+    """
+    Compute the IoU between the sets of top-p% pixels in two images.
+    """
+    N = imgA.size
+    if imgB.size != N:
+        raise ValueError("Input images must have the same number of pixels.")
+    if not (0 < p < 1):
+        raise ValueError("Parameter p must be in the range (0, 1).")
+
+    # Flatten both images
+    A = imgA.ravel()
+    B = imgB.ravel()
+
+    # Number of pixels to keep (top p%)
+    k = int(np.ceil(p * N))
+
+    # ----- Get kth LARGEST value in A -----
+    kth_index_A = N - k  # index of kth largest (0-based)
+    part_A = np.partition(A, kth_index_A)  # partitioned array
+    TA = part_A[kth_index_A]  # threshold for image A
+
+    # ----- Get kth LARGEST value in B -----
+    kth_index_B = N - k
+    part_B = np.partition(B, kth_index_B)
+    TB = part_B[kth_index_B]
+
+    # Create binary masks for top-p% pixels
+    maskA = A >= TA
+    maskB = B >= TB
+
+    # Compute IoU
+    intersection = np.logical_and(maskA, maskB).sum()
+    union = np.logical_or(maskA, maskB).sum()
+
+    return float(intersection / union) if union > 0 else 0.0
+
+
 def compare_heatmaps(
     heatmap_arrays: Sequence[np.ndarray],
     metrics: Sequence[str] = ("mse", "correlation", "cosine", "ssim", "emd"),
+    iou_threshold: float = 0.1,
 ) -> ComparisonResults:
     """Compare similarity between multiple heatmap collections.
 
     Args:
         heatmap_arrays (Sequence[np.ndarray]): List of heatmap arrays to compare. Each array should have shape (B, H, W).
-        metrics (Sequence[str]): List of metrics to compute. Supported metrics: "mse", "correlation", "cosine", "ssim", "emd".
+        metrics (Sequence[str]): List of metrics to compute. Supported metrics: "mse", "correlation", "cosine", "ssim", "emd", "top_percent_iou".
+        iou_threshold (float): Threshold p for top_percent_iou metric (default 0.1 for 10%).
     Returns:
         ComparisonResults: Dictionary containing per-image and summary similarity results.
     """
@@ -124,6 +164,9 @@ def compare_heatmaps(
     compute_cosine = "cosine" in metrics_list
     compute_ssim = "ssim" in metrics_list
     compute_emd = "emd" in metrics_list
+
+    # Identify IoU metrics to compute
+    iou_metrics = [m for m in metrics_list if m.startswith("top_percent_iou")]
 
     for i, j in array_pairs:
         pair_key = f"{i}_vs_{j}"
@@ -163,6 +206,26 @@ def compare_heatmaps(
                 dist2 = flat2[k] + 1.0001
                 emds[k] = wasserstein_distance(dist1, dist2)
             per_image["emd"][pair_key] = emds
+
+        for metric in iou_metrics:
+            # Determine threshold p
+            if metric == "top_percent_iou":
+                p = iou_threshold
+            else:
+                # Parse "top_percent_iou_5" -> 0.05, "top_percent_iou_15" -> 0.15
+                try:
+                    suffix = metric.split("_")[-1]
+                    p = float(suffix) / 100.0
+                except ValueError:
+                    warn(f"Could not parse IoU threshold from metric name: {metric}")
+                    continue
+
+            ious = np.zeros(n_images, dtype=float)
+            for k in range(n_images):
+                ious[k] = top_percent_iou(
+                    heatmap_arrays[i][k], heatmap_arrays[j][k], p=p
+                )
+            per_image[metric][pair_key] = ious
 
     summary: SummaryResults = {metric: {} for metric in metrics_list}
     for metric in metrics_list:

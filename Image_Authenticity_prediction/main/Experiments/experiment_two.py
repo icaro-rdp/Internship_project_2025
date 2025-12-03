@@ -519,7 +519,7 @@ def run_experiment_2(
 
     # --- Part B: Comparison ---
     if comparison_only:
-        info(">>> STARTING COMPARISONS (In-Memory)")
+        info(">>> STARTING COMPARISONS ")
         run_comparisons(
             methods,
             comparison_kinds,
@@ -546,6 +546,11 @@ if __name__ == "__main__":
         xai_methods="both",
         comparison_only=True,
         comparison_kinds=("between_model_architectures", "within_model_variants"),
-        comparison_metrics=("correlation",),
+        comparison_metrics=(
+            "correlation",
+            "top_percent_iou_5",
+            "top_percent_iou_15",
+            "top_percent_iou_25",
+        ),
         save_comparison_json=True,
     )
