@@ -258,20 +258,33 @@ def save_plots_for_result(comp_res, labels, method, scope_name, metrics):
             continue
         try:
             fig_mat = visualize_similarity_matrix(
-                comp_res, ordered_labels, metric=metric
+                comp_res, ordered_labels, metric=metric, add_title=False
             )
             if fig_mat:
-                out_name = f"{method}_{scope_name}_{metric}_matrix.png"
-                fig_mat.savefig(DIRS["plots"] / out_name, bbox_inches="tight")
+                out_name = f"{method}_{scope_name}_{metric}_matrix"
+                fig_mat.savefig(
+                    DIRS["plots"] / f"{out_name}.svg", bbox_inches="tight", format="svg"
+                )
+                fig_mat.savefig(
+                    DIRS["plots"] / f"{out_name}.png", bbox_inches="tight", format="png"
+                )
+
                 plt.close(fig_mat)
 
-            fig_dist = visualize_similarity_distribution(comp_res, metric=metric)
+            fig_dist = visualize_similarity_distribution(
+                comp_res, metric=metric, add_title=False
+            )
             if fig_dist and scope_name not in [
                 "between_model_architectures",
                 "cross_methods",
             ]:
-                out_name = f"{method}_{scope_name}_{metric}_distribution.png"
-                fig_dist.savefig(DIRS["plots"] / out_name, bbox_inches="tight")
+                out_name = f"{method}_{scope_name}_{metric}_distribution"
+                fig_dist.savefig(
+                    DIRS["plots"] / f"{out_name}.svg", bbox_inches="tight", format="svg"
+                )
+                fig_dist.savefig(
+                    DIRS["plots"] / f"{out_name}.png", bbox_inches="tight", format="png"
+                )
                 plt.close(fig_dist)
         except Exception as e:
             warn(f"Could not save plots for {method} {scope_name} ({metric}): {e}")
@@ -374,9 +387,16 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                         ],
                     )
                     if fig_violin:
-                        out_name = f"{method}_intra_model_{metric}_violin.png"
+                        out_name = f"{method}_intra_model_{metric}_violin"
                         fig_violin.savefig(
-                            DIRS["plots"] / out_name, bbox_inches="tight"
+                            DIRS["plots"] / f"{out_name}.svg",
+                            bbox_inches="tight",
+                            format="svg",
+                        )
+                        fig_violin.savefig(
+                            DIRS["plots"] / f"{out_name}.png",
+                            bbox_inches="tight",
+                            format="png",
                         )
                         plt.close(fig_violin)
                         info(f"Saved violin plot: {out_name}")

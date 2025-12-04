@@ -29,6 +29,7 @@ def visualize_similarity_matrix(
     keep_diagonal: bool = False,
     dpi: int = 600,
     font_scale: float = 1.2,
+    add_title: bool = True,
 ) -> Figure:
     """
     Visualize similarity matrix.
@@ -193,8 +194,10 @@ def visualize_similarity_matrix(
             metric.upper() if metric in ["mse", "emd"] else metric.capitalize()
         )
 
-        # Increase title padding for readability
-        plt.title(f"{title_metric_name} ({stat}) Comparison", pad=20, fontweight="bold")
+        if add_title:
+            plt.title(
+                f"{title_metric_name} ({stat}) Comparison", pad=20, fontweight="bold"
+            )
 
         plt.tight_layout()
 
@@ -207,6 +210,7 @@ def visualize_similarity_distribution(
     figsize: Tuple[float, float] = (10, 6),
     bins: Union[int, str] = "auto",
     color: str = "steelblue",
+    add_title: bool = True,
 ) -> Figure:
     """
     Plot histogram of inter-variant agreement distribution.
@@ -307,9 +311,11 @@ def visualize_similarity_distribution(
     # Labels and styling
     ax.set_xlabel(xlabel_text, fontsize=11)
     ax.set_ylabel("Number of Images", fontsize=11)
-    ax.set_title(
-        f"Distribution of Variant Agreement ({metric.capitalize()})", fontsize=12
-    )
+
+    if add_title:
+        ax.set_title(
+            f"Distribution of Variant Agreement ({metric.capitalize()})", fontsize=12
+        )
     ax.legend(fontsize=10)
     ax.grid(alpha=0.3, axis="y")
 
@@ -337,6 +343,7 @@ def visualize_violin_distribution(
     custom_model_order: Optional[Sequence[str]] = None,
     dpi: int = 600,
     font_scale: float = 1.2,
+    add_title: bool = True,
 ) -> Figure:
     """
     Creates faceted violin plots with independent scales, containing
@@ -430,11 +437,12 @@ def visualize_violin_distribution(
         g.set_axis_labels("", f"{metric.capitalize()}")
 
         # Global Title (scale title fontsize with font_scale)
-        g.fig.suptitle(
-            f"Distribution of {metric.capitalize()} Scores Across Architectures",
-            y=1.05,
-            fontsize=int(14 * font_scale),
-        )
+        if add_title:
+            g.fig.suptitle(
+                f"Distribution of {metric.capitalize()} Scores Across Architectures",
+                y=1.05,
+                fontsize=int(14 * font_scale),
+            )
 
         # Add gridlines to every subplot
         for ax in g.axes.flat:
