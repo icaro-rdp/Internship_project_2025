@@ -318,10 +318,10 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
 
         prototypes = {}
         valid_protos = []
-        intra_res = {}
+        within_res = {}
 
         # Container for violin plot data: {metric: {model_name: [values]}}
-        intra_model_stats = defaultdict(lambda: defaultdict(list))
+        within_model_stats = defaultdict(lambda: defaultdict(list))
 
         # --- 1. Intra-Model & Prototype Creation ---
         for m_name, variants_dict in groups.items():
@@ -343,7 +343,7 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                 info(f"[{method}] Comparing variants for {m_name}...")
                 comp_res = compare_heatmaps(loaded_vars, metrics=metrics)
                 comp_res["variants"] = var_names
-                intra_res[m_name] = comp_res
+                within_res[m_name] = comp_res
 
                 # Collect data for violin plots
                 for metric in metrics:
@@ -354,7 +354,7 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                             for d in comp_res["summary"][metric].values()
                             if "mean" in d
                         ]
-                        intra_model_stats[metric][m_name].extend(values)
+                        within_model_stats[metric][m_name].extend(values)
 
                 save_plots_for_result(
                     comp_res, var_names, method, f"within_{m_name}", metrics
@@ -371,12 +371,13 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
             gc.collect()
 
         # Generate Violin Plots for Intra-Model Analysis
-        if intra_model_stats:
-            for metric, model_data in intra_model_stats.items():
+        if within_model_stats:
+            for metric, model_data in within_model_stats.items():
                 try:
                     fig_violin = visualize_violin_distribution(
                         model_data,
                         metric=metric,
+                        add_title=False,
                         custom_model_order=[
                             "barlowtwins",
                             "resnet152",
@@ -387,7 +388,7 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                         ],
                     )
                     if fig_violin:
-                        out_name = f"{method}_intra_model_{metric}_violin"
+                        out_name = f"{method}_within_model_{metric}_violin"
                         fig_violin.savefig(
                             DIRS["plots"] / f"{out_name}.svg",
                             bbox_inches="tight",
@@ -403,8 +404,8 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                 except Exception as e:
                     warn(f"Could not save violin plot for {method} ({metric}): {e}")
 
-        if intra_res:
-            results[f"{method}_within_model_variants"] = intra_res
+        if within_res:
+            results[f"{method}_within_model_variants"] = within_res
 
         # --- 2. Between-Model Architectures Comparison ---
         if "between_model_architectures" in kinds and len(prototypes) > 1:
