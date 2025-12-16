@@ -6,15 +6,11 @@ from torch.utils.data import DataLoader, Subset, TensorDataset
 import sys
 from pathlib import Path
 import numpy as np
-import gc
 import time
 import re
 import json
-import shutil
-import matplotlib.pyplot as plt
 from collections import defaultdict
-from typing import Sequence, Tuple, Optional, List, Dict, Any
-import random
+from typing import List, Dict, Any, Tuple
 
 # ============================================================================
 # 1. SETUP & CONFIGURATION
@@ -30,40 +26,31 @@ from main.Models import (
     EfficientNetB3AuthenticityPredictor,
     BarlowTwinsAuthenticityPredictor,
 )
-from main.Utils.explainability import GradCAM, MultiscalePixelMasking
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, debug, set_level
-from main.Utils.comparisons import (
-    compare_heatmaps,
-    uniform_heatmaps,
+
+
+from main.data import (
+    IMAGENET_DATASET,
+    DENSENET_DATASET,
+    NUM_WORKERS,
+    SEED,
 )
-from main.Utils.visualization import (
-    visualize_similarity_matrix,
-    visualize_similarity_distribution,
-    visualize_violin_distribution,
-)
-from main.data import IMAGENET_DATASET, DENSENET_DATASET, SINGLE_BATCH_SIZE, NUM_WORKERS
+from main.train import train_model
 
 # ============================================================================
 # 1.1 DIRECTORIES
 # ============================================================================
 DIRS = {
-    "output": Path("Outputs/Experiment_3_ensemble"),
-    "weights": Path("Outputs/Experiment_3_ensemble/Weights"),
     "base_weights": Path(
         "Outputs/Experiment_1_variants/Weights"
     ),  # Pre-trained from exp1
+    "stacking_weights": Path("Outputs/Experiment_3_ensemble/Weights/Stacking"),
+    "results": Path("Outputs/Experiment_3_ensemble/Results"),
 }
-DIRS["bagging_weights"] = DIRS["weights"] / "Bagging"
-DIRS["stacking_weights"] = DIRS["weights"] / "Stacking"
-DIRS["maps"] = DIRS["output"] / "XAI_Maps"
-DIRS["gradcam"] = DIRS["maps"] / "GradCAM"
-DIRS["mpm"] = DIRS["maps"] / "Multiscale_Pixel_Masking"
-DIRS["plots"] = DIRS["output"] / "Plots"
-DIRS["results"] = DIRS["output"] / "Results"
 
 # ============================================================================
-# 1.2 MODEL REGISTRY (identical to experiment_two)
+# 1.2 MODEL REGISTRY
 # ============================================================================
 MODEL_REGISTRY = {
     "vgg16": {
@@ -98,34 +85,17 @@ MODEL_REGISTRY = {
     },
 }
 
-XAI_PARAMS = {
-    "sigma": [3, 17, 65],
-    "mask_val": 0,
-    "px_batch": 256,
-    "gc_interval": 50,
-    "mpm_interval": 10,
-}
-
-MODEL_ORDER = [
-    "barlowtwins",
-    "resnet152",
-    "densenet161",
-    "efficientnetb3",
-    "vgg16",
-    "vgg19",
-]
-
 # ============================================================================
 # 1.3 ENSEMBLE CONFIGURATION
 # ============================================================================
 ENSEMBLE_CONFIG = {
-    "random_state": 42,
     "batch_size": 32,
-    "num_epochs_base": 20,
+    "num_epochs_base": 500,
     "num_epochs_meta": 40,
     "learning_rate": 0.001,
     "learning_rate_meta": 0.001,
     "n_splits": 7,  # K-Fold splits for stacking
+    "patience": 15,  # Early stopping patience
 }
 
 
@@ -135,25 +105,7 @@ def setup_directories():
         p.mkdir(parents=True, exist_ok=True)
 
 
-# ============================================================================
-# 2. REPRODUCIBILITY & UTILITIES
-# ============================================================================
-
-
-def set_seed(seed: int = 42):
-    """Set random seeds for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
 class NpEncoder(json.JSONEncoder):
-    """JSON encoder for numpy types."""
-
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -165,61 +117,15 @@ class NpEncoder(json.JSONEncoder):
 
 
 # ============================================================================
-# 3. MODEL LOADING (mirrors experiment_two pattern)
+# 2. MODEL LOADING
 # ============================================================================
-
-
-def get_weight_files(models_filter, variants_filter):
-    """Get weight files matching filters (identical to experiment_two)."""
-    if not DIRS["base_weights"].exists():
-        return {}
-    all_files = sorted(DIRS["base_weights"].glob("*.pth"))
-    grouped = defaultdict(list)
-
-    if isinstance(variants_filter, str):
-        variants_filter = {variants_filter}
-    req_vars = {str(v).lower() for v in variants_filter}
-    include_all = "all" in req_vars
-
-    for p in all_files:
-        match = re.match(r"^([A-Za-z0-9_]+)_exp1", p.name)
-        if not match:
-            continue
-        m_name = match.group(1)
-        if models_filter and m_name not in models_filter:
-            continue
-        if m_name not in MODEL_REGISTRY:
-            continue
-
-        tag = "orig"
-        if "greedy" in str(p):
-            tag = re.search(r"exp1b_variant\d+_greedy_pruned", str(p)).group(0)
-        elif "negative" in str(p):
-            tag = re.search(r"exp1b_variant\d+_negative_pruned", str(p)).group(0)
-        elif "variant" in str(p):
-            tag = re.search(r"exp1a_variant\d+", str(p)).group(0)
-
-        keep = include_all
-        if not keep:
-            if "greedy" in req_vars and "greedy" in tag:
-                keep = True
-            elif "negative" in req_vars and "negative" in tag:
-                keep = True
-            elif "orig" in req_vars and "orig" in tag:
-                keep = True
-            elif "base" in req_vars and ("orig" in tag or "exp1a" in tag):
-                keep = True
-
-        if keep:
-            grouped[m_name].append(p)
-    return grouped
 
 
 def load_model_with_weights(
     model_name: str,
     weights_path: Path,
     device: str = "cuda",
-    freeze_backbone: bool = False,
+    freeze_backbone: bool = True,  # Backbone frozen by default
 ) -> nn.Module:
     """Load a model with pre-trained weights."""
     model_cls = MODEL_REGISTRY[model_name]["class"]
@@ -229,7 +135,7 @@ def load_model_with_weights(
         model.load_state_dict(
             torch.load(weights_path, map_location=device, weights_only=True)
         )
-        info(f"Loaded weights: {weights_path.name}")
+        debug(f"Loaded weights: {weights_path.name}")
     else:
         warn(f"Weights not found: {weights_path}, using initialized model")
 
@@ -265,147 +171,59 @@ def get_labels(dataloader: DataLoader) -> torch.Tensor:
 # ============================================================================
 
 
-class BaggingEnsemble:
-    """Bagging ensemble that averages predictions from multiple models."""
-
-    def __init__(self, models: List[nn.Module], device: str = "cuda"):
-        self.models = models
-        self.device = device
-        for model in self.models:
-            model.to(device)
-            model.eval()
-
-    def predict(self, dataloaders: Dict[str, DataLoader]) -> torch.Tensor:
-        """
-        Get averaged predictions from all models.
-
-        Args:
-            dataloaders: Dict mapping model_name to its dataloader
-        """
-        all_model_predictions = []
-
-        for model_name, model in self.models:
-            loader = dataloaders.get(model_name)
-            if loader is None:
-                warn(f"No dataloader for {model_name}, skipping")
-                continue
-            preds = get_predictions(model, loader, self.device)
-            all_model_predictions.append(preds)
-
-        stacked = torch.stack(all_model_predictions, dim=0)
-        return torch.mean(stacked, dim=0)
-
-
-def create_bootstrap_indices(dataset_size: int, seed: int = None) -> np.ndarray:
-    """Create bootstrap sample indices (sampling with replacement)."""
-    if seed is not None:
-        np.random.seed(seed)
-    return np.random.choice(dataset_size, size=dataset_size, replace=True)
-
-
-def train_bagging_ensemble(
+def check_bagging_variants(
     models_filter: List[str] = None,
-    device: str = "cuda",
+    num_variants: int = 10,
 ) -> Dict[str, Any]:
     """
-    Train models using bagging strategy.
-    Each model is trained on a bootstrap sample.
+    Check which greedy pruned model variants exist (without loading them).
+
+    Args:
+        models_filter: List of model names to include (None = all)
+        num_variants: Number of variants per model (default 10)
+
+    Returns:
+        Dict with available models and variant counts
     """
     info("=" * 60)
-    info("BAGGING ENSEMBLE TRAINING")
+    info("BAGGING ENSEMBLE - Checking Available Variants")
     info("=" * 60)
 
-    set_seed(ENSEMBLE_CONFIG["random_state"])
-    DIRS["bagging_weights"].mkdir(parents=True, exist_ok=True)
+    results = {"models": [], "variants_available": {}, "weight_paths": []}
+    models_to_check = models_filter or list(MODEL_REGISTRY.keys())
 
-    trained_models = []
-    results = {"models": [], "bootstrap_info": {}}
-
-    models_to_train = models_filter or list(MODEL_REGISTRY.keys())
-
-    for m_name in models_to_train:
+    for m_name in models_to_check:
         if m_name not in MODEL_REGISTRY:
             warn(f"Model {m_name} not in registry, skipping")
             continue
 
-        info(f"\n--- Training {m_name} with bootstrap sample ---")
+        info(f"\n--- Checking {m_name} variants ---")
+        variants_found = 0
 
-        # Check if already trained
-        save_path = DIRS["bagging_weights"] / f"{m_name}_bagging.pth"
-        if save_path.exists():
-            info(f"  Loading existing weights: {save_path.name}")
-            model = load_model_with_weights(
-                m_name, save_path, device, freeze_backbone=False
-            )
-            trained_models.append((m_name, model))
+        for variant_idx in range(1, num_variants + 1):
+            weights_filename = f"{m_name}_exp1b_variant{variant_idx}_greedy_pruned.pth"
+            weights_path = DIRS["base_weights"] / weights_filename
+
+            if weights_path.exists():
+                results["weight_paths"].append((m_name, weights_path))
+                variants_found += 1
+                info(f"  ✓ Found variant {variant_idx}: {weights_filename}")
+            else:
+                warn(f"  ✗ Not found: {weights_filename}")
+
+        results["variants_available"][m_name] = variants_found
+        if variants_found > 0:
             results["models"].append(m_name)
-            continue
 
-        # Get dataset
-        dataset_dict = MODEL_REGISTRY[m_name]["dataset"]
-        train_dataset = dataset_dict["train"]
+        info(f"  Total variants found for {m_name}: {variants_found}")
 
-        # Create bootstrap sample
-        bootstrap_seed = ENSEMBLE_CONFIG["random_state"] + hash(m_name) % 1000
-        bootstrap_indices = create_bootstrap_indices(len(train_dataset), bootstrap_seed)
+    total_variants = len(results["weight_paths"])
+    info(f"\n--- Total variants available: {total_variants} ---")
 
-        # Create subset
-        if isinstance(train_dataset, Subset):
-            global_indices = [train_dataset.indices[i] for i in bootstrap_indices]
-            bootstrap_subset = Subset(train_dataset.dataset, global_indices)
-        else:
-            bootstrap_subset = Subset(train_dataset, bootstrap_indices.tolist())
+    if total_variants == 0:
+        error("No models found! Check that weights exist in base_weights directory.")
 
-        results["bootstrap_info"][m_name] = {
-            "seed": bootstrap_seed,
-            "unique_samples": len(np.unique(bootstrap_indices)),
-            "total_samples": len(bootstrap_indices),
-        }
-
-        train_loader = DataLoader(
-            bootstrap_subset,
-            batch_size=ENSEMBLE_CONFIG["batch_size"],
-            shuffle=True,
-            num_workers=NUM_WORKERS,
-        )
-
-        # Initialize model
-        model_cls = MODEL_REGISTRY[m_name]["class"]
-        model = model_cls(freeze_backbone=False).to(device)
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=ENSEMBLE_CONFIG["learning_rate"]
-        )
-        criterion = nn.MSELoss()
-
-        # Training loop
-        for epoch in range(ENSEMBLE_CONFIG["num_epochs_base"]):
-            model.train()
-            epoch_loss = 0.0
-            for images, labels in train_loader:
-                images, labels = images.to(device), labels.to(device)
-                optimizer.zero_grad()
-                outputs, _ = model(images)
-                loss = criterion(outputs.squeeze(), labels.squeeze())
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-
-            if (epoch + 1) % 5 == 0:
-                avg_loss = epoch_loss / len(train_loader)
-                info(
-                    f"  Epoch {epoch+1}/{ENSEMBLE_CONFIG['num_epochs_base']}, Loss: {avg_loss:.4f}"
-                )
-
-        # Save weights
-        torch.save(model.state_dict(), save_path)
-        info(f"  Saved: {save_path.name}")
-
-        trained_models.append((m_name, model))
-        results["models"].append(m_name)
-
-        clear_gpu_memory()
-
-    results["ensemble"] = BaggingEnsemble(trained_models, device)
+    results["total_variants"] = total_variants
     return results
 
 
@@ -425,7 +243,7 @@ class StackingMetaLearner(nn.Module):
         return self.fc(x)
 
 
-def train_stacking_ensemble(
+def train_ensemble(
     models_filter: List[str] = None,
     device: str = "cuda",
 ) -> Dict[str, Any]:
@@ -438,7 +256,6 @@ def train_stacking_ensemble(
     info("STACKING ENSEMBLE TRAINING")
     info("=" * 60)
 
-    set_seed(ENSEMBLE_CONFIG["random_state"])
     DIRS["stacking_weights"].mkdir(parents=True, exist_ok=True)
 
     models_to_train = models_filter or list(MODEL_REGISTRY.keys())
@@ -458,9 +275,7 @@ def train_stacking_ensemble(
 
         if save_path.exists():
             info(f"  Loading existing: {m_name}")
-            model = load_model_with_weights(
-                m_name, save_path, device, freeze_backbone=False
-            )
+            model = load_model_with_weights(m_name, save_path, device)
         else:
             info(f"  Training: {m_name}")
             dataset_dict = MODEL_REGISTRY[m_name]["dataset"]
@@ -470,30 +285,34 @@ def train_stacking_ensemble(
                 shuffle=True,
                 num_workers=NUM_WORKERS,
             )
+            val_loader = DataLoader(
+                dataset_dict["val"],
+                batch_size=ENSEMBLE_CONFIG["batch_size"],
+                shuffle=False,
+                num_workers=NUM_WORKERS,
+            )
 
+            dataloaders = {"train": train_loader, "val": val_loader}
+
+            # Initialize model (freeze_backbone=True by default, only regression head trainable)
             model_cls = MODEL_REGISTRY[m_name]["class"]
-            model = model_cls(freeze_backbone=False).to(device)
+            model = model_cls()  # Backbone frozen by default
             optimizer = torch.optim.Adam(
-                model.parameters(), lr=ENSEMBLE_CONFIG["learning_rate"]
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=ENSEMBLE_CONFIG["learning_rate"],
             )
             criterion = nn.MSELoss()
 
-            for epoch in range(ENSEMBLE_CONFIG["num_epochs_base"]):
-                model.train()
-                epoch_loss = 0.0
-                for images, labels in train_loader:
-                    images, labels = images.to(device), labels.to(device)
-                    optimizer.zero_grad()
-                    outputs, _ = model(images)
-                    loss = criterion(outputs.squeeze(), labels.squeeze())
-                    loss.backward()
-                    optimizer.step()
-                    epoch_loss += loss.item()
-
-                if (epoch + 1) % 5 == 0:
-                    info(
-                        f"    Epoch {epoch+1}/{ENSEMBLE_CONFIG['num_epochs_base']}, Loss: {epoch_loss/len(train_loader):.4f}"
-                    )
+            # Train using train_model function with early stopping
+            model, history = train_model(
+                model=model,
+                dataloaders=dataloaders,
+                criterion=criterion,
+                optimizer=optimizer,
+                num_epochs=ENSEMBLE_CONFIG["num_epochs_base"],
+                device=device,
+                patience=ENSEMBLE_CONFIG["patience"],
+            )
 
             torch.save(model.state_dict(), save_path)
             info(f"    Saved: {save_path.name}")
@@ -520,7 +339,7 @@ def train_stacking_ensemble(
     kf = KFold(
         n_splits=ENSEMBLE_CONFIG["n_splits"],
         shuffle=True,
-        random_state=ENSEMBLE_CONFIG["random_state"],
+        random_state=SEED,
     )
 
     for fold_idx, (train_idx, val_idx) in enumerate(kf.split(range(n_samples))):
@@ -586,7 +405,7 @@ def train_stacking_ensemble(
             oof_predictions,
             oof_labels,
             test_size=0.2,
-            random_state=ENSEMBLE_CONFIG["random_state"],
+            random_state=SEED,
         )
 
         meta_train_ds = TensorDataset(X_train, y_train)
@@ -638,9 +457,10 @@ def evaluate_ensemble(
     strategy: str,
     models_filter: List[str] = None,
     device: str = "cuda",
+    weight_paths: List[Tuple[str, Path]] = None,
 ) -> Dict[str, float]:
-    """Evaluate an ensemble on test data."""
-    from scipy.stats import pearsonr
+    """Evaluate an ensemble on test data (memory-efficient: one model at a time)."""
+    from scipy.stats import pearsonr, spearmanr, kendalltau
 
     info(f"\n--- Evaluating {strategy.upper()} Ensemble ---")
 
@@ -664,21 +484,41 @@ def evaluate_ensemble(
     y_true = get_labels(first_loader).numpy()
 
     if strategy == "bagging":
-        # Load bagging models
-        models = []
-        for m_name in models_to_eval:
-            weights_path = DIRS["bagging_weights"] / f"{m_name}_bagging.pth"
-            if weights_path.exists():
-                model = load_model_with_weights(m_name, weights_path, device)
-                models.append((m_name, model))
+        # Memory-efficient: load one model at a time, get predictions, unload
+        if weight_paths is None:
+            # Build weight paths if not provided
+            weight_paths = []
+            num_variants = 10
+            for m_name in models_to_eval:
+                for variant_idx in range(1, num_variants + 1):
+                    wp = (
+                        DIRS["base_weights"]
+                        / f"{m_name}_exp1b_variant{variant_idx}_greedy_pruned.pth"
+                    )
+                    if wp.exists():
+                        weight_paths.append((m_name, wp))
 
-        # Average predictions
+        info(f"  Processing {len(weight_paths)} model variants (one at a time)...")
+
+        # Accumulate predictions on CPU
         all_preds = []
-        for m_name, model in models:
+        for idx, (m_name, weights_path) in enumerate(weight_paths):
+            info(f"    [{idx+1}/{len(weight_paths)}] {weights_path.name}")
+
+            # Load model
+            model = load_model_with_weights(m_name, weights_path, device)
+
+            # Get predictions
+            debug(f"Making predictions on test set for {m_name}")
             preds = get_predictions(model, test_loaders[m_name], device)
-            all_preds.append(preds.squeeze())
+            all_preds.append(preds.squeeze().cpu())
+
+            # Unload model and clear GPU memory
+            del model
+            clear_gpu_memory()
 
         y_pred = torch.mean(torch.stack(all_preds), dim=0).numpy()
+        info(f"  Averaged predictions from {len(all_preds)} models")
 
     elif strategy == "stacking":
         # Load base models and meta-learner
@@ -714,20 +554,28 @@ def evaluate_ensemble(
     mse = np.mean((y_pred - y_true) ** 2)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(y_pred - y_true))
-    corr, p_val = pearsonr(y_pred, y_true)
+    plcc, plcc_p = pearsonr(y_pred, y_true)
+    srcc, srcc_p = spearmanr(y_pred, y_true)
+    krcc, krcc_p = kendalltau(y_pred, y_true)
 
     results = {
         "mse": float(mse),
         "rmse": float(rmse),
         "mae": float(mae),
-        "pearson_r": float(corr),
-        "p_value": float(p_val),
+        "plcc": float(plcc),
+        "srcc": float(srcc),
+        "krcc": float(krcc),
+        "plcc_p_value": float(plcc_p),
+        "srcc_p_value": float(srcc_p),
+        "krcc_p_value": float(krcc_p),
     }
 
     info(f"  MSE:  {mse:.4f}")
     info(f"  RMSE: {rmse:.4f}")
     info(f"  MAE:  {mae:.4f}")
-    info(f"  Pearson r: {corr:.4f} (p={p_val:.2e})")
+    info(f"  PLCC: {plcc:.4f} (p={plcc_p:.2e})")
+    info(f"  SRCC: {srcc:.4f} (p={srcc_p:.2e})")
+    info(f"  KRCC: {krcc:.4f} (p={krcc_p:.2e})")
 
     return results
 
@@ -740,7 +588,7 @@ def evaluate_ensemble(
 def run_experiment_3(
     models: List[str] = None,
     strategy: str = "both",  # "bagging", "stacking", or "both"
-    train_models: bool = True,
+    train: bool = True,
     evaluate: bool = True,
     save_results: bool = True,
 ):
@@ -750,13 +598,16 @@ def run_experiment_3(
     Args:
         models: List of model names to include (None = all)
         strategy: "bagging", "stacking", or "both"
-        train_models: Whether to train models
+        train: Whether to train stacking models (bagging uses pre-trained)
         evaluate: Whether to evaluate ensembles
         save_results: Whether to save results to JSON
+
+    Note:
+        Bagging uses pre-trained greedy pruned models from Experiment 1
+        (all 10 variants per model). No training is performed for bagging.
     """
     start = time.time()
     setup_directories()
-    set_seed(ENSEMBLE_CONFIG["random_state"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     info(f"Device: {device}")
@@ -768,19 +619,23 @@ def run_experiment_3(
 
     # --- Bagging ---
     if strategy in ["bagging", "both"]:
-        if train_models:
-            bagging_results = train_bagging_ensemble(models, device)
-            results["bagging_training"] = {
-                "models": bagging_results["models"],
-                "bootstrap_info": bagging_results.get("bootstrap_info", {}),
-            }
-        if evaluate:
-            results["bagging_evaluation"] = evaluate_ensemble("bagging", models, device)
+        # Check which greedy pruned variants exist (no loading yet)
+        bagging_results = check_bagging_variants(models)
+        results["bagging_info"] = {
+            "models": bagging_results["models"],
+            "variants_available": bagging_results.get("variants_available", {}),
+            "total_variants": bagging_results.get("total_variants", 0),
+        }
+        if evaluate and bagging_results.get("total_variants", 0) > 0:
+            # Pass weight_paths so evaluate_ensemble loads one model at a time
+            results["bagging_evaluation"] = evaluate_ensemble(
+                "bagging", models, device, weight_paths=bagging_results["weight_paths"]
+            )
 
     # --- Stacking ---
     if strategy in ["stacking", "both"]:
-        if train_models:
-            stacking_results = train_stacking_ensemble(models, device)
+        if train:
+            stacking_results = train_ensemble(models, device)
             results["stacking_training"] = {
                 "models": stacking_results["models"],
             }
@@ -804,7 +659,7 @@ def run_experiment_3(
 
 
 if __name__ == "__main__":
-    set_level("INFO")
+    set_level("DEBUG")
     run_experiment_3(
         models=[
             "barlowtwins",
@@ -814,8 +669,7 @@ if __name__ == "__main__":
             "vgg16",
             "vgg19",
         ],
-        strategy="both",
-        train_models=True,
+        strategy="bagging",
         evaluate=True,
         save_results=True,
     )

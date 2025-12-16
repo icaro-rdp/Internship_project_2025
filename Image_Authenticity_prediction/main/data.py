@@ -6,14 +6,18 @@ from PIL import Image
 import os
 from pathlib import Path
 import numpy as np
+import random
 from torch.utils.data import DataLoader, random_split, Subset
 from typing import Optional, Tuple, Callable, Dict, Union
 from torch import Tensor
 
+
 class ImageAuthenticityDataset(Dataset):
     """Dataset for image quality assessment."""
 
-    def __init__(self, csv_file_name: str, transform: Optional[Callable] = None) -> None:
+    def __init__(
+        self, csv_file_name: str, transform: Optional[Callable] = None
+    ) -> None:
         """
         Args:
             csv_file_name (str): Name of the CSV file with annotations.
@@ -25,7 +29,7 @@ class ImageAuthenticityDataset(Dataset):
         self.project_root: Path = Path(__file__).resolve().parent.parent
 
         # Dataset base dir (absolute)
-        self.base_dir: Path = self.project_root / 'Dataset' / 'AIGCIQA2023'
+        self.base_dir: Path = self.project_root / "Dataset" / "AIGCIQA2023"
 
         # CSV file path (absolute)
         self.csv_file: Path = self.base_dir / csv_file_name
@@ -66,7 +70,11 @@ class ImageAuthenticityDataset(Dataset):
         # Build absolute path to image. CSV typically contains './Dataset/...',
         # which is relative to the project root. Joining with project_root is safe
         # for both relative and absolute CSV paths.
-        img_path: Path = (self.project_root / Path(img_name)).resolve() if not os.path.isabs(img_name) else Path(img_name)
+        img_path: Path = (
+            (self.project_root / Path(img_name)).resolve()
+            if not os.path.isabs(img_name)
+            else Path(img_name)
+        )
 
         if not img_path.exists():
             raise FileNotFoundError(
@@ -76,54 +84,66 @@ class ImageAuthenticityDataset(Dataset):
                 f"- Ensure the CSV paths are correct and the files are present."
             )
 
-        image: Image.Image = Image.open(str(img_path)).convert('RGB')
+        image: Image.Image = Image.open(str(img_path)).convert("RGB")
         authenticity: float = self.data.iloc[idx, 1]  # Authenticity column
         labels: Tensor = torch.tensor([authenticity], dtype=torch.float)
-
 
         if self.transform:
             image = self.transform(image)
 
         return image, labels
 
-IMAGENET_TRANSFORM: transforms.Compose = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
 
-DENSENET_TRANSFORM: transforms.Compose = transforms.Compose([
-    transforms.Resize((320, 320)),
-    transforms.CenterCrop(300),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+IMAGENET_TRANSFORM: transforms.Compose = transforms.Compose(
+    [
+        transforms.Resize((256, 256)),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
+
+DENSENET_TRANSFORM: transforms.Compose = transforms.Compose(
+    [
+        transforms.Resize((320, 320)),
+        transforms.CenterCrop(300),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
 
 
-ANNOTATION_FILE: str = 'real_images_annotations.csv'
+ANNOTATION_FILE: str = "real_images_annotations.csv"
 BATCH_SIZE: int = 64
 SINGLE_BATCH_SIZE: int = 1
 NUM_WORKERS: int = 20
 
 
 # Create the datasets
-imageNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(csv_file_name=ANNOTATION_FILE, transform=IMAGENET_TRANSFORM)
-denseNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(csv_file_name=ANNOTATION_FILE, transform=DENSENET_TRANSFORM)
+imageNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(
+    csv_file_name=ANNOTATION_FILE, transform=IMAGENET_TRANSFORM
+)
+denseNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(
+    csv_file_name=ANNOTATION_FILE, transform=DENSENET_TRANSFORM
+)
 
 
 # Set seed reproducibility
-GENERATOR: torch.Generator = torch.Generator().manual_seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-np.random.seed(42)
+SEED: int = 42  # Exported for use in experiments
+GENERATOR: torch.Generator = torch.Generator().manual_seed(SEED)
+random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+np.random.seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-# Create a single deterministic 3-way split (train / val / test) and apply the
-# same indices to all dataset variants so that comparisons across models are
-# performed on identical data points. Fractions are configurable below.
-TRAIN_FRAC = 0.8
+# Create a single deterministic 3-way split (train / val / test) and apply the same indices to all dataset variants so that comparisons across models are performed on identical data points. Fractions are configurable below.
+TRAIN_FRAC = 0.7
 VAL_FRAC = 0.1
-TEST_FRAC = 0.1
+TEST_FRAC = 0.2
 
 total_size: int = len(imageNet_dataset)
 if total_size != len(denseNet_dataset):
@@ -133,16 +153,19 @@ if total_size != len(denseNet_dataset):
         f"Dataset size mismatch: imageNet_dataset={len(imageNet_dataset)} vs denseNet_dataset={len(denseNet_dataset)}"
     )
 
-train_size = int(TRAIN_FRAC * total_size)
+# Calculate sizes to match Experiment 1 logic exactly
+test_size = int(TEST_FRAC * total_size)
 val_size = int(VAL_FRAC * total_size)
-# Remaining elements go to test to ensure sum of sizes equals total
-test_size = total_size - train_size - val_size
+train_size = total_size - test_size - val_size
 
 # Build one deterministic permutation of indices and slice it
 perm = torch.randperm(total_size, generator=GENERATOR).tolist()
-train_idx = perm[:train_size]
-val_idx = perm[train_size:train_size + val_size]
-test_idx = perm[train_size + val_size:]
+
+# Experiment 1 uses the FIRST 20% of the permutation as the test set.
+# We must match this exactly to ensure the "immutable" test set is used.
+test_idx = perm[:test_size]
+train_idx = perm[test_size : test_size + train_size]
+val_idx = perm[test_size + train_size :]
 
 
 imagenet_train_ds = Subset(imageNet_dataset, train_idx)
@@ -154,23 +177,19 @@ densenet_val_ds = Subset(denseNet_dataset, val_idx)
 densenet_test_ds = Subset(denseNet_dataset, test_idx)
 
 IMAGENET_DATASET: Dict[str, Dataset] = {
-    'train': imagenet_train_ds,
-    'val': imagenet_val_ds,
-    'test': imagenet_test_ds
+    "train": imagenet_train_ds,
+    "val": imagenet_val_ds,
+    "test": imagenet_test_ds,
 }
 
 DENSENET_DATASET: Dict[str, Dataset] = {
-    'train': densenet_train_ds,
-    'val': densenet_val_ds,
-    'test': densenet_test_ds
+    "train": densenet_train_ds,
+    "val": densenet_val_ds,
+    "test": densenet_test_ds,
 }
 
 INCEPTIONV3_DATASET: Dict[str, Dataset] = {
-    'train': densenet_train_ds,
-    'val': densenet_val_ds,
-    'test': densenet_test_ds
+    "train": densenet_train_ds,
+    "val": densenet_val_ds,
+    "test": densenet_test_ds,
 }
-
-
-
-
