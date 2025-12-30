@@ -40,7 +40,7 @@ ENV/
 Image_Authenticity_prediction/main/Experiments/Outputs
 
 #Test 
-*/main/Experiments/test/*
+# */main/Experiments/test/*
 
 # Model files and datasets
 Models/*/Weights
