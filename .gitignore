@@ -62,7 +62,7 @@ Datasets
 Image_Authenticity_prediction/Dataset
 *.pkl
 *.h5
-old_files_to_ignore
+old_files
 
 # Logs and temporary files
 *.log
