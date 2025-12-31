@@ -58,10 +58,11 @@ Models/*/*/5_imgs_masking_experiment_outputs/*
 Models/*/5_imgs_masking_experiment_outputs/*
 Models/*/multiscale_masking_outputs_ensemble/*
 
-Dataset
+Datasets
+Image_Authenticity_prediction/Dataset
 *.pkl
 *.h5
-
+old_files_to_ignore
 
 # Logs and temporary files
 *.log
