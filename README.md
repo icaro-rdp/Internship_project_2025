@@ -51,9 +51,9 @@ Complete documentation for this project:
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Command reference and common operations
 - **[TODO.md](TODO.md)** - Development roadmap and known issues
 - **Experiment Reports**:
-  - [EXPERIMENT_1_TECHNICAL_REPORT.md](main/Experiments/EXPERIMENT_1_TECHNICAL_REPORT.md) - Training, pruning, and evaluation
-  - [EXPERIMENT_2_TECHNICAL_REPORT.md](main/Experiments/EXPERIMENT_2_TECHNICAL_REPORT.md) - Explainability methods comparison
-  - [EXPERIMENT_3_TECHNICAL_REPORT.md](main/Experiments/EXPERIMENT_3_TECHNICAL_REPORT.md) - Ensemble learning strategies (WIP)
+  - [EXPERIMENT_1_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_1_TECHNICAL_REPORT.md) - Training, pruning, and evaluation
+  - [EXPERIMENT_2_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_2_TECHNICAL_REPORT.md) - Explainability methods comparison
+  - [EXPERIMENT_3_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_3_TECHNICAL_REPORT.md) - Ensemble learning strategies (WIP)
 
 **New to the project?** Start with [SETUP_GUIDE.md](SETUP_GUIDE.md) for complete setup instructions.
 
@@ -115,8 +115,8 @@ model = VGG16AuthenticityPredictor(freeze_backbone=True)
 **For detailed usage, see:**
 
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - All commands and options
-- [EXPERIMENT_1_TECHNICAL_REPORT.md](main/Experiments/EXPERIMENT_1_TECHNICAL_REPORT.md) - Experiment 1 details
-- [EXPERIMENT_2_TECHNICAL_REPORT.md](main/Experiments/EXPERIMENT_2_TECHNICAL_REPORT.md) - Experiment 2 details
+- [EXPERIMENT_1_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_1_TECHNICAL_REPORT.md) - Experiment 1 details
+- [EXPERIMENT_2_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_2_TECHNICAL_REPORT.md) - Experiment 2 details
 
 ## 🤖 Available Models
 
