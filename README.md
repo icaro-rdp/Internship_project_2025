@@ -81,7 +81,7 @@ mkdir -p Dataset/AIGCIQA2023 Dataset/Single_score
 # - Dataset/Single_score/ (25 participant CSV files)
 ```
 
-See [SETUP_GUIDE.md#git-ignored-directories](SETUP_GUIDE.md#git-ignored-directories) for detailed dataset setup.
+See [SETUP_GUIDE.md#git-ignored-directories](SETUP_GUIDE.md#-git-ignored-directories) for detailed dataset setup.
 
 ## 💡 Usage
 

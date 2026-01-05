@@ -4,21 +4,21 @@ A comprehensive guide to setting up and using the Image Authenticity Prediction 
 
 ## 📋 Table of Contents
 
-- [Project Structure](#project-structure)
-- [Directory Purposes](#directory-purposes)
-- [Git-Ignored Directories](#git-ignored-directories)
-- [Output Generation](#output-generation)
-- [Module Organization](#module-organization)
-- [Import Patterns](#import-patterns)
-- [Module Exports](#module-exports)
-- [Common Usage Patterns](#common-usage-patterns)
-- [Troubleshooting](#troubleshooting)
+- [Project Structure](#-project-structure)
+- [Directory Purposes](#-directory-purposes)
+- [Git-Ignored Directories](#-git-ignored-directories)
+- [Output Generation](#-output-generation)
+- [Module Organization](#-module-organization)
+- [Import Patterns](#-import-patterns)
+- [Module Exports](#-module-exports)
+- [Common Usage Patterns](#-common-usage-patterns)
+- [Troubleshooting](#-troubleshooting)
 
 ## 📁 Project Structure
 
 The Image Authenticity Prediction project follows a hierarchical module structure:
 
-```
+```text
 Image_Authenticity_prediction/
 ├── __main__.py                    # CLI entry point
 ├── requirements.txt               # Python dependencies
@@ -172,7 +172,7 @@ mkdir -p Image_Authenticity_prediction/Dataset/Single_score
 
 **Expected structure**:
 
-```
+```text
 Dataset/
 ├── AIGCIQA2023/
 │   ├── real_images_annotations.csv    # Required CSV file with aggregated annotations
@@ -723,11 +723,13 @@ python -m Image_Authenticity_prediction experiment-three --strategy stacking
 
 1. **Check your working directory**: Make sure you're in the correct location
 2. **Add parent directory to path**:
+
    ```python
    import sys
    from pathlib import Path
    sys.path.insert(0, str(Path(__file__).parent.parent))
    ```
+
 3. **Verify `__init__.py` files exist** in all package directories
 4. **Use absolute imports** from external scripts, **relative imports** from within the package
 
