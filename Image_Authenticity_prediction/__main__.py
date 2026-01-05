@@ -12,7 +12,6 @@ Usage:
 
 import argparse
 import sys
-import yaml
 import torch
 from pathlib import Path
 
@@ -61,21 +60,9 @@ DATASET_MAPPING = {
 }
 
 
-def load_config(config_path="Configs/config.yaml"):
-    """Load configuration from YAML file."""
-    config_file = Path(__file__).parent / config_path
-    with open(config_file, "r") as f:
-        config = yaml.safe_load(f)
-    return config
-
-
 def train_command(args):
     """Execute training command."""
     print(f"Starting training for model: {args.model}")
-
-    # Load config
-    config = load_config()
-    device = config["run_settings"]["device"]
 
     # Get model
     if args.model not in MODEL_REGISTRY:
@@ -102,6 +89,9 @@ def train_command(args):
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
+    # Determine device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     # Train
     print(f"Training on device: {device}")
     best_model, history = train_model(
@@ -114,9 +104,10 @@ def train_command(args):
         patience=args.patience,
     )
 
-    # Save model
-    save_path = Path(config["paths"]["weights_dir"]) / f"{args.model}_best.pth"
-    save_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save model to default output directory
+    save_dir = Path("Outputs/Experiment_1_variants/Weights")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    save_path = save_dir / f"{args.model}_best.pth"
     torch.save(best_model.state_dict(), save_path)
     print(f"Model saved to: {save_path}")
 
@@ -128,10 +119,6 @@ def train_command(args):
 def evaluate_command(args):
     """Execute evaluation command."""
     print(f"Evaluating model: {args.model}")
-
-    # Load config
-    config = load_config()
-    device = config["run_settings"]["device"]
 
     # Get model
     if args.model not in MODEL_REGISTRY:
@@ -156,6 +143,9 @@ def evaluate_command(args):
     test_loader = DataLoader(
         dataset["test"], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
     )
+
+    # Determine device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Evaluate
     criterion = torch.nn.MSELoss()
@@ -249,6 +239,35 @@ def experiment_two_command(args):
 
     print("=" * 80)
     print("EXPERIMENT TWO COMPLETE")
+    print("=" * 80)
+
+
+def experiment_three_command(args):
+    """Execute experiment three command."""
+    from main.Experiments.experiment_three import run_experiment_3
+
+    print("=" * 80)
+    print("STARTING EXPERIMENT THREE")
+    print("=" * 80)
+    print(f"Configuration:")
+    print(f"  - Models: {args.models if args.models else 'all'}")
+    print(f"  - Strategy: {args.strategy}")
+    print(f"  - Run training: {args.train}")
+    print(f"  - Run evaluation: {args.evaluate}")
+    print(f"  - Save results: {args.save_results}")
+    print("=" * 80)
+
+    # Run experiment
+    run_experiment_3(
+        models=args.models,
+        strategy=args.strategy,
+        train=args.train,
+        evaluate=args.evaluate,
+        save_results=args.save_results,
+    )
+
+    print("=" * 80)
+    print("EXPERIMENT THREE COMPLETE")
     print("=" * 80)
 
 
@@ -412,6 +431,62 @@ def main():
         help="Target resolution for comparison as width,height (default: 224,224)",
     )
 
+    # Experiment Three command
+    exp3_parser = subparsers.add_parser(
+        "experiment-three",
+        help="Run Experiment 3 (Ensemble Strategies - Bagging & Stacking)",
+    )
+    exp3_parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Specific models to include (default: all models)",
+    )
+    exp3_parser.add_argument(
+        "--strategy",
+        type=str,
+        default="both",
+        choices=["bagging", "stacking", "both"],
+        help="Ensemble strategy to use (default: both)",
+    )
+    exp3_parser.add_argument(
+        "--train",
+        action="store_true",
+        default=True,
+        help="Run ensemble model training (default: True)",
+    )
+    exp3_parser.add_argument(
+        "--no-train",
+        dest="train",
+        action="store_false",
+        help="Skip ensemble model training",
+    )
+    exp3_parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        default=True,
+        help="Run ensemble model evaluation (default: True)",
+    )
+    exp3_parser.add_argument(
+        "--no-evaluate",
+        dest="evaluate",
+        action="store_false",
+        help="Skip ensemble model evaluation",
+    )
+    exp3_parser.add_argument(
+        "--save-results",
+        action="store_true",
+        default=True,
+        help="Save results to JSON files (default: True)",
+    )
+    exp3_parser.add_argument(
+        "--no-save-results",
+        dest="save_results",
+        action="store_false",
+        help="Do not save results to JSON files",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -423,6 +498,8 @@ def main():
         experiment_one_command(args)
     elif args.command == "experiment-two":
         experiment_two_command(args)
+    elif args.command == "experiment-three":
+        experiment_three_command(args)
     else:
         parser.print_help()
 

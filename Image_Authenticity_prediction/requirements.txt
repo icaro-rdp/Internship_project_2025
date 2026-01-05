@@ -10,12 +10,19 @@ pillow>=8.3.0
 
 # Visualization
 matplotlib>=3.4.0
-
-# Configuration
-pyyaml>=5.4.0
+seaborn>=0.11.0
 
 # Progress bars
 tqdm>=4.62.0
 
-# Optional: For BarlowTwins
+# Scientific computing
+scipy>=1.7.0
+scikit-learn>=0.24.0
+scikit-image>=0.18.0
+
+# Computer vision
+opencv-python>=4.5.0
+
+# Optional: For BarlowTwins model
 # Install from GitHub: pip install git+https://github.com/facebookresearch/barlowtwins.git
+
