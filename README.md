@@ -122,15 +122,17 @@ model = VGG16AuthenticityPredictor(freeze_backbone=True)
 
 All models use transfer learning with pretrained weights and custom regression heads for authenticity score prediction.
 
-| Model               | Input Size |
-| ------------------- | ---------- |
-| **VGG16**           | 224×224    |
-| **VGG19**           | 224×224    |
-| **ResNet-152**      | 224×224    |
-| **DenseNet-161**    | 300×300    |
-| **InceptionV3**     | 299×299    |
-| **EfficientNet-B3** | 300×300    |
-| **BarlowTwins**     | 224×224    |
+| Model               | Input Size | Status                       |
+| ------------------- | ---------- | ---------------------------- |
+| **VGG16**           | 224×224    | ✅ Active                    |
+| **VGG19**           | 224×224    | ✅ Active                    |
+| **ResNet-152**      | 224×224    | ✅ Active                    |
+| **DenseNet-161**    | 300×300    | ✅ Active                    |
+| **InceptionV3**     | 299×299    | ⚠️ Not used in experiments\* |
+| **EfficientNet-B3** | 300×300    | ✅ Active                    |
+| **BarlowTwins**     | 224×224    | ✅ Active                    |
+
+\*InceptionV3 is implemented but excluded from Experiment 1 due to incompatibility with the current pruning method.
 
 ## 📊 Dataset
 
@@ -143,7 +145,7 @@ Dataset/
 ├── AIGCIQA2023/
 │   ├── real_images_annotations.csv    # Aggregated annotations
 │   └── Image/                         # Image files
-└── Single_score/                      # Individual participant scores (25 CSV)
+└── Single_score/                      # Individual participant scores (25 CSV)$$
 ```
 
 **Split:** 70% train, 10% validation, 20% test (seed: 42)

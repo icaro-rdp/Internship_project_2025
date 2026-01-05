@@ -255,15 +255,22 @@ from ..train import train_model, test_model
 
 ## 🗺️ Model-Dataset Mapping
 
-| Model          | Dataset               | Input Size | Target Layer for GradCAM                  |
-| -------------- | --------------------- | ---------- | ----------------------------------------- |
-| VGG16          | `IMAGENET_DATASET`    | 224×224    | `features.28`                             |
-| VGG19          | `IMAGENET_DATASET`    | 224×224    | `features.34`                             |
-| ResNet152      | `IMAGENET_DATASET`    | 224×224    | `features.7.2.conv3`                      |
-| EfficientNetB3 | `IMAGENET_DATASET`    | 224×224    | `features.8.0`                            |
-| BarlowTwins    | `IMAGENET_DATASET`    | 224×224    | `features.7.2.conv3`                      |
-| DenseNet161    | `DENSENET_DATASET`    | 300×300    | `features.denseblock4.denselayer24.conv2` |
-| InceptionV3    | `INCEPTIONV3_DATASET` | 299×299    | N/A (complex structure)                   |
+**Actively Used Models**:
+
+| Model          | Dataset            | Input Size | Target Layer for GradCAM                  |
+| -------------- | ------------------ | ---------- | ----------------------------------------- |
+| VGG16          | `IMAGENET_DATASET` | 224×224    | `features.28`                             |
+| VGG19          | `IMAGENET_DATASET` | 224×224    | `features.34`                             |
+| ResNet152      | `IMAGENET_DATASET` | 224×224    | `features.7.2.conv3`                      |
+| EfficientNetB3 | `IMAGENET_DATASET` | 224×224    | `features.8.0`                            |
+| BarlowTwins    | `IMAGENET_DATASET` | 224×224    | `features.7.2.conv3`                      |
+| DenseNet161    | `DENSENET_DATASET` | 300×300    | `features.denseblock4.denselayer24.conv2` |
+
+**Implemented but Not Used in Experiments**:
+
+| Model       | Dataset               | Input Size | Note                               |
+| ----------- | --------------------- | ---------- | ---------------------------------- |
+| InceptionV3 | `INCEPTIONV3_DATASET` | 299×299    | Not compatible with pruning method |
 
 ## 🎯 Target Layers for GradCAM
 

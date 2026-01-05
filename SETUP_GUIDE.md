@@ -4,6 +4,7 @@ A comprehensive guide to setting up and using the Image Authenticity Prediction 
 
 ## 📋 Table of Contents
 
+- [Getting Started (5 Steps)](#-getting-started-5-steps) ⭐ **START HERE**
 - [Project Structure](#-project-structure)
 - [Directory Purposes](#-directory-purposes)
 - [Git-Ignored Directories](#-git-ignored-directories)
@@ -13,6 +14,139 @@ A comprehensive guide to setting up and using the Image Authenticity Prediction 
 - [Module Exports](#-module-exports)
 - [Common Usage Patterns](#-common-usage-patterns)
 - [Troubleshooting](#-troubleshooting)
+
+## 🚀 Getting Started (5 Steps)
+
+**New to the project?** Follow these steps to get everything set up and running.
+
+### Step 1: Install PyTorch and Dependencies
+
+```bash
+# Install PyTorch with CUDA support (recommended for GPU training)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Or CPU-only (slower):
+pip install torch torchvision torchaudio
+
+# Install other dependencies
+pip install -r requirements.txt
+```
+
+**What to install:**
+
+- pandas, pillow, numpy, matplotlib, tqdm
+- scipy, scikit-learn, scikit-image, seaborn, opencv-python
+
+### Step 2: Understand the Project Structure
+
+This project has a main package `Image_Authenticity_prediction/` with:
+
+- **Models**: 7 CNN architectures for image authenticity prediction
+- **Utils**: XAI (explainability) tools, pruning, logging, visualization
+- **Data**: Dataset classes and pre-configured data loaders
+- **Experiments**: 3 research experiments (training, explainability, ensemble)
+
+**Key files to know:**
+
+- `Image_Authenticity_prediction/__main__.py` - CLI entry point
+- `Image_Authenticity_prediction/main/data.py` - Dataset loading
+- `Image_Authenticity_prediction/main/train.py` - Training/testing
+- `Image_Authenticity_prediction/main/Models/models.py` - Model definitions
+
+### Step 3: Set Up Your Dataset
+
+Create the dataset directory structure:
+
+```bash
+# From project root
+mkdir -p Dataset/AIGCIQA2023/Image Dataset/Single_score
+
+# Download dataset files (ask authors or check terabox link in docs)
+# Place in:
+# - Dataset/AIGCIQA2023/real_images_annotations.csv
+# - Dataset/AIGCIQA2023/Image/ (image files)
+# - Dataset/Single_score/ (25 participant CSV files)
+```
+
+**Dataset structure needed:**
+
+```
+Dataset/
+├── AIGCIQA2023/
+│   ├── real_images_annotations.csv    # Required: image paths and scores
+│   └── Image/                         # Required: image files (0.png, 1.png, etc.)
+└── Single_score/                      # Optional: for noise ceiling calculation
+    ├── participant_01.csv
+    ├── participant_02.csv
+    └── ... (25 files)
+```
+
+### Step 4: Try the CLI (Easiest Way to Start)
+
+The CLI provides simple commands without writing code:
+
+```bash
+# From project root directory
+cd /path/to/Internship_project_2025
+
+# Train a single model
+python -m Image_Authenticity_prediction train --model vgg16 --epochs 50
+
+# Evaluate a trained model
+python -m Image_Authenticity_prediction evaluate \
+    --model vgg16 \
+    --weights Outputs/Experiment_1_variants/Weights/vgg16_best.pth
+
+# Run complete experiment pipeline
+python -m Image_Authenticity_prediction experiment-one --train --prune --test
+```
+
+**See [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for all CLI commands.**
+
+### Step 5: Use the Python API (For Advanced Use)
+
+Import and use models directly in your code:
+
+```python
+import torch
+from Image_Authenticity_prediction.main.Models import VGG16AuthenticityPredictor
+from Image_Authenticity_prediction.main.data import IMAGENET_DATASET, BATCH_SIZE
+from Image_Authenticity_prediction.main.train import train_model, test_model
+from torch.utils.data import DataLoader
+
+# Initialize model
+model = VGG16AuthenticityPredictor(freeze_backbone=True)
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+model.to(device)
+
+# Create data loaders
+train_loader = DataLoader(IMAGENET_DATASET['train'], batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(IMAGENET_DATASET['val'], batch_size=BATCH_SIZE)
+dataloaders = {'train': train_loader, 'val': val_loader}
+
+# Train with early stopping
+criterion = torch.nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+best_model, history = train_model(
+    model=model,
+    dataloaders=dataloaders,
+    criterion=criterion,
+    optimizer=optimizer,
+    num_epochs=500,
+    device=device,
+    patience=15
+)
+
+# Test on test set
+test_loader = DataLoader(IMAGENET_DATASET['test'], batch_size=BATCH_SIZE)
+metrics = test_model(best_model, test_loader, criterion, device=device, return_additional_metrics=True)
+print(f"Test RMSE: {metrics['rmse']:.4f}")
+
+# Save model
+torch.save(best_model.state_dict(), 'Outputs/my_model.pth')
+```
+
+---
 
 ## 📁 Project Structure
 
@@ -329,7 +463,7 @@ main/                          # Main package
 ├── train.py                  # Training and testing functions
 │
 ├── Models/                   # Subpackage for model architectures
-│   ├── __init__.py          # Exports all 7 model classes
+│   ├── __init__.py          # Exports 7 model classes (6 actively used + 1 not used)
 │   └── models.py            # Model definitions
 │
 ├── Utils/                    # Subpackage for utilities
@@ -438,7 +572,7 @@ python -m Image_Authenticity_prediction experiment-three --strategy both
 
 ### main.Models
 
-All 7 model classes are exported from `main/Models/__init__.py`:
+All 7 model classes are exported from `main/Models/__init__.py` (6 actively used in experiments, 1 implemented but not used):
 
 ```python
 from main.Models import (
@@ -446,10 +580,12 @@ from main.Models import (
     VGG19AuthenticityPredictor,        # VGG19 backbone
     ResNet152AuthenticityPredictor,    # ResNet152 backbone
     DenseNet161AuthenticityPredictor,  # DenseNet161 backbone (requires 300x300 input)
-    InceptionV3AuthenticityPredictor,  # InceptionV3 backbone (requires 299x299 input)
+    InceptionV3AuthenticityPredictor,  # InceptionV3 backbone (requires 299x299 input) - not used in experiments
     EfficientNetB3AuthenticityPredictor,  # EfficientNetB3 backbone
     BarlowTwinsAuthenticityPredictor   # BarlowTwins self-supervised ResNet50
 )
+
+# Note: InceptionV3 is implemented but excluded from Experiment 1 due to pruning incompatibility
 ```
 
 **Model Features**:
@@ -489,7 +625,7 @@ from main.data import (
     # Pre-split datasets (train/val/test)
     IMAGENET_DATASET,              # 224x224 images (VGG, ResNet, EfficientNet, BarlowTwins)
     DENSENET_DATASET,              # 300x300 images (DenseNet161)
-    INCEPTIONV3_DATASET,           # 300x300 images (InceptionV3)
+    INCEPTIONV3_DATASET,           # 300x300 images (same as DENSENET - InceptionV3 not used in experiments)
 
     # Transforms
     IMAGENET_TRANSFORM,            # Resize→CenterCrop(224)→Normalize

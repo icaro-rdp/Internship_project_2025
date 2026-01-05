@@ -140,18 +140,21 @@ Image_Authenticity_prediction/
 
 **Files**:
 
-- `__init__.py`: Exports all 7 model classes
+- `__init__.py`: Exports all 7 model classes (6 actively used + 1 not used in experiments)
 - `models.py`: Contains model definitions
 
 **Available Models** (all inherit from `nn.Module`):
+
+**Actively Used in Experiments**:
 
 1. **VGG16AuthenticityPredictor**: VGG16 backbone + regression head
 2. **VGG19AuthenticityPredictor**: VGG19 backbone + regression head
 3. **ResNet152AuthenticityPredictor**: ResNet152 backbone + regression head
 4. **DenseNet161AuthenticityPredictor**: DenseNet161 backbone + regression head (requires 300×300 input)
-5. **InceptionV3AuthenticityPredictor**: InceptionV3 backbone + regression head (requires 299×299 input)
-6. **EfficientNetB3AuthenticityPredictor**: EfficientNetB3 backbone + regression head
-7. **BarlowTwinsAuthenticityPredictor**: BarlowTwins self-supervised ResNet50 + regression head
+5. **EfficientNetB3AuthenticityPredictor**: EfficientNetB3 backbone + regression head
+6. **BarlowTwinsAuthenticityPredictor**: BarlowTwins self-supervised ResNet50 + regression head
+
+**Implemented but Not Used**: 7. **InceptionV3AuthenticityPredictor**: InceptionV3 backbone + regression head (requires 299×299 input) - _Excluded from Experiment 1 due to pruning incompatibility_
 
 **Common Features**:
 
