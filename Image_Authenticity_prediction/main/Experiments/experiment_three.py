@@ -1,4 +1,4 @@
-# ! WIP - Experiment 3: Ensemble Strategies (Bagging and Stacking)
+# ! WIP - Experiment 3: Bagging Ensemble
 
 import torch
 import torch.nn as nn
@@ -49,7 +49,6 @@ DIRS = {
     "base_weights": Path(
         "Outputs/Experiment_1_variants/Weights"
     ),  # Pre-trained from exp1
-    "stacking_weights": Path("Outputs/Experiment_3_ensemble/Weights/Stacking"),
     "results": Path("Outputs/Experiment_3_ensemble/Results"),
 }
 
@@ -225,241 +224,19 @@ def check_bagging_variants(
 
 
 # ============================================================================
-# 5. STACKING ENSEMBLE
-# ============================================================================
-
-
-class StackingMetaLearner(nn.Module):
-    """Linear meta-learner for stacking ensemble."""
-
-    def __init__(self, num_base_models: int):
-        super().__init__()
-        self.fc = nn.Linear(num_base_models, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
-
-
-def train_ensemble(
-    models_filter: List[str] = None,
-    device: str = "cuda",
-) -> Dict[str, Any]:
-    """
-    Train models using stacking strategy with K-Fold OOF predictions.
-    """
-    from sklearn.model_selection import KFold, train_test_split
-
-    info("=" * 60)
-    info("STACKING ENSEMBLE TRAINING")
-    info("=" * 60)
-
-    DIRS["stacking_weights"].mkdir(parents=True, exist_ok=True)
-
-    models_to_train = models_filter or list(MODEL_REGISTRY.keys())
-    results = {"models": [], "base_models": []}
-
-    # -------------------------------------------------------------------------
-    # Step 1: Load/Train base models on full training data
-    # -------------------------------------------------------------------------
-    info("\n--- Step 1: Loading/Training Base Models ---")
-    base_models = []
-
-    for m_name in models_to_train:
-        if m_name not in MODEL_REGISTRY:
-            continue
-
-        save_path = DIRS["stacking_weights"] / f"{m_name}_stacking_base.pth"
-
-        if save_path.exists():
-            info(f"  Loading existing: {m_name}")
-            model = load_model_with_weights(m_name, save_path, device)
-        else:
-            info(f"  Training: {m_name}")
-            dataset_dict = MODEL_REGISTRY[m_name]["dataset"]
-            train_loader = DataLoader(
-                dataset_dict["train"],
-                batch_size=ENSEMBLE_CONFIG["batch_size"],
-                shuffle=True,
-                num_workers=NUM_WORKERS,
-            )
-            val_loader = DataLoader(
-                dataset_dict["val"],
-                batch_size=ENSEMBLE_CONFIG["batch_size"],
-                shuffle=False,
-                num_workers=NUM_WORKERS,
-            )
-
-            dataloaders = {"train": train_loader, "val": val_loader}
-
-            # Initialize model (freeze_backbone=True by default, only regression head trainable)
-            model_cls = MODEL_REGISTRY[m_name]["class"]
-            model = model_cls()  # Backbone frozen by default
-            optimizer = torch.optim.Adam(
-                filter(lambda p: p.requires_grad, model.parameters()),
-                lr=ENSEMBLE_CONFIG["learning_rate"],
-            )
-            criterion = nn.MSELoss()
-
-            # Train using train_model function with early stopping
-            model, history = train_model(
-                model=model,
-                dataloaders=dataloaders,
-                criterion=criterion,
-                optimizer=optimizer,
-                num_epochs=ENSEMBLE_CONFIG["num_epochs_base"],
-                device=device,
-                patience=ENSEMBLE_CONFIG["patience"],
-            )
-
-            torch.save(model.state_dict(), save_path)
-            info(f"    Saved: {save_path.name}")
-
-        base_models.append((m_name, model))
-        results["models"].append(m_name)
-        clear_gpu_memory()
-
-    # -------------------------------------------------------------------------
-    # Step 2: Generate OOF predictions using K-Fold
-    # -------------------------------------------------------------------------
-    info(
-        f"\n--- Step 2: Generating OOF Predictions ({ENSEMBLE_CONFIG['n_splits']}-Fold) ---"
-    )
-
-    # Use IMAGENET as reference for indices
-    main_train_dataset = IMAGENET_DATASET["train"]
-    n_samples = len(main_train_dataset)
-    n_models = len(base_models)
-
-    oof_predictions = torch.zeros(n_samples, n_models)
-    oof_labels = torch.zeros(n_samples)
-
-    kf = KFold(
-        n_splits=ENSEMBLE_CONFIG["n_splits"],
-        shuffle=True,
-        random_state=SEED,
-    )
-
-    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(range(n_samples))):
-        info(
-            f"  Fold {fold_idx + 1}/{ENSEMBLE_CONFIG['n_splits']} ({len(val_idx)} val samples)"
-        )
-
-        # Get labels for this fold
-        if isinstance(main_train_dataset, Subset):
-            base_ds = main_train_dataset.dataset
-            global_val_indices = [main_train_dataset.indices[i] for i in val_idx]
-        else:
-            base_ds = main_train_dataset
-            global_val_indices = list(val_idx)
-
-        val_subset = Subset(base_ds, global_val_indices)
-        label_loader = DataLoader(
-            val_subset, batch_size=ENSEMBLE_CONFIG["batch_size"], shuffle=False
-        )
-        fold_labels = get_labels(label_loader)
-        oof_labels[val_idx] = fold_labels
-
-        # Get predictions from each base model
-        for model_idx, (m_name, model) in enumerate(base_models):
-            dataset_dict = MODEL_REGISTRY[m_name]["dataset"]
-            model_train_ds = dataset_dict["train"]
-
-            if isinstance(model_train_ds, Subset):
-                model_base = model_train_ds.dataset
-                model_val_indices = [model_train_ds.indices[i] for i in val_idx]
-            else:
-                model_base = model_train_ds
-                model_val_indices = list(val_idx)
-
-            fold_val_subset = Subset(model_base, model_val_indices)
-            fold_loader = DataLoader(
-                fold_val_subset,
-                batch_size=ENSEMBLE_CONFIG["batch_size"],
-                shuffle=False,
-                num_workers=NUM_WORKERS,
-            )
-
-            preds = get_predictions(model, fold_loader, device)
-            oof_predictions[val_idx, model_idx] = preds.squeeze()
-
-    # -------------------------------------------------------------------------
-    # Step 3: Train Meta-Learner
-    # -------------------------------------------------------------------------
-    info("\n--- Step 3: Training Meta-Learner ---")
-
-    meta_save_path = DIRS["stacking_weights"] / "meta_learner.pth"
-
-    if meta_save_path.exists():
-        info("  Loading existing meta-learner")
-        meta_learner = StackingMetaLearner(n_models)
-        meta_learner.load_state_dict(
-            torch.load(meta_save_path, map_location=device, weights_only=True)
-        )
-        meta_learner.to(device)
-    else:
-        # Split OOF for meta-learner training
-        X_train, X_val, y_train, y_val = train_test_split(
-            oof_predictions,
-            oof_labels,
-            test_size=0.2,
-            random_state=SEED,
-        )
-
-        meta_train_ds = TensorDataset(X_train, y_train)
-        meta_val_ds = TensorDataset(X_val, y_val)
-        meta_train_loader = DataLoader(
-            meta_train_ds, batch_size=ENSEMBLE_CONFIG["batch_size"], shuffle=True
-        )
-        meta_val_loader = DataLoader(
-            meta_val_ds, batch_size=ENSEMBLE_CONFIG["batch_size"], shuffle=False
-        )
-
-        meta_learner = StackingMetaLearner(n_models).to(device)
-        optimizer = torch.optim.Adam(
-            meta_learner.parameters(), lr=ENSEMBLE_CONFIG["learning_rate_meta"]
-        )
-        criterion = nn.MSELoss()
-
-        for epoch in range(ENSEMBLE_CONFIG["num_epochs_meta"]):
-            meta_learner.train()
-            train_loss = 0.0
-            for X_batch, y_batch in meta_train_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                optimizer.zero_grad()
-                outputs = meta_learner(X_batch)
-                loss = criterion(outputs.squeeze(), y_batch)
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item()
-
-            if (epoch + 1) % 10 == 0:
-                info(
-                    f"  Epoch {epoch+1}/{ENSEMBLE_CONFIG['num_epochs_meta']}, Loss: {train_loss/len(meta_train_loader):.4f}"
-                )
-
-        torch.save(meta_learner.state_dict(), meta_save_path)
-        info(f"  Saved: {meta_save_path.name}")
-
-    results["base_models"] = base_models
-    results["meta_learner"] = meta_learner
-    return results
-
-
-# ============================================================================
 # 6. EVALUATION
 # ============================================================================
 
 
 def evaluate_ensemble(
-    strategy: str,
     models_filter: List[str] = None,
     device: str = "cuda",
     weight_paths: List[Tuple[str, Path]] = None,
 ) -> Dict[str, float]:
-    """Evaluate an ensemble on test data (memory-efficient: one model at a time)."""
+    """Evaluate bagging ensemble on test data (memory-efficient: one model at a time)."""
     from scipy.stats import pearsonr, spearmanr, kendalltau
 
-    info(f"\n--- Evaluating {strategy.upper()} Ensemble ---")
+    info(f"\n--- Evaluating BAGGING Ensemble ---")
 
     models_to_eval = models_filter or list(MODEL_REGISTRY.keys())
 
@@ -480,72 +257,41 @@ def evaluate_ensemble(
     first_loader = next(iter(test_loaders.values()))
     y_true = get_labels(first_loader).numpy()
 
-    if strategy == "bagging":
-        # Memory-efficient: load one model at a time, get predictions, unload
-        if weight_paths is None:
-            # Build weight paths if not provided
-            weight_paths = []
-            num_variants = 10
-            for m_name in models_to_eval:
-                for variant_idx in range(1, num_variants + 1):
-                    wp = (
-                        DIRS["base_weights"]
-                        / f"{m_name}_exp1b_variant{variant_idx}_greedy_pruned.pth"
-                    )
-                    if wp.exists():
-                        weight_paths.append((m_name, wp))
-
-        info(f"  Processing {len(weight_paths)} model variants (one at a time)...")
-
-        # Accumulate predictions on CPU
-        all_preds = []
-        for idx, (m_name, weights_path) in enumerate(weight_paths):
-            info(f"    [{idx+1}/{len(weight_paths)}] {weights_path.name}")
-
-            # Load model
-            model = load_model_with_weights(m_name, weights_path, device)
-
-            # Get predictions
-            debug(f"Making predictions on test set for {m_name}")
-            preds = get_predictions(model, test_loaders[m_name], device)
-            all_preds.append(preds.squeeze().cpu())
-
-            # Unload model and clear GPU memory
-            del model
-            clear_gpu_memory()
-
-        y_pred = torch.mean(torch.stack(all_preds), dim=0).numpy()
-        info(f"  Averaged predictions from {len(all_preds)} models")
-
-    elif strategy == "stacking":
-        # Load base models and meta-learner
-        base_models = []
+    # Memory-efficient: load one model at a time, get predictions, unload
+    if weight_paths is None:
+        # Build weight paths if not provided
+        weight_paths = []
+        num_variants = 10
         for m_name in models_to_eval:
-            weights_path = DIRS["stacking_weights"] / f"{m_name}_stacking_base.pth"
-            if weights_path.exists():
-                model = load_model_with_weights(m_name, weights_path, device)
-                base_models.append((m_name, model))
+            for variant_idx in range(1, num_variants + 1):
+                wp = (
+                    DIRS["base_weights"]
+                    / f"{m_name}_exp1b_variant{variant_idx}_greedy_pruned.pth"
+                )
+                if wp.exists():
+                    weight_paths.append((m_name, wp))
 
-        meta_path = DIRS["stacking_weights"] / "meta_learner.pth"
-        meta_learner = StackingMetaLearner(len(base_models))
-        meta_learner.load_state_dict(
-            torch.load(meta_path, map_location=device, weights_only=True)
-        )
-        meta_learner.to(device).eval()
+    info(f"  Processing {len(weight_paths)} model variants (one at a time)...")
 
-        # Get base model predictions
-        base_preds = []
-        for m_name, model in base_models:
-            preds = get_predictions(model, test_loaders[m_name], device)
-            base_preds.append(preds.squeeze())
+    # Accumulate predictions on CPU
+    all_preds = []
+    for idx, (m_name, weights_path) in enumerate(weight_paths):
+        info(f"    [{idx+1}/{len(weight_paths)}] {weights_path.name}")
 
-        X_meta = torch.stack(base_preds, dim=1).to(device)
+        # Load model
+        model = load_model_with_weights(m_name, weights_path, device)
 
-        with torch.no_grad():
-            y_pred = meta_learner(X_meta).squeeze().cpu().numpy()
+        # Get predictions
+        debug(f"Making predictions on test set for {m_name}")
+        preds = get_predictions(model, test_loaders[m_name], device)
+        all_preds.append(preds.squeeze().cpu())
 
-    else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+        # Unload model and clear GPU memory
+        del model
+        clear_gpu_memory()
+
+    y_pred = torch.mean(torch.stack(all_preds), dim=0).numpy()
+    info(f"  Averaged predictions from {len(all_preds)} models")
 
     # Compute metrics
     mse = np.mean((y_pred - y_true) ** 2)
@@ -584,19 +330,15 @@ def evaluate_ensemble(
 
 def run_experiment_3(
     models: List[str] = None,
-    strategy: str = "both",  # "bagging", "stacking", or "both"
-    train: bool = True,
     evaluate: bool = True,
     save_results: bool = True,
 ):
     """
-    Run Experiment 3: Ensemble Strategies.
+    Run Experiment 3: Bagging Ensemble.
 
     Args:
         models: List of model names to include (None = all)
-        strategy: "bagging", "stacking", or "both"
-        train: Whether to train stacking models (bagging uses pre-trained)
-        evaluate: Whether to evaluate ensembles
+        evaluate: Whether to evaluate the bagging ensemble
         save_results: Whether to save results to JSON
 
     Note:
@@ -614,32 +356,18 @@ def run_experiment_3(
 
     results = {}
 
-    # --- Bagging ---
-    if strategy in ["bagging", "both"]:
-        # Check which greedy pruned variants exist (no loading yet)
-        bagging_results = check_bagging_variants(models)
-        results["bagging_info"] = {
-            "models": bagging_results["models"],
-            "variants_available": bagging_results.get("variants_available", {}),
-            "total_variants": bagging_results.get("total_variants", 0),
-        }
-        if evaluate and bagging_results.get("total_variants", 0) > 0:
-            # Pass weight_paths so evaluate_ensemble loads one model at a time
-            results["bagging_evaluation"] = evaluate_ensemble(
-                "bagging", models, device, weight_paths=bagging_results["weight_paths"]
-            )
-
-    # --- Stacking ---
-    if strategy in ["stacking", "both"]:
-        if train:
-            stacking_results = train_ensemble(models, device)
-            results["stacking_training"] = {
-                "models": stacking_results["models"],
-            }
-        if evaluate:
-            results["stacking_evaluation"] = evaluate_ensemble(
-                "stacking", models, device
-            )
+    # Check which greedy pruned variants exist (no loading yet)
+    bagging_results = check_bagging_variants(models)
+    results["bagging_info"] = {
+        "models": bagging_results["models"],
+        "variants_available": bagging_results.get("variants_available", {}),
+        "total_variants": bagging_results.get("total_variants", 0),
+    }
+    if evaluate and bagging_results.get("total_variants", 0) > 0:
+        # Pass weight_paths so evaluate_ensemble loads one model at a time
+        results["bagging_evaluation"] = evaluate_ensemble(
+            models, device, weight_paths=bagging_results["weight_paths"]
+        )
 
     # --- Save Results ---
     if save_results and results:
@@ -666,7 +394,6 @@ if __name__ == "__main__":
             "vgg16",
             "vgg19",
         ],
-        strategy="bagging",
         evaluate=True,
         save_results=True,
     )
