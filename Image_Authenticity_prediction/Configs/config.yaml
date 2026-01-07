@@ -1,0 +1,114 @@
+# config.yaml# Main configuration file for Image Authenticity Prediction project
+
+# =============================================================================
+# Run Settings
+# =============================================================================
+run_settings:
+  device: "cuda"  # Options: "cuda", "cpu", or "auto" (auto-detect)
+  seed: 42
+
+# =============================================================================
+# Paths
+# =============================================================================
+paths:
+  weights_dir: "Outputs/Weights"
+  results_dir: "Outputs/Results"
+  plots_dir: "Outputs/Plots"
+
+# =============================================================================
+# Data Settings
+# =============================================================================
+data:
+  annotation_file: "real_images_annotations.csv"
+  batch_size: 64
+  single_batch_size: 1
+  num_workers: 20
+  # Data split fractions
+  train_fraction: 0.7
+  val_fraction: 0.1
+  test_fraction: 0.2
+
+# =============================================================================
+# Training Configuration (Experiment 1)
+# =============================================================================
+training:
+  max_epochs: 500
+  patience: 15
+  learning_rate: 0.001
+  freeze_backbone: true
+  num_variants: 10  # Number of model variants to train
+
+# =============================================================================
+# Pruning Configuration (Experiment 1B)
+# =============================================================================
+pruning:
+  force_recompute: false  # Set to true to recompute importance scores
+  methods:
+    - "greedy"
+    - "negative_impact"
+  threshold: 0.0  # Threshold for negative_impact pruning
+
+# =============================================================================
+# XAI Configuration (Experiment 2)
+# =============================================================================
+xai:
+  # Multiscale Pixel Masking parameters
+  sigma: [3, 17, 65]
+  mask_val: 0
+  pixel_batch: 256
+  # Checkpoint intervals for memory management
+  gradcam_interval: 50
+  mpm_interval: 10
+  # Comparison settings
+  default_target_resolution: [224, 224]
+
+# =============================================================================
+# Ensemble Configuration (Experiment 3)
+# =============================================================================
+ensemble:
+  batch_size: 32
+  num_epochs_base: 500
+  num_epochs_meta: 40
+  learning_rate: 0.001
+  learning_rate_meta: 0.001
+  n_splits: 7  # K-Fold splits for stacking
+  patience: 15
+
+# =============================================================================
+# Model Registry
+# Target layers for GradCAM and pruning
+# =============================================================================
+models:
+  vgg16:
+    target_layer: "features.28"
+    input_size: 224
+  vgg19:
+    target_layer: "features.34"
+    input_size: 224
+  resnet152:
+    target_layer: "features.7.2.conv3"
+    input_size: 224
+  densenet161:
+    target_layer: "features.denseblock4.denselayer24.conv2"
+    input_size: 300
+  efficientnetb3:
+    target_layer: "features.8.0"
+    input_size: 224
+  barlowtwins:
+    target_layer: "features.7.2.conv3"
+    input_size: 224
+  inceptionv3:
+    target_layer: null  # Cannot be pruned with current method
+    input_size: 299
+
+# =============================================================================
+# Visualization Settings
+# =============================================================================
+visualization:
+  model_order:
+    - "barlowtwins"
+    - "resnet152"
+    - "densenet161"
+    - "efficientnetb3"
+    - "vgg16"
+    - "vgg19"

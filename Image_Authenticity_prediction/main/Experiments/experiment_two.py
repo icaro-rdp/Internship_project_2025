@@ -29,6 +29,7 @@ from main.Models import (
 from main.Utils.explainability import GradCAM, MultiscalePixelMasking
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, set_level
+from main.Utils.config import get_xai_config, get_data_config, get_model_order
 from main.Utils.comparisons import (
     compare_heatmaps,
     uniform_heatmaps,
@@ -38,7 +39,12 @@ from main.Utils.visualization import (
     visualize_similarity_distribution,
     visualize_violin_distribution,
 )
-from main.data import IMAGENET_DATASET, DENSENET_DATASET, SINGLE_BATCH_SIZE, NUM_WORKERS
+from main.data import IMAGENET_DATASET, DENSENET_DATASET
+
+# Load config
+_data_cfg = get_data_config()
+SINGLE_BATCH_SIZE = _data_cfg["single_batch_size"]
+NUM_WORKERS = _data_cfg["num_workers"]
 
 DIRS = {
     "output": Path("Outputs/Experiment_2_variants"),
@@ -82,22 +88,11 @@ MODEL_REGISTRY = {
     },
 }
 
-XAI_PARAMS = {
-    "sigma": [3, 17, 65],
-    "mask_val": 0,
-    "px_batch": 256,
-    "gc_interval": 50,
-    "mpm_interval": 10,
-}
+# XAI parameters - loaded from config
+XAI_PARAMS = get_xai_config()
 
-MODEL_ORDER = [
-    "barlowtwins",
-    "resnet152",
-    "densenet161",
-    "efficientnetb3",
-    "vgg16",
-    "vgg19",
-]
+# Model order for visualization - loaded from config
+MODEL_ORDER = get_model_order()
 
 
 def setup_directories():
@@ -539,7 +534,8 @@ def run_experiment_2(
                 cleanup_model_and_data(model)
 
     # --- Part B: Comparison ---
-    if comparison_only:
+    # Run comparison if comparison_only=True OR if run_comparison=True (generation + comparison)
+    if comparison_only or run_comparison:
         info(">>> STARTING COMPARISONS ")
         run_comparisons(
             methods,

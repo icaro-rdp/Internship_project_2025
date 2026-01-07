@@ -31,8 +31,12 @@ from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
     INCEPTIONV3_DATASET,
-    BATCH_SIZE,
-    NUM_WORKERS,
+)
+from main.Utils.config import (
+    load_config,
+    get_device,
+    get_data_config,
+    get_paths_config,
 )
 from main.train import train_model, test_model, plot_loss_history
 from torch.utils.data import DataLoader
@@ -64,6 +68,13 @@ def train_command(args):
     """Execute training command."""
     print(f"Starting training for model: {args.model}")
 
+    # Load config
+    data_cfg = get_data_config()
+    paths_cfg = get_paths_config()
+    device = get_device()
+    batch_size = data_cfg["batch_size"]
+    num_workers = data_cfg["num_workers"]
+
     # Get model
     if args.model not in MODEL_REGISTRY:
         print(
@@ -77,20 +88,17 @@ def train_command(args):
     # Get dataset
     dataset = DATASET_MAPPING[args.model]
     train_loader = DataLoader(
-        dataset["train"], batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
+        dataset["train"], batch_size=batch_size, shuffle=True, num_workers=num_workers
     )
-    test_loader = DataLoader(
-        dataset["test"], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
+    val_loader = DataLoader(
+        dataset["val"], batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
-    dataloaders = {"train": train_loader, "val": test_loader}
+    dataloaders = {"train": train_loader, "val": val_loader}
 
     # Setup training
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Train
     print(f"Training on device: {device}")
@@ -104,10 +112,9 @@ def train_command(args):
         patience=args.patience,
     )
 
-    # Save model to default output directory
-    save_dir = Path("Outputs/Experiment_1_variants/Weights")
-    save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / f"{args.model}_best.pth"
+    # Save model
+    save_path = paths_cfg["weights_dir"] / f"{args.model}_best.pth"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(best_model.state_dict(), save_path)
     print(f"Model saved to: {save_path}")
 
@@ -119,6 +126,12 @@ def train_command(args):
 def evaluate_command(args):
     """Execute evaluation command."""
     print(f"Evaluating model: {args.model}")
+
+    # Load config
+    data_cfg = get_data_config()
+    device = get_device()
+    batch_size = data_cfg["batch_size"]
+    num_workers = data_cfg["num_workers"]
 
     # Get model
     if args.model not in MODEL_REGISTRY:
@@ -141,11 +154,8 @@ def evaluate_command(args):
     # Get dataset
     dataset = DATASET_MAPPING[args.model]
     test_loader = DataLoader(
-        dataset["test"], batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
+        dataset["test"], batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
-
-    # Determine device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Evaluate
     criterion = torch.nn.MSELoss()
@@ -224,13 +234,16 @@ def experiment_two_command(args):
         else (224, 224)
     )
 
-    # Run experiment
+    # Run experiment - handle generation, comparison, or both
+    # comparison_only: skip generation, only run comparison
+    # run_comparison: run generation AND comparison in one call
     run_experiment_2(
         models=args.models,
-        save_maps=args.save_maps,
+        save_maps=args.save_maps if not args.comparison_only else False,
         variants=args.variants,
         xai_methods=args.xai_methods,
         comparison_only=args.comparison_only,
+        run_comparison=args.run_comparison,
         comparison_kinds=kinds,
         comparison_metrics=metrics,
         comparison_target_resolution=target_res,
@@ -252,8 +265,8 @@ def experiment_three_command(args):
     print(f"Configuration:")
     print(f"  - Models: {args.models if args.models else 'all'}")
     print(f"  - Strategy: {args.strategy}")
-    print(f"  - Run training: {args.train}")
-    print(f"  - Run evaluation: {args.evaluate}")
+    print(f"  - Train: {args.train}")
+    print(f"  - Evaluate: {args.evaluate}")
     print(f"  - Save results: {args.save_results}")
     print("=" * 80)
 
@@ -420,7 +433,15 @@ def main():
         "--comparison-metrics",
         type=str,
         nargs="+",
-        choices=["correlation", "ssim", "rmse", "scc"],
+        choices=[
+            "correlation",
+            "ssim",
+            "rmse",
+            "scc",
+            "top_percent_iou_5",
+            "top_percent_iou_15",
+            "top_percent_iou_25",
+        ],
         default=["correlation"],
         help="Metrics to use for comparison (default: correlation)",
     )
@@ -434,14 +455,14 @@ def main():
     # Experiment Three command
     exp3_parser = subparsers.add_parser(
         "experiment-three",
-        help="Run Experiment 3 (Ensemble Strategies - Bagging & Stacking)",
+        help="Run Experiment 3 (Ensemble Strategies: Bagging and Stacking)",
     )
     exp3_parser.add_argument(
         "--models",
         type=str,
         nargs="+",
         choices=list(MODEL_REGISTRY.keys()),
-        help="Specific models to include (default: all models)",
+        help="Specific models to process (default: all models)",
     )
     exp3_parser.add_argument(
         "--strategy",
@@ -454,37 +475,37 @@ def main():
         "--train",
         action="store_true",
         default=True,
-        help="Run ensemble model training (default: True)",
+        help="Train stacking models (default: True, bagging uses pre-trained)",
     )
     exp3_parser.add_argument(
         "--no-train",
         dest="train",
         action="store_false",
-        help="Skip ensemble model training",
+        help="Skip training stacking models",
     )
     exp3_parser.add_argument(
         "--evaluate",
         action="store_true",
         default=True,
-        help="Run ensemble model evaluation (default: True)",
+        help="Evaluate ensemble models (default: True)",
     )
     exp3_parser.add_argument(
         "--no-evaluate",
         dest="evaluate",
         action="store_false",
-        help="Skip ensemble model evaluation",
+        help="Skip evaluation",
     )
     exp3_parser.add_argument(
         "--save-results",
         action="store_true",
         default=True,
-        help="Save results to JSON files (default: True)",
+        help="Save results to JSON (default: True)",
     )
     exp3_parser.add_argument(
         "--no-save-results",
         dest="save_results",
         action="store_false",
-        help="Do not save results to JSON files",
+        help="Do not save results to JSON",
     )
 
     # Parse arguments

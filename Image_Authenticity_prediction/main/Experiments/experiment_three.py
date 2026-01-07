@@ -28,15 +28,19 @@ from main.Models import (
 )
 from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
 from main.Utils.logger import info, warn, error, debug, set_level
+from main.Utils.config import get_ensemble_config, get_data_config
 
 
 from main.data import (
     IMAGENET_DATASET,
     DENSENET_DATASET,
-    NUM_WORKERS,
     SEED,
 )
 from main.train import train_model
+
+# Load data config for NUM_WORKERS
+_data_cfg = get_data_config()
+NUM_WORKERS = _data_cfg["num_workers"]
 
 # ============================================================================
 # 1.1 DIRECTORIES
@@ -88,15 +92,8 @@ MODEL_REGISTRY = {
 # ============================================================================
 # 1.3 ENSEMBLE CONFIGURATION
 # ============================================================================
-ENSEMBLE_CONFIG = {
-    "batch_size": 32,
-    "num_epochs_base": 500,
-    "num_epochs_meta": 40,
-    "learning_rate": 0.001,
-    "learning_rate_meta": 0.001,
-    "n_splits": 7,  # K-Fold splits for stacking
-    "patience": 15,  # Early stopping patience
-}
+# Ensemble config - loaded from config file
+ENSEMBLE_CONFIG = get_ensemble_config()
 
 
 def setup_directories():
