@@ -905,6 +905,33 @@ python -m Image_Authenticity_prediction experiment-three --strategy stacking
    ```
 5. **Close other GPU-using processes**: Check with `nvidia-smi`
 
+### Windows Performance Issues
+
+**Problem**: Training is extremely slow on Windows, even with a powerful GPU
+
+**Cause**: Linux/macOS use `fork()` to spawn workers (fast, copy-on-write memory sharing). Windows lacks `fork()` and uses `spawn`, which creates a new Python interpreter per worker, reimports all modules, and serializes the dataset for each — causing significant overhead.
+
+See: [PyTorch DataLoader documentation](https://docs.pytorch.org/docs/stable/data.html#platform-specific-behaviors)
+**Solutions**:
+
+1. **Reduce `num_workers` in config.yaml**:
+
+   ```yaml
+   # In Image_Authenticity_prediction/Configs/config.yaml
+   data:
+     num_workers: 2 # Use 2-4 on Windows instead of 20
+   ```
+
+2. **Recommended values**:
+
+   - **Windows**: `num_workers: 2` to `num_workers: 4`
+   - **Linux/macOS**: `num_workers: 20` (default) works well
+   - **General rule**: Set `num_workers` ≤ number of CPU cores. Check with:
+     ```python
+     import os
+     print(os.cpu_count())  # Your available CPU cores
+     ```
+
 ### Model Loading Errors
 
 **Problem**: `RuntimeError: Error(s) in loading state_dict` or shape mismatches
@@ -930,7 +957,7 @@ python -m Image_Authenticity_prediction experiment-three --strategy stacking
    - Experiment 2: `Outputs/Experiment_2_variants/`
    - Experiment 3: `Outputs/Experiment_3_ensemble/`
 2. **Run the experiment first**: Outputs are only created after running experiments
-3. **Check file naming**: Weights follow pattern `{model_name}_exp1_orig.pth` or `{model_name}_best.pth`
+3. **Check file naming**: Weights follow pattern `{model_name}_exp1*_*.pth` or `{model_name}_best.pth`
 
 ### Visualization/Plotting Issues
 
