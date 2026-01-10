@@ -343,6 +343,22 @@ def experiment_3a_train_all_variants(
             variant_val_indices[model_name] = {}
 
             for variant_idx in range(1, NUM_VARIANTS + 1):
+                # Check if this variant is already trained
+                weights_path = (
+                    DIRS["weights"]
+                    / f"{model_name}_exp3a_variant{variant_idx}_best.pth"
+                )
+                if weights_path.exists():
+                    info(
+                        f"✓ Variant {variant_idx}/{NUM_VARIANTS} for {model_name} already exists, skipping..."
+                    )
+                    # Still need to store val_indices for pruning
+                    _, _, _, val_indices = create_variant_split(
+                        backbone_dataset, test_indices, variant_idx
+                    )
+                    variant_val_indices[model_name][variant_idx] = val_indices
+                    continue
+
                 info(f"Variant {variant_idx}/{NUM_VARIANTS} for {model_name}")
 
                 # Initialize model
@@ -593,6 +609,15 @@ def experiment_3b_prune_all_variants(
                 variant_idx = int(match.group(1))
                 variant_tag = f"variant{variant_idx}"
 
+                # Check if this variant is already pruned
+                pruned_weights_path = (
+                    DIRS["weights"]
+                    / f"{model_name}_exp3b_{variant_tag}_greedy_pruned.pth"
+                )
+                if pruned_weights_path.exists():
+                    info(f"✓ {model_name} {variant_tag} already pruned, skipping...")
+                    continue
+
                 info(f"Processing {variant_tag}...")
 
                 # Get validation indices for this variant
@@ -642,6 +667,10 @@ def experiment_3b_prune_all_variants(
                     save_path=str(importance_path),
                     force_recompute=PRUNING_CONFIG["force_recompute"],
                 )
+
+                # Ensure baseline is computed (may be None if importance was loaded from file)
+                if pruner.baseline_mse is None:
+                    pruner.baseline_mse, pruner.baseline_rmse = pruner._evaluate_model()
 
                 # Plot importance scores
                 try:
@@ -1049,7 +1078,7 @@ if __name__ == "__main__":
     run_experiment_3(models=['vgg16', 'resnet152'])
     """
 
-    set_level("INFO")
+    set_level("DEBUG")
 
     # Configure which parts of the experiment to run
     run_experiment_3(
