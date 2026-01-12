@@ -861,6 +861,8 @@ def experiment_3c_evaluate_ensemble(
     info("-" * 60)
 
     baseline_results = {}
+    all_baseline_preds = []  # For baseline ensemble
+
     for model_name, weight_files in baseline_weights_by_model.items():
         config = MODEL_REGISTRY[model_name]
 
@@ -883,6 +885,7 @@ def experiment_3c_evaluate_ensemble(
             # Get predictions
             preds = get_predictions(model, test_loader, device)
             preds_np = preds.squeeze().cpu().numpy()
+            all_baseline_preds.append(preds.squeeze().cpu())
 
             # Compute metrics
             mse = float(np.mean((preds_np - y_true) ** 2))
@@ -936,6 +939,44 @@ def experiment_3c_evaluate_ensemble(
                 "krcc": float(np.std(krccs)),
             },
         }
+
+    # -------------------------------------------------------------------------
+    # COMPUTE BASELINE ENSEMBLE (average of baseline/unpruned models)
+    # -------------------------------------------------------------------------
+    info("\n" + "-" * 60)
+    info("Computing BASELINE ENSEMBLE predictions...")
+    info("-" * 60)
+
+    baseline_ensemble_results = {}
+    if all_baseline_preds:
+        y_pred_baseline_ens = torch.mean(torch.stack(all_baseline_preds), dim=0).numpy()
+        info(
+            f"Averaged predictions from {len(all_baseline_preds)} baseline model variants"
+        )
+
+        # Compute baseline ensemble metrics
+        base_ens_mse = float(np.mean((y_pred_baseline_ens - y_true) ** 2))
+        base_ens_rmse = float(np.sqrt(base_ens_mse))
+        base_ens_mae = float(np.mean(np.abs(y_pred_baseline_ens - y_true)))
+        base_ens_plcc, base_ens_plcc_p = pearsonr(y_pred_baseline_ens, y_true)
+        base_ens_srcc, base_ens_srcc_p = spearmanr(y_pred_baseline_ens, y_true)
+        base_ens_krcc, base_ens_krcc_p = kendalltau(y_pred_baseline_ens, y_true)
+
+        baseline_ensemble_results = {
+            "mse": base_ens_mse,
+            "rmse": base_ens_rmse,
+            "mae": base_ens_mae,
+            "plcc": float(base_ens_plcc),
+            "srcc": float(base_ens_srcc),
+            "krcc": float(base_ens_krcc),
+            "plcc_p_value": float(base_ens_plcc_p),
+            "srcc_p_value": float(base_ens_srcc_p),
+            "krcc_p_value": float(base_ens_krcc_p),
+            "num_models": len(all_baseline_preds),
+            "test_size": len(y_true),
+        }
+    else:
+        info("No baseline predictions available for ensemble")
 
     # -------------------------------------------------------------------------
     # EVALUATE PRUNED MODELS
@@ -1025,16 +1066,16 @@ def experiment_3c_evaluate_ensemble(
         }
 
     # -------------------------------------------------------------------------
-    # COMPUTE ENSEMBLE (average of pruned models)
+    # COMPUTE PRUNED ENSEMBLE (average of pruned models)
     # -------------------------------------------------------------------------
     info("\n" + "-" * 60)
-    info("Computing ENSEMBLE predictions...")
+    info("Computing PRUNED ENSEMBLE predictions...")
     info("-" * 60)
 
     y_pred = torch.mean(torch.stack(all_pruned_preds), dim=0).numpy()
     info(f"Averaged predictions from {len(all_pruned_preds)} pruned model variants")
 
-    # Compute ensemble metrics
+    # Compute pruned ensemble metrics
     ens_mse = float(np.mean((y_pred - y_true) ** 2))
     ens_rmse = float(np.sqrt(ens_mse))
     ens_mae = float(np.mean(np.abs(y_pred - y_true)))
@@ -1042,7 +1083,7 @@ def experiment_3c_evaluate_ensemble(
     ens_srcc, ens_srcc_p = spearmanr(y_pred, y_true)
     ens_krcc, ens_krcc_p = kendalltau(y_pred, y_true)
 
-    ensemble_results = {
+    pruned_ensemble_results = {
         "mse": ens_mse,
         "rmse": ens_rmse,
         "mae": ens_mae,
@@ -1062,7 +1103,8 @@ def experiment_3c_evaluate_ensemble(
     comparison_summary = {
         "baseline_architectures": {},
         "pruned_architectures": {},
-        "ensemble": ensemble_results,
+        "baseline_ensemble": baseline_ensemble_results,
+        "pruned_ensemble": pruned_ensemble_results,
     }
 
     # Add per-architecture comparison
@@ -1118,7 +1160,19 @@ def experiment_3c_evaluate_ensemble(
             "plcc_std": float(np.std(all_pruned_plccs)) if all_pruned_plccs else None,
             "num_variants": len(all_pruned_mses),
         },
-        "ensemble": {
+        "baseline_ensemble": {
+            "mse": (
+                baseline_ensemble_results.get("mse")
+                if baseline_ensemble_results
+                else None
+            ),
+            "plcc": (
+                baseline_ensemble_results.get("plcc")
+                if baseline_ensemble_results
+                else None
+            ),
+        },
+        "pruned_ensemble": {
             "mse": ens_mse,
             "plcc": float(ens_plcc),
         },
@@ -1150,12 +1204,30 @@ def experiment_3c_evaluate_ensemble(
         info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
 
     info("\n--- ENSEMBLE ---")
-    info(f"  MSE:  {ens_mse:.4f}")
-    info(f"  RMSE: {ens_rmse:.4f}")
-    info(f"  MAE:  {ens_mae:.4f}")
-    info(f"  PLCC: {ens_plcc:.4f} (p={ens_plcc_p:.2e})")
-    info(f"  SRCC: {ens_srcc:.4f} (p={ens_srcc_p:.2e})")
-    info(f"  KRCC: {ens_krcc:.4f} (p={ens_krcc_p:.2e})")
+    if baseline_ensemble_results:
+        info("  BASELINE ENSEMBLE (unpruned models):")
+        info(f"    MSE:  {baseline_ensemble_results['mse']:.4f}")
+        info(f"    RMSE: {baseline_ensemble_results['rmse']:.4f}")
+        info(f"    MAE:  {baseline_ensemble_results['mae']:.4f}")
+        info(
+            f"    PLCC: {baseline_ensemble_results['plcc']:.4f} (p={baseline_ensemble_results['plcc_p_value']:.2e})"
+        )
+        info(
+            f"    SRCC: {baseline_ensemble_results['srcc']:.4f} (p={baseline_ensemble_results['srcc_p_value']:.2e})"
+        )
+        info(
+            f"    KRCC: {baseline_ensemble_results['krcc']:.4f} (p={baseline_ensemble_results['krcc_p_value']:.2e})"
+        )
+        info(f"    Num models: {baseline_ensemble_results['num_models']}")
+
+    info("  PRUNED ENSEMBLE (greedy pruned models):")
+    info(f"    MSE:  {ens_mse:.4f}")
+    info(f"    RMSE: {ens_rmse:.4f}")
+    info(f"    MAE:  {ens_mae:.4f}")
+    info(f"    PLCC: {ens_plcc:.4f} (p={ens_plcc_p:.2e})")
+    info(f"    SRCC: {ens_srcc:.4f} (p={ens_srcc_p:.2e})")
+    info(f"    KRCC: {ens_krcc:.4f} (p={ens_krcc_p:.2e})")
+    info(f"    Num models: {len(all_pruned_preds)}")
 
     info("\n--- OVERALL SUMMARY ---")
     if all_baseline_mses:
@@ -1166,20 +1238,35 @@ def experiment_3c_evaluate_ensemble(
         info(
             f"  Pruned (all variants):    MSE = {np.mean(all_pruned_mses):.4f} ± {np.std(all_pruned_mses):.4f}"
         )
-    info(f"  Ensemble:                 MSE = {ens_mse:.4f}")
+    if baseline_ensemble_results:
+        info(
+            f"  Baseline Ensemble:        MSE = {baseline_ensemble_results['mse']:.4f}"
+        )
+    info(f"  Pruned Ensemble:          MSE = {ens_mse:.4f}")
 
     if all_baseline_mses and all_pruned_mses:
         baseline_avg = np.mean(all_baseline_mses)
         pruned_avg = np.mean(all_pruned_mses)
         info(f"\n  Improvement (baseline -> pruned): {baseline_avg - pruned_avg:.4f}")
-        info(f"  Improvement (baseline -> ensemble): {baseline_avg - ens_mse:.4f}")
-        info(f"  Improvement (pruned -> ensemble): {pruned_avg - ens_mse:.4f}")
+        if baseline_ensemble_results:
+            info(
+                f"  Improvement (baseline -> baseline ensemble): {baseline_avg - baseline_ensemble_results['mse']:.4f}"
+            )
+        info(
+            f"  Improvement (baseline -> pruned ensemble): {baseline_avg - ens_mse:.4f}"
+        )
+        info(f"  Improvement (pruned -> pruned ensemble): {pruned_avg - ens_mse:.4f}")
+        if baseline_ensemble_results:
+            info(
+                f"  Improvement (baseline ensemble -> pruned ensemble): {baseline_ensemble_results['mse'] - ens_mse:.4f}"
+            )
 
     # -------------------------------------------------------------------------
     # SAVE RESULTS
     # -------------------------------------------------------------------------
     full_results = {
-        "ensemble": ensemble_results,
+        "baseline_ensemble": baseline_ensemble_results,
+        "pruned_ensemble": pruned_ensemble_results,
         "baseline_models": baseline_results,
         "pruned_models": pruned_results,
         "comparison_summary": comparison_summary,
