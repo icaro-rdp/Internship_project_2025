@@ -761,13 +761,18 @@ def experiment_3c_evaluate_ensemble(
     This is the ONLY evaluation on test data - both training and pruning
     were done on train/val splits, so test is truly unseen.
 
+    Produces a comprehensive comparison of:
+    - Baseline (unpruned) architectures: mean ± std across variants
+    - Greedy pruned versions: mean ± std across variants
+    - Ensemble (averaged predictions from all pruned variants)
+
     Args:
         models_filter: List of model names to include (None = all)
         global_test_indices: Pre-computed test indices per dataset type
         device: Device to use
 
     Returns:
-        Ensemble evaluation metrics
+        Ensemble evaluation metrics with full comparison
     """
     from scipy.stats import pearsonr, spearmanr, kendalltau
 
@@ -785,30 +790,47 @@ def experiment_3c_evaluate_ensemble(
             len(denseNet_dataset)
         )
 
+    # Find all baseline (unpruned) weight files
+    all_baseline_files = sorted(DIRS["weights"].glob("*_exp3a_*_best.pth"))
     # Find all pruned weight files
     all_pruned_files = sorted(DIRS["weights"].glob("*_exp3b_*_greedy_pruned.pth"))
+
     if not all_pruned_files:
         error(f"No pruned weights found in {DIRS['weights']}")
         error("Please run experiment_3b_prune_all_variants first.")
         return {}
 
-    # Group by model name
-    weights_by_model = defaultdict(list)
+    # Group baseline weights by model name
+    baseline_weights_by_model = defaultdict(list)
+    for p in all_baseline_files:
+        match = re.match(r"^([a-z0-9]+)_exp3a_variant(\d+)_best\.pth$", p.name)
+        if match:
+            model_name = match.group(1)
+            if models_filter is None or model_name in models_filter:
+                if model_name in MODEL_REGISTRY:
+                    baseline_weights_by_model[model_name].append(p)
+
+    # Group pruned weights by model name
+    pruned_weights_by_model = defaultdict(list)
     for p in all_pruned_files:
         match = re.match(r"^([a-z0-9]+)_exp3b_variant(\d+)_greedy_pruned\.pth$", p.name)
         if match:
             model_name = match.group(1)
             if models_filter is None or model_name in models_filter:
                 if model_name in MODEL_REGISTRY:
-                    weights_by_model[model_name].append(p)
+                    pruned_weights_by_model[model_name].append(p)
 
-    if not weights_by_model:
+    if not pruned_weights_by_model:
         error("No valid pruned model weights found.")
         return {}
 
-    total_variants = sum(len(v) for v in weights_by_model.values())
+    total_baseline_variants = sum(len(v) for v in baseline_weights_by_model.values())
+    total_pruned_variants = sum(len(v) for v in pruned_weights_by_model.values())
     info(
-        f"Found {total_variants} pruned variants across {len(weights_by_model)} models"
+        f"Found {total_baseline_variants} baseline variants across {len(baseline_weights_by_model)} models"
+    )
+    info(
+        f"Found {total_pruned_variants} pruned variants across {len(pruned_weights_by_model)} models"
     )
 
     # Prepare test loaders for each dataset type
@@ -831,11 +853,15 @@ def experiment_3c_evaluate_ensemble(
 
     info(f"Test set size: {len(y_true)}")
 
-    # Collect predictions from all models (one at a time for memory efficiency)
-    all_preds = []
-    model_results = {}
+    # -------------------------------------------------------------------------
+    # EVALUATE BASELINE (UNPRUNED) MODELS
+    # -------------------------------------------------------------------------
+    info("\n" + "-" * 60)
+    info("Evaluating BASELINE (unpruned) models...")
+    info("-" * 60)
 
-    for model_name, weight_files in weights_by_model.items():
+    baseline_results = {}
+    for model_name, weight_files in baseline_weights_by_model.items():
         config = MODEL_REGISTRY[model_name]
 
         # Determine which test loader to use
@@ -844,7 +870,7 @@ def experiment_3c_evaluate_ensemble(
         else:
             test_loader = test_loaders["densenet"]
 
-        model_results[model_name] = {"variants": []}
+        variant_metrics = []
 
         for weights_path in weight_files:
             info(f"  Processing {weights_path.name}...")
@@ -856,16 +882,25 @@ def experiment_3c_evaluate_ensemble(
 
             # Get predictions
             preds = get_predictions(model, test_loader, device)
-            all_preds.append(preds.squeeze().cpu())
-
-            # Also compute individual model metrics
             preds_np = preds.squeeze().cpu().numpy()
-            individual_mse = np.mean((preds_np - y_true) ** 2)
-            model_results[model_name]["variants"].append(
+
+            # Compute metrics
+            mse = float(np.mean((preds_np - y_true) ** 2))
+            rmse = float(np.sqrt(mse))
+            mae = float(np.mean(np.abs(preds_np - y_true)))
+            plcc, _ = pearsonr(preds_np, y_true)
+            srcc, _ = spearmanr(preds_np, y_true)
+            krcc, _ = kendalltau(preds_np, y_true)
+
+            variant_metrics.append(
                 {
                     "weights_path": str(weights_path),
-                    "mse": float(individual_mse),
-                    "rmse": float(np.sqrt(individual_mse)),
+                    "mse": mse,
+                    "rmse": rmse,
+                    "mae": mae,
+                    "plcc": float(plcc),
+                    "srcc": float(srcc),
+                    "krcc": float(krcc),
                 }
             )
 
@@ -873,58 +908,281 @@ def experiment_3c_evaluate_ensemble(
             del model
             clear_gpu_memory()
 
-    # Compute ensemble prediction (simple average)
-    y_pred = torch.mean(torch.stack(all_preds), dim=0).numpy()
+        # Compute mean and std for this architecture
+        mses = [v["mse"] for v in variant_metrics]
+        rmses = [v["rmse"] for v in variant_metrics]
+        maes = [v["mae"] for v in variant_metrics]
+        plccs = [v["plcc"] for v in variant_metrics]
+        srccs = [v["srcc"] for v in variant_metrics]
+        krccs = [v["krcc"] for v in variant_metrics]
 
-    info(f"Averaged predictions from {len(all_preds)} model variants")
+        baseline_results[model_name] = {
+            "variants": variant_metrics,
+            "num_variants": len(variant_metrics),
+            "mean": {
+                "mse": float(np.mean(mses)),
+                "rmse": float(np.mean(rmses)),
+                "mae": float(np.mean(maes)),
+                "plcc": float(np.mean(plccs)),
+                "srcc": float(np.mean(srccs)),
+                "krcc": float(np.mean(krccs)),
+            },
+            "std": {
+                "mse": float(np.std(mses)),
+                "rmse": float(np.std(rmses)),
+                "mae": float(np.std(maes)),
+                "plcc": float(np.std(plccs)),
+                "srcc": float(np.std(srccs)),
+                "krcc": float(np.std(krccs)),
+            },
+        }
+
+    # -------------------------------------------------------------------------
+    # EVALUATE PRUNED MODELS
+    # -------------------------------------------------------------------------
+    info("\n" + "-" * 60)
+    info("Evaluating PRUNED models...")
+    info("-" * 60)
+
+    pruned_results = {}
+    all_pruned_preds = []  # For ensemble
+
+    for model_name, weight_files in pruned_weights_by_model.items():
+        config = MODEL_REGISTRY[model_name]
+
+        # Determine which test loader to use
+        if config["dataset"] is IMAGENET_DATASET:
+            test_loader = test_loaders["imagenet"]
+        else:
+            test_loader = test_loaders["densenet"]
+
+        variant_metrics = []
+
+        for weights_path in weight_files:
+            info(f"  Processing {weights_path.name}...")
+
+            # Load model
+            model = load_model_with_weights(
+                model_name, weights_path, device, freeze_backbone=False
+            )
+
+            # Get predictions
+            preds = get_predictions(model, test_loader, device)
+            preds_np = preds.squeeze().cpu().numpy()
+            all_pruned_preds.append(preds.squeeze().cpu())
+
+            # Compute metrics
+            mse = float(np.mean((preds_np - y_true) ** 2))
+            rmse = float(np.sqrt(mse))
+            mae = float(np.mean(np.abs(preds_np - y_true)))
+            plcc, _ = pearsonr(preds_np, y_true)
+            srcc, _ = spearmanr(preds_np, y_true)
+            krcc, _ = kendalltau(preds_np, y_true)
+
+            variant_metrics.append(
+                {
+                    "weights_path": str(weights_path),
+                    "mse": mse,
+                    "rmse": rmse,
+                    "mae": mae,
+                    "plcc": float(plcc),
+                    "srcc": float(srcc),
+                    "krcc": float(krcc),
+                }
+            )
+
+            # Cleanup
+            del model
+            clear_gpu_memory()
+
+        # Compute mean and std for this architecture
+        mses = [v["mse"] for v in variant_metrics]
+        rmses = [v["rmse"] for v in variant_metrics]
+        maes = [v["mae"] for v in variant_metrics]
+        plccs = [v["plcc"] for v in variant_metrics]
+        srccs = [v["srcc"] for v in variant_metrics]
+        krccs = [v["krcc"] for v in variant_metrics]
+
+        pruned_results[model_name] = {
+            "variants": variant_metrics,
+            "num_variants": len(variant_metrics),
+            "mean": {
+                "mse": float(np.mean(mses)),
+                "rmse": float(np.mean(rmses)),
+                "mae": float(np.mean(maes)),
+                "plcc": float(np.mean(plccs)),
+                "srcc": float(np.mean(srccs)),
+                "krcc": float(np.mean(krccs)),
+            },
+            "std": {
+                "mse": float(np.std(mses)),
+                "rmse": float(np.std(rmses)),
+                "mae": float(np.std(maes)),
+                "plcc": float(np.std(plccs)),
+                "srcc": float(np.std(srccs)),
+                "krcc": float(np.std(krccs)),
+            },
+        }
+
+    # -------------------------------------------------------------------------
+    # COMPUTE ENSEMBLE (average of pruned models)
+    # -------------------------------------------------------------------------
+    info("\n" + "-" * 60)
+    info("Computing ENSEMBLE predictions...")
+    info("-" * 60)
+
+    y_pred = torch.mean(torch.stack(all_pruned_preds), dim=0).numpy()
+    info(f"Averaged predictions from {len(all_pruned_preds)} pruned model variants")
 
     # Compute ensemble metrics
-    mse = np.mean((y_pred - y_true) ** 2)
-    rmse = np.sqrt(mse)
-    mae = np.mean(np.abs(y_pred - y_true))
-    plcc, plcc_p = pearsonr(y_pred, y_true)
-    srcc, srcc_p = spearmanr(y_pred, y_true)
-    krcc, krcc_p = kendalltau(y_pred, y_true)
+    ens_mse = float(np.mean((y_pred - y_true) ** 2))
+    ens_rmse = float(np.sqrt(ens_mse))
+    ens_mae = float(np.mean(np.abs(y_pred - y_true)))
+    ens_plcc, ens_plcc_p = pearsonr(y_pred, y_true)
+    ens_srcc, ens_srcc_p = spearmanr(y_pred, y_true)
+    ens_krcc, ens_krcc_p = kendalltau(y_pred, y_true)
 
     ensemble_results = {
-        "mse": float(mse),
-        "rmse": float(rmse),
-        "mae": float(mae),
-        "plcc": float(plcc),
-        "srcc": float(srcc),
-        "krcc": float(krcc),
-        "plcc_p_value": float(plcc_p),
-        "srcc_p_value": float(srcc_p),
-        "krcc_p_value": float(krcc_p),
-        "num_models": len(all_preds),
+        "mse": ens_mse,
+        "rmse": ens_rmse,
+        "mae": ens_mae,
+        "plcc": float(ens_plcc),
+        "srcc": float(ens_srcc),
+        "krcc": float(ens_krcc),
+        "plcc_p_value": float(ens_plcc_p),
+        "srcc_p_value": float(ens_srcc_p),
+        "krcc_p_value": float(ens_krcc_p),
+        "num_models": len(all_pruned_preds),
         "test_size": len(y_true),
     }
 
-    info("=" * 60)
-    info("ENSEMBLE RESULTS (on unseen test set)")
-    info("=" * 60)
-    info(f"  MSE:  {mse:.4f}")
-    info(f"  RMSE: {rmse:.4f}")
-    info(f"  MAE:  {mae:.4f}")
-    info(f"  PLCC: {plcc:.4f} (p={plcc_p:.2e})")
-    info(f"  SRCC: {srcc:.4f} (p={srcc_p:.2e})")
-    info(f"  KRCC: {krcc:.4f} (p={krcc_p:.2e})")
+    # -------------------------------------------------------------------------
+    # BUILD COMPARISON SUMMARY
+    # -------------------------------------------------------------------------
+    comparison_summary = {
+        "baseline_architectures": {},
+        "pruned_architectures": {},
+        "ensemble": ensemble_results,
+    }
 
-    # Compute and report individual model average performance
-    all_individual_mses = []
-    for model_name, mdata in model_results.items():
-        for v in mdata["variants"]:
-            all_individual_mses.append(v["mse"])
+    # Add per-architecture comparison
+    all_models = set(baseline_results.keys()) | set(pruned_results.keys())
+    for model_name in sorted(all_models):
+        if model_name in baseline_results:
+            comparison_summary["baseline_architectures"][model_name] = {
+                "mean": baseline_results[model_name]["mean"],
+                "std": baseline_results[model_name]["std"],
+                "num_variants": baseline_results[model_name]["num_variants"],
+            }
+        if model_name in pruned_results:
+            comparison_summary["pruned_architectures"][model_name] = {
+                "mean": pruned_results[model_name]["mean"],
+                "std": pruned_results[model_name]["std"],
+                "num_variants": pruned_results[model_name]["num_variants"],
+            }
 
-    if all_individual_mses:
-        avg_individual_mse = np.mean(all_individual_mses)
-        info(f"\nAverage individual model MSE: {avg_individual_mse:.4f}")
-        info(f"Ensemble improvement: {avg_individual_mse - mse:.4f}")
+    # Compute overall averages across all architectures
+    all_baseline_mses = []
+    all_baseline_plccs = []
+    all_pruned_mses = []
+    all_pruned_plccs = []
 
-    # Save results
+    for model_name, data in baseline_results.items():
+        for v in data["variants"]:
+            all_baseline_mses.append(v["mse"])
+            all_baseline_plccs.append(v["plcc"])
+
+    for model_name, data in pruned_results.items():
+        for v in data["variants"]:
+            all_pruned_mses.append(v["mse"])
+            all_pruned_plccs.append(v["plcc"])
+
+    comparison_summary["overall_summary"] = {
+        "baseline_all_variants": {
+            "mse_mean": (
+                float(np.mean(all_baseline_mses)) if all_baseline_mses else None
+            ),
+            "mse_std": float(np.std(all_baseline_mses)) if all_baseline_mses else None,
+            "plcc_mean": (
+                float(np.mean(all_baseline_plccs)) if all_baseline_plccs else None
+            ),
+            "plcc_std": (
+                float(np.std(all_baseline_plccs)) if all_baseline_plccs else None
+            ),
+            "num_variants": len(all_baseline_mses),
+        },
+        "pruned_all_variants": {
+            "mse_mean": float(np.mean(all_pruned_mses)) if all_pruned_mses else None,
+            "mse_std": float(np.std(all_pruned_mses)) if all_pruned_mses else None,
+            "plcc_mean": float(np.mean(all_pruned_plccs)) if all_pruned_plccs else None,
+            "plcc_std": float(np.std(all_pruned_plccs)) if all_pruned_plccs else None,
+            "num_variants": len(all_pruned_mses),
+        },
+        "ensemble": {
+            "mse": ens_mse,
+            "plcc": float(ens_plcc),
+        },
+    }
+
+    # -------------------------------------------------------------------------
+    # PRINT RESULTS
+    # -------------------------------------------------------------------------
+    info("\n" + "=" * 80)
+    info("COMPARISON RESULTS (on unseen test set)")
+    info("=" * 80)
+
+    info("\n--- BASELINE (Unpruned) Architectures ---")
+    for model_name in sorted(baseline_results.keys()):
+        data = baseline_results[model_name]
+        info(f"  {model_name}:")
+        info(f"    MSE:  {data['mean']['mse']:.4f} ± {data['std']['mse']:.4f}")
+        info(f"    RMSE: {data['mean']['rmse']:.4f} ± {data['std']['rmse']:.4f}")
+        info(f"    PLCC: {data['mean']['plcc']:.4f} ± {data['std']['plcc']:.4f}")
+        info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
+
+    info("\n--- PRUNED Architectures ---")
+    for model_name in sorted(pruned_results.keys()):
+        data = pruned_results[model_name]
+        info(f"  {model_name}:")
+        info(f"    MSE:  {data['mean']['mse']:.4f} ± {data['std']['mse']:.4f}")
+        info(f"    RMSE: {data['mean']['rmse']:.4f} ± {data['std']['rmse']:.4f}")
+        info(f"    PLCC: {data['mean']['plcc']:.4f} ± {data['std']['plcc']:.4f}")
+        info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
+
+    info("\n--- ENSEMBLE ---")
+    info(f"  MSE:  {ens_mse:.4f}")
+    info(f"  RMSE: {ens_rmse:.4f}")
+    info(f"  MAE:  {ens_mae:.4f}")
+    info(f"  PLCC: {ens_plcc:.4f} (p={ens_plcc_p:.2e})")
+    info(f"  SRCC: {ens_srcc:.4f} (p={ens_srcc_p:.2e})")
+    info(f"  KRCC: {ens_krcc:.4f} (p={ens_krcc_p:.2e})")
+
+    info("\n--- OVERALL SUMMARY ---")
+    if all_baseline_mses:
+        info(
+            f"  Baseline (all variants):  MSE = {np.mean(all_baseline_mses):.4f} ± {np.std(all_baseline_mses):.4f}"
+        )
+    if all_pruned_mses:
+        info(
+            f"  Pruned (all variants):    MSE = {np.mean(all_pruned_mses):.4f} ± {np.std(all_pruned_mses):.4f}"
+        )
+    info(f"  Ensemble:                 MSE = {ens_mse:.4f}")
+
+    if all_baseline_mses and all_pruned_mses:
+        baseline_avg = np.mean(all_baseline_mses)
+        pruned_avg = np.mean(all_pruned_mses)
+        info(f"\n  Improvement (baseline -> pruned): {baseline_avg - pruned_avg:.4f}")
+        info(f"  Improvement (baseline -> ensemble): {baseline_avg - ens_mse:.4f}")
+        info(f"  Improvement (pruned -> ensemble): {pruned_avg - ens_mse:.4f}")
+
+    # -------------------------------------------------------------------------
+    # SAVE RESULTS
+    # -------------------------------------------------------------------------
     full_results = {
         "ensemble": ensemble_results,
-        "individual_models": model_results,
+        "baseline_models": baseline_results,
+        "pruned_models": pruned_results,
+        "comparison_summary": comparison_summary,
     }
 
     results_path = DIRS["results"] / "experiment_3c_ensemble_results.json"
@@ -932,6 +1190,12 @@ def experiment_3c_evaluate_ensemble(
     with open(results_path, "w") as f:
         json.dump(full_results, f, indent=2, cls=NpEncoder)
     info(f"\n✓ Results saved to: {results_path}")
+
+    # Save a dedicated comparison file
+    comparison_path = DIRS["results"] / "experiment_3c_comparison.json"
+    with open(comparison_path, "w") as f:
+        json.dump(comparison_summary, f, indent=2, cls=NpEncoder)
+    info(f"✓ Comparison summary saved to: {comparison_path}")
 
     info("=" * 80)
     info("EXPERIMENT 3C: EVALUATION COMPLETE")
