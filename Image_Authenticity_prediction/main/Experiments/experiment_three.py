@@ -1098,6 +1098,55 @@ def experiment_3c_evaluate_ensemble(
     }
 
     # -------------------------------------------------------------------------
+    # LOAD PRUNING RESULTS FOR CHANNEL REDUCTION STATS
+    # -------------------------------------------------------------------------
+    pruning_results_path = DIRS["results"] / "experiment_3b_pruning_results.json"
+    pruning_stats = {}
+    if pruning_results_path.exists():
+        with open(pruning_results_path, "r") as f:
+            pruning_data = json.load(f)
+
+        # Compute channel reduction stats per architecture
+        for model_name, variants_data in pruning_data.items():
+            if isinstance(variants_data, dict) and "error" not in variants_data:
+                reduction_percentages = []
+                num_removed_list = []
+                for variant_tag, variant_info in variants_data.items():
+                    if isinstance(variant_info, dict):
+                        if "reduction_percentage" in variant_info:
+                            reduction_percentages.append(
+                                variant_info["reduction_percentage"]
+                            )
+                        if "num_removed" in variant_info:
+                            num_removed_list.append(variant_info["num_removed"])
+
+                if reduction_percentages:
+                    pruning_stats[model_name] = {
+                        "reduction_percentage_mean": float(
+                            np.mean(reduction_percentages)
+                        ),
+                        "reduction_percentage_std": float(
+                            np.std(reduction_percentages)
+                        ),
+                        "num_channels_removed_mean": (
+                            float(np.mean(num_removed_list))
+                            if num_removed_list
+                            else None
+                        ),
+                        "num_channels_removed_std": (
+                            float(np.std(num_removed_list))
+                            if num_removed_list
+                            else None
+                        ),
+                        "num_variants": len(reduction_percentages),
+                    }
+        info(f"Loaded channel reduction stats for {len(pruning_stats)} architectures")
+    else:
+        warn(
+            f"Pruning results not found at {pruning_results_path}, channel reduction stats unavailable"
+        )
+
+    # -------------------------------------------------------------------------
     # BUILD COMPARISON SUMMARY
     # -------------------------------------------------------------------------
     comparison_summary = {
@@ -1105,6 +1154,7 @@ def experiment_3c_evaluate_ensemble(
         "pruned_architectures": {},
         "baseline_ensemble": baseline_ensemble_results,
         "pruned_ensemble": pruned_ensemble_results,
+        "channel_reduction": pruning_stats,
     }
 
     # Add per-architecture comparison
@@ -1117,11 +1167,15 @@ def experiment_3c_evaluate_ensemble(
                 "num_variants": baseline_results[model_name]["num_variants"],
             }
         if model_name in pruned_results:
-            comparison_summary["pruned_architectures"][model_name] = {
+            pruned_arch_data = {
                 "mean": pruned_results[model_name]["mean"],
                 "std": pruned_results[model_name]["std"],
                 "num_variants": pruned_results[model_name]["num_variants"],
             }
+            # Add channel reduction stats if available
+            if model_name in pruning_stats:
+                pruned_arch_data["channel_reduction"] = pruning_stats[model_name]
+            comparison_summary["pruned_architectures"][model_name] = pruned_arch_data
 
     # Compute overall averages across all architectures
     all_baseline_mses = []
@@ -1202,6 +1256,16 @@ def experiment_3c_evaluate_ensemble(
         info(f"    RMSE: {data['mean']['rmse']:.4f} ± {data['std']['rmse']:.4f}")
         info(f"    PLCC: {data['mean']['plcc']:.4f} ± {data['std']['plcc']:.4f}")
         info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
+        # Print channel reduction stats if available
+        if model_name in pruning_stats:
+            ps = pruning_stats[model_name]
+            info(
+                f"    Channel Reduction: {ps['reduction_percentage_mean']:.1f}% ± {ps['reduction_percentage_std']:.1f}%"
+            )
+            if ps["num_channels_removed_mean"] is not None:
+                info(
+                    f"    Channels Removed: {ps['num_channels_removed_mean']:.1f} ± {ps['num_channels_removed_std']:.1f}"
+                )
 
     info("\n--- ENSEMBLE ---")
     if baseline_ensemble_results:
@@ -1283,6 +1347,8 @@ def experiment_3c_evaluate_ensemble(
     with open(comparison_path, "w") as f:
         json.dump(comparison_summary, f, indent=2, cls=NpEncoder)
     info(f"✓ Comparison summary saved to: {comparison_path}")
+
+    # Single json with full results
 
     info("=" * 80)
     info("EXPERIMENT 3C: EVALUATION COMPLETE")
