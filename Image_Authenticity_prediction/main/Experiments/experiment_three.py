@@ -18,8 +18,6 @@ import time
 import re
 import json
 import traceback
-import shutil
-import tempfile
 from collections import defaultdict
 from typing import List, Dict, Any, Tuple, Optional
 
@@ -239,28 +237,9 @@ def load_model_with_weights(
     model = model_cls(freeze_backbone=freeze_backbone)
 
     if weights_path.exists():
-        try:
-            state_dict = torch.load(
-                weights_path, map_location=device, weights_only=True
-            )
-        except OSError as e:
-            if e.errno == 5:
-                # Create a temp file that is automatically deleted when the block ends
-                with tempfile.NamedTemporaryFile(suffix=".pth") as tmp:
-                    tmp_path = Path(tmp.name)
-                    with open(weights_path, "rb") as src:
-                        # Direct streaming to the temp file
-                        shutil.copyfileobj(src, tmp, length=1024 * 1024)
-
-                    # Seek back to the start of the temp file before loading
-                    tmp.seek(0)
-                    state_dict = torch.load(
-                        tmp_path, map_location=device, weights_only=True
-                    )
-            else:
-                raise
-
-        model.load_state_dict(state_dict)
+        model.load_state_dict(
+            torch.load(weights_path, map_location=device, weights_only=True)
+        )
         debug(f"Loaded weights: {weights_path.name}")
     else:
         warn(f"Weights not found: {weights_path}, using initialized model")
