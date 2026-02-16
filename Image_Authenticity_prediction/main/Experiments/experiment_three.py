@@ -19,7 +19,8 @@ import re
 import json
 import traceback
 from collections import defaultdict
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
+import time
 
 # ============================================================================
 # 1. SETUP & CONFIGURATION
@@ -69,7 +70,7 @@ NUM_VARIANTS = 10
 # ============================================================================
 # 1.1 DIRECTORIES
 # ============================================================================
-OUTPUT_DIR = Path(__file__).resolve().parent / "Outputs" / "Experiment_3_ensemble"
+OUTPUT_DIR = Path(__file__).resolve().parent / "tmp_Outputs" / "Experiment_3_ensemble"
 DIRS = {
     "weights": OUTPUT_DIR / "Weights",
     "rankings": OUTPUT_DIR / "Ranking_arrays",
@@ -1507,8 +1508,8 @@ if __name__ == "__main__":
             "efficientnetb3",
             "barlowtwins",
         ],
-        run_training=True,
-        run_pruning=True,
+        run_training=False,
+        run_pruning=False,
         run_evaluation=True,
         save_results=True,
     )
