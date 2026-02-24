@@ -271,7 +271,9 @@ def experiment_three_command(args):
     print("=" * 80)
 
     # Map CLI strategy to experiment_3 ensemble_mode
-    ensemble_mode = ["bagging", "stacking"] if args.strategy == "both" else [args.strategy]
+    ensemble_mode = (
+        ["bagging", "stacking"] if args.strategy == "both" else [args.strategy]
+    )
 
     # Run experiment
     run_experiment_3(
