@@ -53,7 +53,7 @@ Complete documentation for this project:
 - **Experiment Reports**:
   - [EXPERIMENT_1_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_1_TECHNICAL_REPORT.md) - Training, pruning, and evaluation
   - [EXPERIMENT_2_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_2_TECHNICAL_REPORT.md) - Explainability methods comparison
-  - [EXPERIMENT_3_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_3_TECHNICAL_REPORT.md) - Ensemble learning strategies (WIP)
+  - [EXPERIMENT_3_TECHNICAL_REPORT.md](Image_Authenticity_prediction/main/Experiments/EXPERIMENT_3_TECHNICAL_REPORT.md) - Ensemble learning strategies
 
 **New to the project?** Start with [SETUP_GUIDE.md](SETUP_GUIDE.md) for complete setup instructions.
 
@@ -75,7 +75,7 @@ pip install pandas pillow numpy matplotlib tqdm scipy scikit-learn scikit-image 
 # Create dataset directories
 mkdir -p Dataset/AIGCIQA2023 Dataset/Single_score
 
-# Place your data:
+# Place your data (ask project maintainer for dataset access) in the following structure:
 # - Dataset/AIGCIQA2023/real_images_annotations.csv
 # - Dataset/AIGCIQA2023/Image/ (image files)
 # - Dataset/Single_score/ (25 participant CSV files)
@@ -148,13 +148,11 @@ Dataset/
 └── Single_score/                      # Individual participant scores (25 CSV)$$
 ```
 
-**Split:** 70% train, 10% validation, 20% test (seed: 42)
-
 ## 🤝 Contributing
 
 Research project by Icaro Re Depaolini as part of thesis work at CiMEC, University of Trento.
 
-For questions or contributions, please contact the project maintainer.
+For questions or contributions, please contact the project maintainer via GitHub .
 
 ## 📄 License
 
@@ -171,4 +169,4 @@ Academic research project. Contact authors for usage permissions.
 
 **Author**: Icaro Re Depaolini  
 **Institution**: CiMEC, University of Trento  
-**Last Updated**: January 2026
+**Last Updated**: Feb 2026
