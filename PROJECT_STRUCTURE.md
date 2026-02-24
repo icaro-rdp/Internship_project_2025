@@ -66,7 +66,7 @@ Image_Authenticity_prediction/
         ├── __init__.py          # Package initialization
         ├── experiment_one.py    # ✅ Training, pruning, testing
         ├── experiment_two.py    # ✅ XAI methods and comparisons
-        ├── experiment_three.py  # 🚧 Ensemble strategies (WIP)
+        ├── experiment_three.py  # ✅ Ensemble strategies
         ├── analysis_consistency_vs_accuracy.py
         ├── noise_ceiling_analysis.ipynb
         ├── EXPERIMENT_1_TECHNICAL_REPORT.md
