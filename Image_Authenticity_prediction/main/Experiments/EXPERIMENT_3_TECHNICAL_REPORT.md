@@ -1,362 +1,714 @@
-# Experiment 3: Ensemble Learning Strategies
+# Experiment 3: Bagging Ensemble with Independent Training and Pruning
 
-**Status:** Work in Progress (WIP)
+## Technical Report
 
-A comprehensive investigation of ensemble learning methods for image authenticity prediction, exploring how combining multiple models can improve prediction accuracy and robustness.
+**Version:** 2.1  
+**Date:** February 2026  
+**File:** `experiment_three.py`  
+**Status:** Complete
 
-## 📋 Table of Contents
+---
 
-- [Overview](#overview)
-- [Ensemble Strategies](#ensemble-strategies)
-- [Methodology](#methodology)
-- [Implementation Details](#implementation-details)
-- [Usage](#usage)
-- [Expected Outputs](#expected-outputs)
-- [Research Questions](#research-questions)
+## Table of Contents
 
-## 🔍 Overview
+1. [Executive Summary](#1-executive-summary)
+2. [Purpose & Motivation](#2-purpose--motivation)
+3. [Methodology](#3-methodology)
+4. [Configuration & Setup](#4-configuration--setup)
+5. [Data Splitting Strategy](#5-data-splitting-strategy)
+6. [Experiment 3A: Training](#6-experiment-3a-training)
+7. [Experiment 3B: Pruning](#7-experiment-3b-pruning)
+8. [Experiment 3C: Ensemble Evaluation](#8-experiment-3c-ensemble-evaluation)
+9. [Complete Pipeline](#9-complete-pipeline)
+10. [Output Files & Directory Structure](#10-output-files--directory-structure)
+11. [Usage Examples](#11-usage-examples)
+12. [Key Guarantees & Reproducibility](#12-key-guarantees--reproducibility)
 
-Experiment 3 investigates whether ensemble methods can leverage the diversity of different CNN architectures and training variants to achieve better performance than individual models. Two main ensemble strategies are explored:
+---
 
-1. **Bagging (Bootstrap Aggregating)**: Averaging predictions from multiple variants of the same model trained with different random seeds
-2. **Stacking (Meta-Learning)**: Training a meta-learner to optimally combine predictions from diverse base models
+## 1. Executive Summary
 
-### Key Objectives
+Experiment 3 implements a **multi-ensemble** approach for image authenticity prediction. The experiment trains **10 variants per model architecture** (60 total models across 6 architectures), supports bagging as the primary method, and also includes optional stacking and stacking-CV evaluations.
 
-- Evaluate whether model diversity improves prediction accuracy
-- Compare simple averaging (bagging) vs. learned combinations (stacking)
-- Analyze the contribution of different base models to ensemble performance
-- Investigate whether ensembles are more robust across different image types
+### Key Innovation
 
-## 🎯 Ensemble Strategies
+The critical methodological difference from Experiment 1 is the **separation of pruning and testing**:
 
-### 1. Bagging Ensemble
+| Stage            | Experiment 1                   | Experiment 3                            |
+| ---------------- | ------------------------------ | --------------------------------------- |
+| Training         | Train/Val split                | Train/Val split (different per variant) |
+| Pruning          | Done on **Test set**           | Done on **Validation set**              |
+| Final Evaluation | Test set (seen during pruning) | Test set (**completely unseen**)        |
 
-**Concept**: Reduce variance by averaging predictions from multiple independently trained variants.
+This ensures the ensemble is evaluated on truly unseen data, providing a more rigorous assessment of generalization performance.
 
-**Implementation**:
+---
 
-- Uses greedy-pruned model variants from Experiment 1B
-- Each variant was trained with different random seeds and data shuffling
-- Final prediction is the simple average of all variant predictions
+## 2. Purpose & Motivation
 
-**Advantages**:
+### 2.1 Research Questions
 
-- No additional training required
-- Reduces overfitting through variance reduction
-- Simple and interpretable
+1. Does ensemble averaging of multiple pruned models improve prediction accuracy?
+2. How does pruning on validation (vs. test) affect model generalization?
+3. What is the benefit of model diversity through different train/val splits?
 
-**Disadvantages**:
+### 2.2 Bagging Strategy
 
-- Limited to variants of the same architecture
-- Assumes equal weight for all models
-- Cannot leverage architecture diversity
+**Bagging (Bootstrap Aggregating)** reduces variance by:
 
-### 2. Stacking Ensemble
+- Training multiple models on different data subsets
+- Combining predictions through averaging
+- Exploiting model diversity to improve robustness
 
-**Concept**: Train a meta-learner to optimally combine predictions from diverse base models.
+In this implementation:
 
-**Implementation**:
+- Each variant sees a different train/val split (same test)
+- Different random initialization of regression heads
+- Same architecture, different learned features
 
-- **Base Models**: Various CNN architectures (VGG, ResNet, DenseNet, etc.)
-- **Meta-Learner**: Linear regression model trained on base model predictions
-- **Training Strategy**: K-Fold cross-validation to generate out-of-fold (OOF) predictions
-- **Architecture**: Simple linear layer (num_base_models → 1)
+---
 
-**Advantages**:
+## 3. Methodology
 
-- Learns optimal weights for different models
-- Can leverage architecture diversity
-- Potentially better performance than simple averaging
+### 3.1 High-Level Pipeline
 
-**Disadvantages**:
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         EXPERIMENT 3                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Dataset (N images)                                                 │
+│       │                                                             │
+│       ├── Test (20%) ─────────────────────────────┐                 │
+│       │   [FIXED seed=42]                         │                 │
+│       │                                           │                 │
+│       └── Remaining (80%)                         │                 │
+│               │                                   │                 │
+│   ┌───────────┼───────────┐                       │                 │
+│   ▼           ▼           ▼                       │                 │
+│ Var1        Var2        Var10                     │                 │
+│ seed=43     seed=44     seed=52                   │                 │
+│   │           │           │                       │                 │
+│   ▼           ▼           ▼                       │                 │
+│ ┌─────┐    ┌─────┐    ┌─────┐                     │                 │
+│ │Train│    │Train│    │Train│  ← 3A: Training     │                 │
+│ │ Val │    │ Val │    │ Val │                     │                 │
+│ └──┬──┘    └──┬──┘    └──┬──┘                     │                 │
+│    │          │          │                        │                 │
+│    ▼          ▼          ▼                        │                 │
+│ ┌─────┐    ┌─────┐    ┌─────┐                     │                 │
+│ │Prune│    │Prune│    │Prune│  ← 3B: Pruning      │                 │
+│ │(Val)│    │(Val)│    │(Val)│    (on VAL set)     │                 │
+│ └──┬──┘    └──┬──┘    └──┬──┘                     │                 │
+│    │          │          │                        │                 │
+│    └──────────┼──────────┘                        │                 │
+│               │                                   │                 │
+│               ▼                                   ▼                 │
+│         ┌──────────┐                        ┌──────────┐            │
+│         │ ENSEMBLE │ ───── evaluate on ───▶ │   TEST   │            │
+│         │ (avg)    │                        │ (unseen) │            │
+│         └──────────┘                        └──────────┘            │
+│                                                                     │
+│                              3C: Evaluation                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-- Requires additional meta-learner training
-- Risk of overfitting to training data
-- More complex to implement and debug
+### 3.2 Model Architectures
 
-## 🔬 Methodology
+| Model          | Backbone            | Target Pruning Layer                      | Input Size |
+| -------------- | ------------------- | ----------------------------------------- | ---------- |
+| VGG16          | ImageNet pretrained | `features.28`                             | 224×224    |
+| VGG19          | ImageNet pretrained | `features.34`                             | 224×224    |
+| ResNet152      | ImageNet pretrained | `features.7.2.conv3`                      | 224×224    |
+| DenseNet161    | ImageNet pretrained | `features.denseblock4.denselayer24.conv2` | 300×300    |
+| EfficientNetB3 | ImageNet pretrained | `features.8.0`                            | 224×224    |
+| BarlowTwins    | Self-supervised     | `features.7.2.conv3`                      | 224×224    |
 
-### Phase 1: Base Model Preparation
+---
 
-1. **Load Pre-trained Models**: Use models trained in Experiment 1
-2. **Validation**: Ensure all required model weights exist
-3. **Dataset Preparation**: Prepare train/validation/test splits
+## 4. Configuration & Setup
 
-### Phase 2: Bagging Ensemble
+### 4.1 Dependencies
 
 ```python
-# For each model architecture (e.g., VGG16):
-#   1. Load all 10 greedy-pruned variants
-#   2. Get predictions from each variant on test set
-#   3. Average predictions across variants
-#   4. Evaluate averaged predictions
+# Core
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Subset
+
+# Project modules
+from main.Models import (
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    DenseNet161AuthenticityPredictor,
+    EfficientNetB3AuthenticityPredictor,
+    BarlowTwinsAuthenticityPredictor,
+)
+from main.Utils import FeatureMapsPruner
+from main.train import train_model, test_model
+from main.data import imageNet_dataset, denseNet_dataset
 ```
 
-**Aggregation Strategy**:
+### 4.2 Configuration Loading
+
+Configuration is loaded from `Configs/config.yaml`:
 
 ```python
-final_prediction = mean([variant_1_pred, variant_2_pred, ..., variant_N_pred])
+TRAINING_CONFIG = get_training_config()
+# Contains: learning_rate, max_epochs, patience, device, freeze_backbone
+
+PRUNING_CONFIG = get_pruning_config()
+# Contains: force_recompute
+
+ENSEMBLE_CONFIG = get_ensemble_config()
+# Contains: batch_size, aggregation method
+
+DATA_CONFIG = get_data_config()
+# Contains: batch_size, num_workers
 ```
 
-### Phase 3: Stacking Ensemble
-
-**Step 1: Train Base Models**
-
-- Train each architecture on full training data
-- Save trained models for prediction generation
-
-**Step 2: Generate Out-of-Fold Predictions**
-
-- Use K-Fold cross-validation (K=7)
-- For each fold:
-  - Train base models on K-1 folds
-  - Predict on held-out fold
-- Combine OOF predictions as meta-features
-
-**Step 3: Train Meta-Learner**
+### 4.3 Constants
 
 ```python
-# Meta-learner input: [pred_vgg16, pred_resnet, pred_densenet, ...]
-# Meta-learner output: final_prediction
-meta_learner = Linear(num_base_models, 1)
+NUM_VARIANTS = 10  # Number of variants per model architecture
 ```
 
-**Step 4: Evaluate on Test Set**
+---
 
-- Get predictions from all base models
-- Feed into trained meta-learner
-- Compare with individual model performance
+## 5. Data Splitting Strategy
 
-## 💻 Implementation Details
+### 5.1 Global Test Indices
 
-### Configuration
+The test set is **fixed across all variants** using a deterministic seed:
 
 ```python
-ENSEMBLE_CONFIG = {
-    "batch_size": 32,
-    "num_epochs_base": 500,          # Base model training
-    "num_epochs_meta": 40,           # Meta-learner training
-    "learning_rate": 0.001,
-    "learning_rate_meta": 0.001,
-    "n_splits": 7,                   # K-Fold splits
-    "patience": 15,                  # Early stopping
-}
+def create_global_test_indices(
+    dataset_size: int,
+    test_fraction: float = 0.2,
+    seed: int = 42
+) -> List[int]:
+    """
+    Create global test indices that remain constant across all variants.
+    """
+    test_size = int(test_fraction * dataset_size)
+    gen = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(dataset_size, generator=gen).tolist()
+    return perm[:test_size]
 ```
 
-### Directory Structure
+**Key Properties:**
 
-```
-Outputs/Experiment_3_ensemble/
-├── Weights/
-│   ├── Stacking/
-│   │   ├── vgg16_stacking_base.pth
-│   │   ├── resnet152_stacking_base.pth
-│   │   ├── ...
-│   │   └── meta_learner.pth
-│   └── Bagging/
-│       └── (uses weights from Experiment 1B)
-└── Results/
-    ├── bagging_results.json
-    ├── stacking_results.json
-    └── comparison_metrics.json
-```
+- Uses `seed=42` for reproducibility
+- 20% of data reserved for testing
+- Same indices used by ALL 60 model variants
 
-### Key Functions
+### 5.2 Variant-Specific Train/Val Splits
 
-#### `check_bagging_variants()`
-
-Verifies availability of greedy-pruned model variants from Experiment 1B.
-
-#### `train_ensemble()`
-
-Trains stacking ensemble using K-Fold cross-validation:
-
-1. Trains base models on full training data
-2. Generates OOF predictions using K-Fold
-3. Trains meta-learner on OOF predictions
-4. Evaluates on test set
-
-#### `evaluate_ensemble()`
-
-Evaluates trained ensemble on test set and computes metrics:
-
-- Mean Squared Error (MSE)
-- Root Mean Squared Error (RMSE)
-- Pearson Correlation Coefficient (PLCC)
-- Spearman Rank Correlation (SRCC)
-- Kendall Tau Correlation (KRCC)
-
-## 🚀 Usage
-
-### Command Line Interface
-
-```bash
-# Run bagging ensemble (uses pre-trained variants)
-python -m Image_Authenticity_prediction experiment-three --strategy bagging
-
-# Run stacking ensemble (requires training meta-learner)
-python -m Image_Authenticity_prediction experiment-three --strategy stacking
-
-# Run both strategies
-python -m Image_Authenticity_prediction experiment-three --strategy both
-
-# Specify models for stacking
-python -m Image_Authenticity_prediction experiment-three \
-    --strategy stacking \
-    --models vgg16 resnet152 densenet161
-```
-
-### Python API
+Each variant gets a **different train/val split** while sharing the same test set:
 
 ```python
-from Image_Authenticity_prediction.main.Experiments.experiment_three import (
-    run_experiment_3,
-    check_bagging_variants,
-    train_ensemble,
-    evaluate_ensemble
+def create_variant_split(
+    backbone_dataset,
+    global_test_indices: List[int],
+    variant_idx: int,
+    val_fraction: float = 0.125,  # 0.125 of remaining ≈ 10% of total
+) -> Tuple[Subset, Subset, Subset, List[int]]:
+    """
+    Create train/val/test split for a specific variant.
+    Returns val_indices for reuse during pruning.
+    """
+```
+
+**Algorithm:**
+
+1. Exclude test indices from dataset
+2. Shuffle remaining indices with `seed = 42 + variant_idx`
+3. Split into train (87.5% of remaining) and val (12.5% of remaining)
+4. Return `val_indices` for consistent pruning
+
+**Split Proportions:**
+
+| Split      | Fraction of Total |
+| ---------- | ----------------- |
+| Train      | ~70%              |
+| Validation | ~10%              |
+| Test       | 20% (fixed)       |
+
+### 5.3 Variant Diversity Table
+
+| Variant | Shuffle Seed | Train/Val Split | Test Set       |
+| ------- | ------------ | --------------- | -------------- |
+| 1       | 43           | Unique          | Same (seed 42) |
+| 2       | 44           | Unique          | Same (seed 42) |
+| 3       | 45           | Unique          | Same (seed 42) |
+| ...     | ...          | ...             | Same (seed 42) |
+| 10      | 52           | Unique          | Same (seed 42) |
+
+---
+
+## 6. Experiment 3A: Training
+
+### 6.1 Function Signature
+
+```python
+def experiment_3a_train_all_variants(
+    models_to_train: List[str] = None,
+    global_test_indices: Dict[str, List[int]] = None,
+    save_plots: bool = True,
+    verbose: bool = True,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[int, List[int]]]]:
+```
+
+### 6.2 Training Flow
+
+```
+For each model in [vgg16, vgg19, resnet152, densenet161, efficientnetb3, barlowtwins]:
+    For variant_idx in 1..10:
+        1. Create model instance with frozen backbone
+        2. Reset regression head (random initialization)
+        3. Create train/val/test split using create_variant_split()
+        4. Store val_indices in variant_val_indices dict
+        5. Create DataLoaders
+        6. Setup optimizer (Adam) and criterion (MSELoss)
+        7. Train with early stopping (patience-based)
+        8. Save best model weights
+        9. Save training history and plots
+        10. Cleanup GPU memory
+
+    Save variant_val_indices to JSON for pruning stage
+```
+
+### 6.3 Model Initialization
+
+```python
+# Create model with frozen backbone
+model = config["class"](freeze_backbone=TRAINING_CONFIG["freeze_backbone"])
+
+# Reset regression head for variant diversity
+reset_regression_head(model)
+```
+
+The `reset_regression_head` function reinitializes the final linear layers:
+
+```python
+def reset_regression_head(model: nn.Module):
+    """Reinitialize regression head weights for a distinct starting state."""
+    for layer in model.regression_head.modules():
+        if isinstance(layer, nn.Linear):
+            layer.reset_parameters()
+```
+
+### 6.4 Training Configuration
+
+```python
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=TRAINING_CONFIG["learning_rate"]
 )
 
-# Check available bagging variants
-availability = check_bagging_variants(
-    models_filter=['vgg16', 'resnet152'],
-    num_variants=10
-)
-
-# Train stacking ensemble
-results = train_ensemble(
-    models_filter=['vgg16', 'resnet152', 'densenet161'],
-    device='cuda'
-)
-
-# Run complete experiment
-experiment_results = run_experiment_3(
-    strategy='both',  # 'bagging', 'stacking', or 'both'
-    models_filter=None,  # None = all models
-    device='cuda'
+best_model, history = train_model(
+    model=model,
+    dataloaders={"train": train_loader, "val": val_loader},
+    criterion=criterion,
+    optimizer=optimizer,
+    num_epochs=TRAINING_CONFIG["max_epochs"],
+    device=TRAINING_CONFIG["device"],
+    patience=TRAINING_CONFIG["patience"],
 )
 ```
 
-## 📊 Expected Outputs
+### 6.5 Output Files
 
-### Bagging Results
+| File Type   | Pattern                                 | Example                             |
+| ----------- | --------------------------------------- | ----------------------------------- |
+| Weights     | `{model}_exp3a_variant{i}_best.pth`     | `vgg16_exp3a_variant1_best.pth`     |
+| History     | `{model}_exp3a_variant{i}_history.npy`  | `vgg16_exp3a_variant1_history.npy`  |
+| Plot        | `{model}_exp3a_variant{i}_training.png` | `vgg16_exp3a_variant1_training.png` |
+| Val Indices | `variant_val_indices.json`              | (single file for all models)        |
+
+### 6.6 Returns
+
+```python
+return (
+    results,           # Training metrics per model/variant
+    variant_val_indices  # Dict: model_name -> {variant_idx -> val_indices}
+)
+```
+
+---
+
+## 7. Experiment 3B: Pruning
+
+### 7.1 Function Signature
+
+```python
+def experiment_3b_prune_all_variants(
+    models_to_prune: List[str] = None,
+    variant_val_indices: Dict[str, Dict[int, List[int]]] = None,
+    global_test_indices: Dict[str, List[int]] = None,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+```
+
+### 7.2 Key Difference: Pruning on Validation Set
+
+**Experiment 1:**
+
+```python
+pruner = FeatureMapsPruner(..., dataloader=test_loader, ...)
+```
+
+**Experiment 3:**
+
+```python
+pruner = FeatureMapsPruner(..., dataloader=val_loader, ...)  # Validation!
+```
+
+This ensures the test set remains completely unseen until final evaluation.
+
+### 7.3 Pruning Flow
+
+```
+Load variant_val_indices.json (if not passed in memory)
+
+For each trained weight file (*_exp3a_*.pth):
+    1. Extract model_name and variant_idx from filename
+    2. Load corresponding val_indices from saved JSON
+    3. Create val_loader with SAME indices used during training
+    4. Load trained model weights
+    5. Create FeatureMapsPruner with val_loader
+    6. Compute importance scores per channel
+    7. Perform greedy pruning
+    8. Save pruned weights and importance scores
+    9. Cleanup GPU memory
+
+Save pruning results to JSON
+```
+
+### 7.4 Greedy Pruning Algorithm
+
+```python
+# Importance score = baseline_mse - pruned_mse
+# Positive = channel is important (removing hurts performance)
+# Negative = channel is noisy (removing helps performance)
+
+importance_scores = pruner.compute_importance_scores()
+
+# Greedy removal
+for channel in sorted_by_importance(least_important_first):
+    zero_out(channel)
+    new_mse = evaluate(model)
+    if new_mse < current_best_mse:
+        keep channel zeroed  # Improves performance
+    else:
+        restore channel       # Would hurt performance
+
+save pruned_model
+```
+
+### 7.5 Output Files
+
+| File Type      | Pattern                                      | Example                                  |
+| -------------- | -------------------------------------------- | ---------------------------------------- |
+| Pruned Weights | `{model}_exp3b_variant{i}_greedy_pruned.pth` | `vgg16_exp3b_variant1_greedy_pruned.pth` |
+| Importance     | `{model}_exp3b_variant{i}_importance.npy`    | `vgg16_exp3b_variant1_importance.npy`    |
+| Plot           | `{model}_exp3b_variant{i}_importance.png`    | `vgg16_exp3b_variant1_importance.png`    |
+| Results        | `experiment_3b_pruning_results.json`         | (single file)                            |
+
+### 7.6 Pruning Results Structure
 
 ```json
 {
   "vgg16": {
-    "num_variants": 10,
-    "individual_performances": [0.023, 0.024, ...],
-    "ensemble_performance": 0.021,
-    "improvement": 0.002,
-    "metrics": {
-      "mse": 0.021,
-      "rmse": 0.145,
-      "plcc": 0.892,
-      "srcc": 0.875,
-      "krcc": 0.701
+    "variant1": {
+      "baseline_mse": 0.0234,
+      "baseline_rmse": 0.153,
+      "final_mse": 0.0198,
+      "final_rmse": 0.141,
+      "improvement_mse": 0.0036,
+      "improvement_rmse": 0.012,
+      "removed_features": [45, 67, 89],
+      "num_removed": 12,
+      "reduction_percentage": 2.3,
+      "pruned_weights_path": "...",
+      "original_weights_path": "..."
     }
-  },
-  "resnet152": {...},
-  ...
-}
-```
-
-### Stacking Results
-
-```json
-{
-  "base_models": ["vgg16", "resnet152", "densenet161", ...],
-  "meta_learner": {
-    "architecture": "Linear(6 → 1)",
-    "learned_weights": [0.15, 0.20, 0.18, 0.15, 0.17, 0.15]
-  },
-  "performance": {
-    "mse": 0.019,
-    "rmse": 0.138,
-    "plcc": 0.908,
-    "srcc": 0.893,
-    "krcc": 0.728
-  },
-  "comparison_with_best_individual": {
-    "best_individual_model": "resnet152",
-    "best_individual_mse": 0.022,
-    "ensemble_mse": 0.019,
-    "improvement": 0.003
   }
 }
 ```
 
-## 🔍 Research Questions
+---
 
-### Primary Questions
+## 8. Experiment 3C: Ensemble Evaluation
 
-1. **Does ensemble learning improve performance?**
+### 8.1 Function Signature
 
-   - Compare ensemble MSE vs. best individual model
-   - Analyze performance across different metrics (PLCC, SRCC, KRCC)
+```python
+def experiment_3c_evaluate_ensemble(
+    models_filter: List[str] = None,
+    global_test_indices: Dict[str, List[int]] = None,
+    device: str = "cuda",
+    ensemble_mode: List[str] = ["bagging"],
+    stacking_cv_folds: int = 5,
+    stacking_cv_repeats: int = 1,
+) -> Dict[str, Any]:
+```
 
-2. **Which ensemble strategy works better?**
+### 8.2 Evaluation Flow
 
-   - Compare bagging (simple averaging) vs. stacking (learned weights)
-   - Evaluate computational cost vs. performance gain
+```
+1. Recreate global_test_indices with seed=42 (if not provided)
+2. Discover baseline files (`*_exp3a_variant*_best.pth`) and pruned files (`*_exp3b_variant*_greedy_pruned.pth`)
+3. Group files by model architecture
+4. Build test loaders for ImageNet and DenseNet transforms
+5. Evaluate ALL baseline variants on test set (per-variant metrics + per-architecture mean/std)
+6. Compute baseline ensemble by averaging baseline predictions
+7. Evaluate ALL pruned variants on test set (per-variant metrics + per-architecture mean/std)
+8. Compute one or more pruned ensembles depending on `ensemble_mode`:
+   - `bagging`: simple average across all pruned predictions
+   - `stacking`: linear meta-learner, 50/50 shuffled split (meta-train/meta-test)
+   - `stacking_cv`: repeated k-fold out-of-fold linear stacking
+9. Compute channel-reduction statistics directly from baseline/pruned weights
+10. Build `comparison_summary` (baseline vs pruned vs ensemble variants)
+11. Print full comparison and improvement deltas
+12. Save full and comparison-only JSON outputs
+```
 
-3. **How does model diversity affect ensemble performance?**
-   - Analyze correlation between base model predictions
-   - Investigate if diverse architectures (VGG vs ResNet vs DenseNet) contribute more
+### 8.3 Ensemble Prediction
 
-### Secondary Questions
+Simple bagging averages model predictions:
 
-4. **Are ensembles more robust?**
+$$\hat{y}_{ensemble} = \frac{1}{N} \sum_{i=1}^{N} \hat{y}_i$$
 
-   - Evaluate performance across different image types
-   - Compare variance of predictions across test samples
+Where $N$ is the number of models included in the selected ensemble.
 
-5. **What are the optimal learned weights?**
+For stacking modes, predictions from base models are used as features of a linear meta-learner:
 
-   - Analyze meta-learner weights to understand model contributions
-   - Compare learned weights with simple averaging
+$$\hat{y} = W x + b$$
 
-6. **Is there benefit in ensemble of pruned models?**
-   - Compare bagging of pruned variants vs. original models
-   - Evaluate if pruning affects ensemble diversity
+- `stacking`: trains on half of the evaluation set and reports on the held-out half.
+- `stacking_cv`: trains/infers out-of-fold across repeated k-fold splits.
 
-## ⚠️ Current Status & Limitations
+### 8.4 Evaluation Metrics
 
-**Status: Work in Progress**
+| Metric | Description                            |
+| ------ | -------------------------------------- |
+| MSE    | Mean Squared Error                     |
+| RMSE   | Root Mean Squared Error                |
+| MAE    | Mean Absolute Error                    |
+| PLCC   | Pearson Linear Correlation Coefficient |
+| SRCC   | Spearman Rank Correlation Coefficient  |
+| KRCC   | Kendall Rank Correlation Coefficient   |
 
-### Implemented
+Each ensemble variant also stores p-values for PLCC/SRCC/KRCC.
 
-- ✅ Bagging ensemble framework
-- ✅ Stacking ensemble with K-Fold cross-validation
-- ✅ Meta-learner training and evaluation
-- ✅ Comprehensive metrics computation
+### 8.5 Results Structure
 
-### In Progress
-
-- 🔄 Extensive experimental evaluation
-- 🔄 Analysis of model diversity and correlation
-- 🔄 Comparison with state-of-the-art ensemble methods
-
-### Future Work
-
-- ⏳ Weighted voting strategies
-- ⏳ Dynamic ensemble selection
-- ⏳ Ensemble pruning (selecting optimal subset of base models)
-- ⏳ Analysis of failure cases
-
-## 📚 References
-
-- Dietterich, T. G. (2000). "Ensemble Methods in Machine Learning"
-- Wolpert, D. H. (1992). "Stacked Generalization"
-- Breiman, L. (1996). "Bagging Predictors"
-
-## 🔗 Related Experiments
-
-- **[Experiment 1](EXPERIMENT_1_TECHNICAL_REPORT.md)**: Provides pre-trained base models and pruned variants
-- **[Experiment 2](EXPERIMENT_2_TECHNICAL_REPORT.md)**: Analyzes explainability of individual models (can be extended to ensembles)
+```json
+{
+  "baseline_ensemble": { "mse": 0.0, "plcc": 0.0, "...": "..." },
+  "pruned_ensemble_bagging": { "mse": 0.0, "plcc": 0.0, "...": "..." },
+  "pruned_ensemble_stacking": { "mse": 0.0, "plcc": 0.0, "...": "..." },
+  "pruned_ensemble_stacking_cv": { "mse": 0.0, "plcc": 0.0, "...": "..." },
+  "baseline_models": {
+    "vgg16": {
+      "variants": [{ "weights_path": "...", "mse": 0.0, "plcc": 0.0 }],
+      "mean": { "mse": 0.0, "plcc": 0.0 },
+      "std": { "mse": 0.0, "plcc": 0.0 }
+    }
+  },
+  "pruned_models": {
+    "vgg16": {
+      "variants": [{ "weights_path": "...", "mse": 0.0, "plcc": 0.0 }],
+      "mean": { "mse": 0.0, "plcc": 0.0 },
+      "std": { "mse": 0.0, "plcc": 0.0 }
+    }
+  },
+  "comparison_summary": {
+    "baseline_architectures": {},
+    "pruned_architectures": {},
+    "channel_reduction": {},
+    "overall_summary": {}
+  }
+}
+```
 
 ---
 
-**Last Updated**: January 2026  
-**Status**: Work in Progress  
-**Contact**: Icaro Re Depaolini
+## 9. Complete Pipeline
+
+### 9.1 Function Signature
+
+```python
+def run_experiment_3(
+    models: List[str] = None,
+    run_training: bool = True,
+    run_pruning: bool = True,
+    run_evaluation: bool = True,
+    save_results: bool = True,
+    ensemble_mode: List[str] = ["bagging", "stacking"],
+    stacking_cv_folds: int = 5,
+    stacking_cv_repeats: int = 1,
+) -> Dict[str, Any]:
+```
+
+### 9.2 Pipeline Orchestration
+
+```python
+# 1. Setup
+setup_directories()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# 2. Create global test indices (shared across ALL stages)
+global_test_indices = {
+    "imagenet": create_global_test_indices(len(imageNet_dataset)),
+    "densenet": create_global_test_indices(len(denseNet_dataset)),
+}
+
+# 3. Stage 3A: Training
+if run_training:
+    training_results, variant_val_indices = experiment_3a_train_all_variants(...)
+
+# 4. Stage 3B: Pruning
+if run_pruning:
+    pruning_results = experiment_3b_prune_all_variants(...)
+
+# 5. Stage 3C: Ensemble Evaluation
+if run_evaluation:
+    eval_results = experiment_3c_evaluate_ensemble(
+        ...,
+        ensemble_mode=ensemble_mode,
+        stacking_cv_folds=stacking_cv_folds,
+        stacking_cv_repeats=stacking_cv_repeats,
+    )
+
+# 6. Save combined results
+save_json(results, "experiment_3_complete_results.json")
+```
+
+### 9.3 Main Block Default
+
+Current `__main__` configuration runs evaluation only:
+
+```python
+run_experiment_3(
+    models=["vgg16", "vgg19", "resnet152", "densenet161", "efficientnetb3", "barlowtwins"],
+    run_training=False,
+    run_pruning=False,
+    run_evaluation=True,
+    save_results=True,
+    ensemble_mode=["bagging", "stacking", "stacking_cv"],
+    stacking_cv_folds=5,
+    stacking_cv_repeats=1,
+)
+```
+
+---
+
+## 10. Output Files & Directory Structure
+
+### 10.1 Directory Tree
+
+```
+tmp_Outputs/Experiment_3_ensemble/
+├── Weights/
+│   ├── vgg16_exp3a_variant1_best.pth
+│   ├── vgg16_exp3b_variant1_greedy_pruned.pth
+│   └── (60 trained + 60 pruned = 120 files)
+│
+├── Ranking_arrays/
+│   └── vgg16_exp3b_variant1_importance.npy (60 files)
+│
+├── Ranking_Plots/
+│   └── vgg16_exp3b_variant1_importance.png (60 files)
+│
+├── Training_Plots/
+│   └── vgg16_exp3a_variant1_training.png (60 files)
+│
+├── Training_History/
+│   └── vgg16_exp3a_variant1_history.npy (60 files)
+│
+└── Results/
+    ├── variant_val_indices.json
+    ├── experiment_3b_pruning_results.json
+    ├── experiment_3c_ensemble_results.json
+    ├── experiment_3c_comparison.json
+    └── experiment_3_complete_results.json
+```
+
+---
+
+## 11. Usage Examples
+
+### 11.1 Command Line
+
+```bash
+cd Image_Authenticity_prediction/main/Experiments/
+conda activate <your_env>
+python experiment_three.py
+```
+
+### 11.2 Programmatic Usage
+
+```python
+from experiment_three import run_experiment_3
+
+# Full pipeline
+results = run_experiment_3()
+
+# Only training
+results = run_experiment_3(run_pruning=False, run_evaluation=False)
+
+# Only pruning (requires trained models)
+results = run_experiment_3(run_training=False, run_evaluation=False)
+
+# Only evaluation (requires pruned models)
+results = run_experiment_3(run_training=False, run_pruning=False)
+
+# Specific models only
+results = run_experiment_3(models=['vgg16', 'resnet152'])
+
+# Evaluation with all ensemble modes
+results = run_experiment_3(
+    run_training=False,
+    run_pruning=False,
+    run_evaluation=True,
+    ensemble_mode=['bagging', 'stacking', 'stacking_cv'],
+    stacking_cv_folds=5,
+    stacking_cv_repeats=1,
+)
+```
+
+---
+
+## 12. Key Guarantees & Reproducibility
+
+### 12.1 Data Leakage Protection
+
+- Test split is created once via `seed=42` and reused globally.
+- Variant-specific train/val splits are created only from non-test samples.
+- Pruning uses the exact validation indices used during training.
+- Final evaluation uses the reserved test split only.
+
+### 12.2 Determinism Anchors
+
+- Global test split: `create_global_test_indices(..., seed=42)`.
+- Variant split shuffling: `seed = 42 + variant_idx`.
+- Stacking split/CV shuffles: seeded with `SEED` (and `SEED + rep` for repeats).
+
+### 12.3 Output Reproducibility Artifacts
+
+- `variant_val_indices.json` stores validation indices per model/variant.
+- Weights filenames encode stage (`exp3a` vs `exp3b`) and variant id.
+- `experiment_3c_ensemble_results.json` stores full baseline/pruned/ensemble metrics.
+- `experiment_3c_comparison.json` stores architecture-level and overall comparison summaries.
+
+### 12.4 Methodological Notes
+
+- `stacking` uses a 50/50 split inside the available evaluation set and is not a strictly untouched-test protocol for meta-learning.
+- `stacking_cv` is marked exploratory in code and reports an explicit protocol note in outputs.
+- Bagging on pruned models remains the primary leakage-safe ensemble path when test predictions are only averaged.
+
+---

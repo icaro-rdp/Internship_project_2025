@@ -28,6 +28,7 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
 
 # IDE specific files
 .idea/
@@ -77,3 +78,4 @@ config.ini
 Heatmap_images
 TranSalNet
 
+tmp_Outputs
