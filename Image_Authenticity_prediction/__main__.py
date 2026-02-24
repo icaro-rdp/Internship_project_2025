@@ -270,13 +270,17 @@ def experiment_three_command(args):
     print(f"  - Save results: {args.save_results}")
     print("=" * 80)
 
+    # Map CLI strategy to experiment_3 ensemble_mode
+    ensemble_mode = ["bagging", "stacking"] if args.strategy == "both" else [args.strategy]
+
     # Run experiment
     run_experiment_3(
         models=args.models,
-        strategy=args.strategy,
-        train=args.train,
-        evaluate=args.evaluate,
+        run_training=args.train,
+        run_pruning=args.train,
+        run_evaluation=args.evaluate,
         save_results=args.save_results,
+        ensemble_mode=ensemble_mode,
     )
 
     print("=" * 80)

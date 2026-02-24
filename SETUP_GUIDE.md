@@ -845,7 +845,7 @@ python -m Image_Authenticity_prediction evaluate \
 
 # Run complete experiments
 python -m Image_Authenticity_prediction experiment-one --train --prune --test
-python -m Image_Authenticity_prediction experiment-two --models all
+python -m Image_Authenticity_prediction experiment-two
 python -m Image_Authenticity_prediction experiment-three --strategy stacking
 ```
 

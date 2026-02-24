@@ -122,7 +122,7 @@ python -m Image_Authenticity_prediction experiment-two --comparison-only \
 # Multiple comparison types with multiple metrics
 python -m Image_Authenticity_prediction experiment-two --comparison-only \
     --comparison-kinds between_model_architectures within_model_variants cross_methods \
-    --comparison-metrics correlation ssim rmse emd
+    --comparison-metrics correlation ssim rmse scc
 ```
 
 ### Experiment Three (Ensemble Strategies)

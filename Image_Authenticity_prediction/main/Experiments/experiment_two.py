@@ -484,6 +484,7 @@ def run_experiment_2(
     variants="all",
     xai_methods="both",
     comparison_only=False,
+    run_comparison=False,
     comparison_kinds=("between_model_architectures",),
     comparison_metrics=("correlation",),
     comparison_target_resolution=(224, 224),
