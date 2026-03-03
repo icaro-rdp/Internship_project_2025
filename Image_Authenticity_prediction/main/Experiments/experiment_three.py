@@ -2269,6 +2269,7 @@ if __name__ == "__main__":
         run_training=False,
         run_pruning=False,
         run_evaluation=True,
+        run_heatmaps=True,
         save_results=True,
         ensemble_mode=["bagging", "stacking", "stacking_cv"],
         stacking_cv_folds=5,
