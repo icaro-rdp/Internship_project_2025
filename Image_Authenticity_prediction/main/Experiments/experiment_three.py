@@ -10,6 +10,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset, random_split
 import sys
 from pathlib import Path
@@ -1095,6 +1096,7 @@ def experiment_3c_evaluate_ensemble(
         X_eval: torch.Tensor,
         train_steps: int = 500,
         lr: float = 1e-2,
+        save_model_path: str = None,
     ) -> np.ndarray:
         meta_device = torch.device(
             device if (device == "cpu" or torch.cuda.is_available()) else "cpu"
@@ -1114,6 +1116,14 @@ def experiment_3c_evaluate_ensemble(
             loss = criterion(preds, y_train_d)
             loss.backward()
             optimizer.step()
+
+        # optionally save the trained meta-learner weights
+        if save_model_path is not None:
+            try:
+                torch.save(model.state_dict(), save_model_path)
+                info(f"✓ Saved stacking meta-learner weights to {save_model_path}")
+            except Exception as e:
+                warn(f"Could not save stacking meta-learner weights: {e}")
 
         model.eval()
         with torch.no_grad():
@@ -1183,10 +1193,13 @@ def experiment_3c_evaluate_ensemble(
             y_meta_train = torch.from_numpy(y_true[meta_train_idx]).float()
             y_meta_test = y_true[meta_test_idx]
 
+            # path for saving meta-learner weights (stacking)
+            stacking_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
             y_pred_stack = _fit_linear_meta_and_predict(
                 X_meta_train,
                 y_meta_train,
                 X_meta_test,
+                save_model_path=str(stacking_weights_path),
             )
 
             ens_mse = float(np.mean((y_pred_stack - y_meta_test) ** 2))
@@ -1257,7 +1270,16 @@ def experiment_3c_evaluate_ensemble(
                     y_train = torch.from_numpy(y_true[train_idx]).float()
                     X_eval = X_stack[eval_idx_t]
 
-                    y_fold_pred = _fit_linear_meta_and_predict(X_train, y_train, X_eval)
+                    # save each fold's meta-learner for inspection
+                    fold_weights_dir = DIRS["weights"] / "stacking_cv_models"
+                    fold_weights_dir.mkdir(parents=True, exist_ok=True)
+                    fold_path = fold_weights_dir / f"meta_rep{rep}_fold{fold_idx}.pth"
+                    y_fold_pred = _fit_linear_meta_and_predict(
+                        X_train,
+                        y_train,
+                        X_eval,
+                        save_model_path=str(fold_path),
+                    )
                     y_pred_sum[eval_idx] += y_fold_pred
                     y_pred_count[eval_idx] += 1
 
@@ -1478,12 +1500,14 @@ def experiment_3c_evaluate_ensemble(
         "pruned_ensemble_stacking_cv": {
             "mse": (
                 stacking_cv_ensemble_results.get("mse")
-                if stacking_cv_ensemble_results and "mse" in stacking_cv_ensemble_results
+                if stacking_cv_ensemble_results
+                and "mse" in stacking_cv_ensemble_results
                 else None
             ),
             "plcc": (
                 stacking_cv_ensemble_results.get("plcc")
-                if stacking_cv_ensemble_results and "plcc" in stacking_cv_ensemble_results
+                if stacking_cv_ensemble_results
+                and "plcc" in stacking_cv_ensemble_results
                 else None
             ),
         },
@@ -1721,6 +1745,356 @@ def experiment_3c_evaluate_ensemble(
     return full_results
 
 
+def experiment_3d_plot_ensemble_heatmaps(
+    global_test_indices: Dict[str, List[int]] = None,
+    models_filter: List[str] = None,
+    num_sample_images: int = 3,
+    device: str = "cuda",
+    save_plots: bool = True,
+    best_variant_per_arch: bool = True,
+    sigma_override: list = None,
+    pixel_batch_override: int = None,
+) -> Dict[str, Any]:
+    """
+    Generate stacking ensemble saliency heatmaps using MultiscalePixelMasking.
+
+    Since the StackingMetaLearner is a linear model (y = Wx + b), the ensemble
+    saliency at each pixel equals the weighted sum of per-model saliency maps:
+
+        ΔEnsemble(x, y) = Σ_i  w_i · ΔModel_i(x, y)
+
+    where w_i are the meta-learner's learned coefficients and ΔModel_i is the
+    change in model i's prediction when pixel (x, y) is occluded.
+
+    This decomposition is exact for any linear meta-learner and avoids loading
+    all base models into GPU memory simultaneously.
+
+    NOTE: GradCAM cannot be used here because gradients do not flow from the
+    meta-learner back through the base models' feature maps.
+    MPM (occlusion-based) works because it only requires forward passes.
+
+    Steps:
+        1. Load meta-learner weights → extract per-model coefficients
+        2. Reconstruct the pruned-model ordering used during stacking training
+        3. Select sample images at IQR quantiles (low / mid / high authenticity)
+        4. For each image × each pruned model: generate raw MPM saliency map
+        5. Combine maps via coefficient-weighted sum
+        6. Normalize and plot: Original | Saliency | Overlay
+
+    Args:
+        global_test_indices: Pre-computed test indices per dataset type.
+            If None, recomputed deterministically from dataset sizes + SEED.
+        models_filter: Architecture filter. Must match the filter used when
+            training the stacking meta-learner in experiment_3c.
+        num_sample_images: Number of sample images (3 → Q1 / Q2 / Q3).
+        device: Compute device.
+        save_plots: Whether to save matplotlib plots to disk.
+        best_variant_per_arch: If True, use one variant per architecture
+            (6 models instead of ~60) with summed coefficients. Assumes
+            variants of the same architecture produce similar saliency.
+        sigma_override: Override XAI sigma list (e.g. [17] for faster runs).
+        pixel_batch_override: Override pixel_batch_size from config.
+
+    Returns:
+        Dict with selected image info and output paths.
+    """
+    import gc
+    from main.Utils.explainability import MultiscalePixelMasking
+    from main.Utils.visualization import visualize_and_save_saliency
+    from main.Utils.config import get_xai_config
+    from main.Utils.normalization import normalize_data
+
+    XAI = get_xai_config()
+    sigma = sigma_override if sigma_override is not None else XAI["sigma"]
+    px_batch = (
+        pixel_batch_override if pixel_batch_override is not None else XAI["px_batch"]
+    )
+
+    info("=" * 80)
+    info("EXPERIMENT 3D: STACKING ENSEMBLE HEATMAPS (MPM)")
+    info("=" * 80)
+    info(
+        f"  sigma={sigma}, pixel_batch={px_batch}, "
+        f"best_variant_per_arch={best_variant_per_arch}"
+    )
+
+    # ------------------------------------------------------------------
+    # 1. DISCOVER PRUNED WEIGHTS (same ordering as 3c)
+    # ------------------------------------------------------------------
+    all_pruned_files = sorted(DIRS["weights"].glob("*_exp3b_*_greedy_pruned.pth"))
+    if not all_pruned_files:
+        error(f"No pruned weights found in {DIRS['weights']}")
+        return {}
+
+    ordered_pairs: List[Tuple[str, Path]] = []  # (model_name, weight_path)
+    for p in all_pruned_files:
+        match = re.match(r"^([a-z0-9]+)_exp3b_variant(\d+)_greedy_pruned\.pth$", p.name)
+        if match:
+            model_name = match.group(1)
+            if models_filter is None or model_name in models_filter:
+                if model_name in MODEL_REGISTRY:
+                    ordered_pairs.append((model_name, p))
+
+    num_base_models = len(ordered_pairs)
+    if num_base_models == 0:
+        error("No valid pruned model weights found after filtering.")
+        return {}
+
+    info(f"Found {num_base_models} pruned model variants")
+
+    # ------------------------------------------------------------------
+    # 2. LOAD META-LEARNER & EXTRACT COEFFICIENTS
+    # ------------------------------------------------------------------
+    meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
+    if not meta_weights_path.exists():
+        error(f"Meta-learner weights not found: {meta_weights_path}")
+        error("Run experiment_3c with ensemble_mode including 'stacking' first.")
+        return {}
+
+    meta = StackingMetaLearner(num_base_models)
+    meta.load_state_dict(
+        torch.load(meta_weights_path, map_location="cpu", weights_only=True)
+    )
+    meta.eval()
+
+    coefficients = meta.fc.weight.detach().squeeze().numpy()  # (num_base_models,)
+    bias = meta.fc.bias.detach().item() if meta.fc.bias is not None else 0.0
+    info(
+        f"Meta-learner: {num_base_models} coefficients, "
+        f"range [{coefficients.min():.4f}, {coefficients.max():.4f}], bias={bias:.4f}"
+    )
+
+    for idx, (mname, wpath) in enumerate(ordered_pairs):
+        debug(f"  coeff[{idx}] = {coefficients[idx]:+.5f}  <- {wpath.name}")
+
+    # ------------------------------------------------------------------
+    # 3. OPTIONALLY REDUCE TO ONE VARIANT PER ARCHITECTURE
+    # ------------------------------------------------------------------
+    if best_variant_per_arch:
+        arch_groups: Dict[str, List[Tuple[int, Path, float]]] = defaultdict(list)
+        for idx, (mname, wpath) in enumerate(ordered_pairs):
+            arch_groups[mname].append((idx, wpath, coefficients[idx]))
+
+        reduced_pairs: List[Tuple[str, Path]] = []
+        reduced_coeffs: List[float] = []
+        for arch_name in arch_groups:
+            variants = arch_groups[arch_name]
+            # Pick variant with largest |coefficient|
+            best = max(variants, key=lambda t: abs(t[2]))
+            reduced_pairs.append((arch_name, best[1]))
+            # Sum all variant coefficients as an approximation
+            arch_sum = sum(c for _, _, c in variants)
+            reduced_coeffs.append(arch_sum)
+            info(
+                f"  {arch_name}: best_variant={best[1].name} "
+                f"|w|={abs(best[2]):.4f}, arch_sum_w={arch_sum:+.4f}"
+            )
+
+        ordered_pairs = reduced_pairs
+        coefficients = np.array(reduced_coeffs)
+        info(f"Reduced to {len(ordered_pairs)} models (one per architecture)")
+
+    # ------------------------------------------------------------------
+    # 4. SELECT SAMPLE IMAGES FROM TEST SET (IQR quantiles)
+    # ------------------------------------------------------------------
+    if global_test_indices is None:
+        global_test_indices = {
+            "imagenet": create_global_test_indices(len(imageNet_dataset)),
+            "densenet": create_global_test_indices(len(denseNet_dataset)),
+        }
+
+    test_indices = global_test_indices["imagenet"]
+
+    # Gather authenticity scores for test images
+    scores = np.array([imageNet_dataset[idx][1].item() for idx in test_indices])
+
+    # IQR quantiles
+    if num_sample_images == 3:
+        quantiles = [0.25, 0.50, 0.75]
+    else:
+        quantiles = np.linspace(0.1, 0.9, num_sample_images).tolist()
+
+    quantile_values = np.quantile(scores, quantiles)
+
+    selected: List[Dict[str, Any]] = []
+    used_positions = set()  # avoid picking the same test-set position twice
+    for q, qval in zip(quantiles, quantile_values):
+        dists = np.abs(scores - qval)
+        order = np.argsort(dists)
+        for candidate in order:
+            if int(candidate) not in used_positions:
+                chosen = int(candidate)
+                used_positions.add(chosen)
+                break
+        dataset_idx = test_indices[chosen]
+        img_inet, label = imageNet_dataset[dataset_idx]  # C,H,W @ 224
+        img_dnet, _ = denseNet_dataset[dataset_idx]  # C,H,W @ 300
+        selected.append(
+            {
+                "quantile": q,
+                "score": float(label.item()),
+                "dataset_idx": dataset_idx,
+                "img_imagenet": img_inet,
+                "img_densenet": img_dnet,
+            }
+        )
+        info(
+            f"  Q{q:.0%}: authenticity={label.item():.4f} "
+            f"(dataset_idx={dataset_idx})"
+        )
+
+    # ------------------------------------------------------------------
+    # 5. GENERATE PER-MODEL MPM MAPS & COMBINE
+    # ------------------------------------------------------------------
+    heatmaps_dir = OUTPUT_DIR / "Heatmaps"
+    heatmaps_dir.mkdir(parents=True, exist_ok=True)
+
+    output_size = (224, 224)  # common output resolution
+    all_ensemble_maps: List[np.ndarray] = []
+    all_per_model_maps: List[Dict[str, np.ndarray]] = []
+
+    total_runs = len(selected) * len(ordered_pairs)
+    run_count = 0
+
+    for img_info in selected:
+        info(
+            f"\n--- Generating ensemble saliency for Q{img_info['quantile']:.0%} "
+            f"(auth={img_info['score']:.4f}) ---"
+        )
+        weighted_map = np.zeros(output_size, dtype=np.float64)
+        per_model: Dict[str, np.ndarray] = {}
+
+        for coeff_idx, (model_name, weight_path) in enumerate(ordered_pairs):
+            run_count += 1
+            w = coefficients[coeff_idx]
+            config = MODEL_REGISTRY[model_name]
+
+            # Select image tensor at this model's native resolution
+            if config["dataset"] is DENSENET_DATASET:
+                img_tensor = img_info["img_densenet"].unsqueeze(0)
+            else:
+                img_tensor = img_info["img_imagenet"].unsqueeze(0)
+
+            info(f"  [{run_count}/{total_runs}] {weight_path.name}  w={w:+.4f}")
+
+            # Load model
+            model = load_model_with_weights(
+                model_name, weight_path, device, freeze_backbone=False
+            )
+
+            # Generate raw (un-normalized) MPM saliency
+            mpm = MultiscalePixelMasking(model, sigma, px_batch, 0.0, use_tqdm=True)
+            saliency = mpm.generate_map(img_tensor, target_index=0, normalize=False)
+
+            # Resize to common output resolution if needed
+            if saliency.shape != output_size:
+                s = (
+                    torch.tensor(saliency, dtype=torch.float32)
+                    .unsqueeze(0)
+                    .unsqueeze(0)
+                )
+                s = F.interpolate(
+                    s, size=output_size, mode="bilinear", align_corners=False
+                )
+                saliency = s.squeeze().numpy()
+
+            weighted_map += w * saliency
+            per_model[f"{model_name}_{weight_path.stem}"] = saliency
+
+            debug(
+                f"    raw saliency range: "
+                f"[{saliency.min():.4f}, {saliency.max():.4f}]"
+            )
+
+            del model, mpm
+            clear_gpu_memory()
+            gc.collect()
+
+        # Normalize the combined ensemble map
+        ensemble_map = normalize_data(
+            weighted_map.astype(np.float32), min_range=-1, max_range=1
+        )
+        all_ensemble_maps.append(ensemble_map)
+        all_per_model_maps.append(per_model)
+        info(
+            f"  Ensemble map range: "
+            f"[{ensemble_map.min():.4f}, {ensemble_map.max():.4f}]"
+        )
+
+    # ------------------------------------------------------------------
+    # 6. PLOT & SAVE using visualize_and_save_saliency
+    # ------------------------------------------------------------------
+    # visualize_and_save_saliency expects saliency in [0, 1] range,
+    # so we rescale the [-1, 1] ensemble maps accordingly.
+    for img_info, ens_map, per_model in zip(
+        selected, all_ensemble_maps, all_per_model_maps
+    ):
+        q_tag = f"q{img_info['quantile']:.2f}"
+        idx_tag = f"idx{img_info['dataset_idx']}"
+
+        # Rescale ensemble map from [-1, 1] -> [0, 1] for the utility
+        ens_map_01 = (ens_map + 1.0) / 2.0
+        ens_map_01 = np.clip(ens_map_01, 0.0, 1.0)
+
+        if save_plots:
+            # Ensemble saliency: original + heatmap + overlay
+            prefix = f"ensemble_mpm_{q_tag}_{idx_tag}_auth{img_info['score']:.3f}"
+            visualize_and_save_saliency(
+                image_tensor=img_info["img_imagenet"],  # C, H, W (normalized)
+                saliency_map=ens_map_01,
+                output_dir=str(heatmaps_dir),
+                filename_prefix=prefix,
+                cmap_name="bwr",
+            )
+            info(
+                f"✓ Saved ensemble heatmap for Q{img_info['quantile']:.0%} "
+                f"-> {prefix}"
+            )
+
+            # Per-model saliency maps (useful for debugging / detailed analysis)
+            per_model_dir = heatmaps_dir / f"per_model_{q_tag}"
+            per_model_dir.mkdir(parents=True, exist_ok=True)
+            for tag, sal_map in per_model.items():
+                # Normalize each per-model map to [0, 1] independently
+                sal_min, sal_max = sal_map.min(), sal_map.max()
+                if sal_max - sal_min > 1e-8:
+                    sal_01 = (sal_map - sal_min) / (sal_max - sal_min)
+                else:
+                    sal_01 = np.zeros_like(sal_map)
+
+                visualize_and_save_saliency(
+                    image_tensor=img_info["img_imagenet"],
+                    saliency_map=sal_01.astype(np.float32),
+                    output_dir=str(per_model_dir),
+                    filename_prefix=f"{tag}_{q_tag}",
+                    cmap_name="bwr",
+                )
+
+            info(f"  ✓ Saved {len(per_model)} per-model maps in {per_model_dir}")
+
+    info(f"✓ All saliency visualizations saved in {heatmaps_dir}")
+
+    info("=" * 80)
+    info("EXPERIMENT 3D: HEATMAP GENERATION COMPLETE")
+    info("=" * 80)
+
+    return {
+        "selected_images": [
+            {
+                "quantile": s["quantile"],
+                "score": s["score"],
+                "dataset_idx": s["dataset_idx"],
+            }
+            for s in selected
+        ],
+        "num_models_used": len(ordered_pairs),
+        "best_variant_per_arch": best_variant_per_arch,
+        "sigma": list(sigma),
+        "pixel_batch": px_batch,
+        "output_dir": str(heatmaps_dir),
+    }
+
+
 # ============================================================================
 # 7. COMPLETE PIPELINE
 # ============================================================================
@@ -1731,10 +2105,12 @@ def run_experiment_3(
     run_training: bool = True,
     run_pruning: bool = True,
     run_evaluation: bool = True,
+    run_heatmaps: bool = False,
     save_results: bool = True,
     ensemble_mode: List[str] = ["bagging", "stacking"],
     stacking_cv_folds: int = 5,
     stacking_cv_repeats: int = 1,
+    heatmap_kwargs: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Run the complete Experiment 3 pipeline.
@@ -1750,10 +2126,12 @@ def run_experiment_3(
         run_training: Whether to run training (Experiment 3A)
         run_pruning: Whether to run pruning (Experiment 3B)
         run_evaluation: Whether to run ensemble evaluation (Experiment 3C)
+        run_heatmaps: Whether to generate stacking ensemble MPM heatmaps (Experiment 3D)
         save_results: Whether to save results to JSON
         ensemble_mode: List of ensemble modes to use (bagging, stacking, stacking_cv)
         stacking_cv_folds: Number of folds for stacking_cv
         stacking_cv_repeats: Number of repeated CV rounds for stacking_cv
+        heatmap_kwargs: Extra keyword arguments forwarded to experiment_3d_plot_ensemble_heatmaps
     Returns:
         Combined results from all stages
     """
@@ -1809,6 +2187,15 @@ def run_experiment_3(
             stacking_cv_repeats=stacking_cv_repeats,
         )
         results["evaluation"] = eval_results
+
+    # Stage 3D: Heatmap Generation (requires stacking weights from 3C)
+    if run_heatmaps:
+        hkw = dict(heatmap_kwargs or {})
+        hkw.setdefault("global_test_indices", global_test_indices)
+        hkw.setdefault("models_filter", models)
+        hkw.setdefault("device", str(device))
+        heatmap_results = experiment_3d_plot_ensemble_heatmaps(**hkw)
+        results["heatmaps"] = heatmap_results
 
     # Save combined results
     if save_results and results:
