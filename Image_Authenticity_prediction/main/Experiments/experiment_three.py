@@ -767,7 +767,7 @@ def experiment_3c_evaluate_ensemble(
     models_filter: List[str] = None,
     global_test_indices: Dict[str, List[int]] = None,
     device: str = "cuda",
-    ensemble_mode: List[str] = ["bagging"],
+    ensemble_mode: List[str] = ["bagging", "stacking", "stacking_cv"],
     stacking_cv_folds: int = 5,
     stacking_cv_repeats: int = 1,
 ) -> Dict[str, Any]:
@@ -2318,7 +2318,7 @@ if __name__ == "__main__":
         run_evaluation=False,
         run_heatmaps=True,
         save_results=True,
-        ensemble_mode=["bagging"],
+        ensemble_mode=["bagging", "stacking"],
         stacking_cv_folds=5,
         stacking_cv_repeats=1,
     )
