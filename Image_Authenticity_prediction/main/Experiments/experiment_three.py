@@ -2254,7 +2254,7 @@ if __name__ == "__main__":
     run_experiment_3(models=['vgg16', 'resnet152'])
     """
 
-    set_level("INFO")
+    set_level("DEBUG")
 
     # Configure which parts of the experiment to run
     run_experiment_3(
@@ -2268,7 +2268,7 @@ if __name__ == "__main__":
         ],
         run_training=False,
         run_pruning=False,
-        run_evaluation=True,
+        run_evaluation=False,
         run_heatmaps=True,
         save_results=True,
         ensemble_mode=["bagging", "stacking", "stacking_cv"],

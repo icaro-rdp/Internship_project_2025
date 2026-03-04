@@ -5,7 +5,9 @@ import torch.nn as nn
 import numpy as np
 import itertools
 import math
+import time
 import importlib
+from .logger import info, warn, error, debug
 
 try:
     _tqdm_module = importlib.import_module("tqdm.auto")
@@ -16,23 +18,25 @@ from .normalization import normalize_data
 from .logger import info, warn, error, debug
 from abc import ABC, abstractmethod
 
+
 class ModelsExplainer(ABC):
     """
     Abstract Base Class (Superclass) for saliency map generation methods.
-    
+
     This class defines the common interface and shared setup logic
     for all saliency map "explainer" classes.
     """
+
     def __init__(self, model):
         self.model = model
-        
+
         try:
             # Automatically determine and store the model's device
             self.device = next(model.parameters()).device
         except StopIteration:
             warn("Could not determine model device. Assuming 'cpu'.")
             self.device = torch.device("cpu")
-            
+
         # Set model to eval mode (common setup)
         self.model.eval()
         self.model.to(self.device)
@@ -42,12 +46,12 @@ class ModelsExplainer(ABC):
         """
         Generates the saliency map. This is the "contract" that
         all subclasses must fulfill by implementing this method.
-        
+
         Args:
             input_tensor (torch.Tensor): A 4D tensor (B, C, H, W).
                                          Usually B=1.
             target_index (int): The index of the output score to explain.
-                                
+
         Returns:
             np.array: A 2D numpy array (H, W) representing the saliency map.
         """
@@ -75,17 +79,18 @@ class GradCAM(ModelsExplainer):
     """
     Implements Grad-CAM, inheriting shared logic from ModelsExplainer.
     """
+
     def __init__(self, model, target_layer, relu=True):
         # 1. Run the parent's __init__ (handles model, device, eval())
         super().__init__(model)
-        
+
         # 2. Add Grad-CAM specific attributes
         self.target_layer = self._resolve_target_layer(target_layer)
         self.gradients = None
         self.activations = None
         self.hooks = []
         self.relu = bool(relu)
-        
+
         # 3. Run Grad-CAM specific setup
         self.register_hooks()
 
@@ -101,11 +106,11 @@ class GradCAM(ModelsExplainer):
             )
 
         module = self.model
-        for attr in target_layer.split('.'):
+        for attr in target_layer.split("."):
             # Allow integer indexing for Sequential-style containers
             if attr.isdigit():
                 index = int(attr)
-                if not hasattr(module, '__getitem__'):
+                if not hasattr(module, "__getitem__"):
                     raise AttributeError(
                         f"Module '{module.__class__.__name__}' does not support indexing but received '{attr}'."
                     )
@@ -123,17 +128,17 @@ class GradCAM(ModelsExplainer):
                 )
 
         return module
-    
+
     def register_hooks(self):
-        """ Attaches forward and backward hooks to the target layer. """
-        
+        """Attaches forward and backward hooks to the target layer."""
+
         def forward_hook(module, input, output):
             self.activations = output.detach()
-            
+
         def backward_hook(module, grad_input, grad_output):
             if grad_output[0] is not None:
                 self.gradients = grad_output[0].detach()
-        
+
         self.hooks.append(self.target_layer.register_forward_hook(forward_hook))
         self.hooks.append(self.target_layer.register_full_backward_hook(backward_hook))
 
@@ -141,30 +146,32 @@ class GradCAM(ModelsExplainer):
         """
         Generates the Class Activation Map (CAM).
         This method fulfills the ModelsExplainer "contract".
-        
+
         Args:
             input_image (torch.Tensor): A 4D tensor (B, C, H, W).
             target_index (int): The index of the output score.
         """
         if input_image.dim() != 4 or input_image.shape[0] != 1:
-            raise ValueError("input_image must be a 4D tensor with batch size 1 (B, C, H, W)")
+            raise ValueError(
+                "input_image must be a 4D tensor with batch size 1 (B, C, H, W)"
+            )
 
         # Ensure input image is on the same device as the model
         input_image = input_image.to(self.device)
 
         self.gradients = None
         self.activations = None
-        
+
         input_image.requires_grad_(True)
-        
+
         # 1. Forward pass
         model_output, _ = self.model(input_image)
-        
+
         # 2. Backward pass
         self.model.zero_grad()
-        score = model_output[0, target_index] # Use target_index
-        score.backward() 
-        
+        score = model_output[0, target_index]  # Use target_index
+        score.backward()
+
         # 2.5. Check hooks
         if self.gradients is None:
             msg = "Gradients not captured. Check hook registration and target layer."
@@ -174,14 +181,14 @@ class GradCAM(ModelsExplainer):
             msg = "Activations not captured. Check hook registration."
             warn(msg)
             raise RuntimeError(msg)
-        
+
         # 3. Get gradients and activations
         gradients = self.gradients.cpu().numpy()[0]
         activations = self.activations.cpu().numpy()[0]
-        
+
         # 4. Calculate weights
         weights = np.mean(gradients, axis=(1, 2))
-        
+
         # 5. Generate CAM
         cam = np.zeros(activations.shape[1:], dtype=np.float32)
         for i, w in enumerate(weights):
@@ -193,7 +200,7 @@ class GradCAM(ModelsExplainer):
         grad_max = float(gradients.max())
         act_min = float(activations.min())
         act_max = float(activations.max())
-        
+
         # 6. Apply ReLU
         if self.relu:
             cam = np.maximum(cam, 0)
@@ -202,18 +209,15 @@ class GradCAM(ModelsExplainer):
         else:
             post_min = None
             post_max = None
-        
+
         # 7. Resize CAM
         cam_tensor = torch.tensor(cam).unsqueeze(0).unsqueeze(0)
         target_size = (input_image.shape[2], input_image.shape[3])
         cam_resized = F.interpolate(
-            cam_tensor, 
-            size=target_size, 
-            mode='bilinear', 
-            align_corners=False
+            cam_tensor, size=target_size, mode="bilinear", align_corners=False
         )
         cam = cam_resized.squeeze().cpu().numpy()
-        
+
         # 8. Normalize CAM
         if self.relu:
             cam = normalize_data(cam, min_range=0, max_range=1)
@@ -226,19 +230,39 @@ class GradCAM(ModelsExplainer):
         if self.relu:
             debug(
                 "GradCAM stats -> raw[%.4f, %.4f] post_relu[%.4f, %.4f] final[%.4f, %.4f] gradients[%.4f, %.4f] activations[%.4f, %.4f]"
-                % (raw_min, raw_max, post_min, post_max, final_min, final_max, grad_min, grad_max, act_min, act_max)
+                % (
+                    raw_min,
+                    raw_max,
+                    post_min,
+                    post_max,
+                    final_min,
+                    final_max,
+                    grad_min,
+                    grad_max,
+                    act_min,
+                    act_max,
+                )
             )
         else:
             debug(
                 "GradCAM stats -> raw[%.4f, %.4f] final[%.4f, %.4f] gradients[%.4f, %.4f] activations[%.4f, %.4f]"
-                % (raw_min, raw_max, final_min, final_max, grad_min, grad_max, act_min, act_max)
+                % (
+                    raw_min,
+                    raw_max,
+                    final_min,
+                    final_max,
+                    grad_min,
+                    grad_max,
+                    act_min,
+                    act_max,
+                )
             )
-                 
+
         return cam
 
     def cleanup(self):
-        """ 
-        Overrides the parent's empty cleanup method to 
+        """
+        Overrides the parent's empty cleanup method to
         remove the hooks.
         """
         info("Removing GradCAM hooks.")
@@ -253,27 +277,32 @@ class MultiscalePixelMasking(ModelsExplainer):
     """
     Implements Multiscale Occlusion Saliency, inheriting from ModelsExplainer.
     """
-    def __init__(self, model, sigma_list, pixel_batch_size, mask_value=0.0, use_tqdm=True):
+
+    def __init__(
+        self, model, sigma_list, pixel_batch_size, mask_value=0.0, use_tqdm=True
+    ):
         # 1. Run the parent's __init__ (handles model, device, eval())
         super().__init__(model)
-        
+
         # 2. Add Occlusion-specific attributes
         self.sigma_list = sigma_list
         self.pixel_batch_size = pixel_batch_size
         self.mask_value = mask_value
         self.use_tqdm = bool(use_tqdm and _tqdm is not None)
         if use_tqdm and _tqdm is None:
-            warn("tqdm is not available; disabling progress bars for MultiscalePixelMasking.")
+            warn(
+                "tqdm is not available; disabling progress bars for MultiscalePixelMasking."
+            )
 
     @staticmethod
     def _generate_mask(img_size, center, sigma, device):
-        """ Generates a binary mask with a square of zeros. """
+        """Generates a binary mask with a square of zeros."""
         mask = torch.ones(1, 1, img_size[0], img_size[1], device=device)
         start_x = max(0, int(center[0] - sigma // 2))
         end_x = min(img_size[1], int(center[0] + (sigma + 1) // 2))
         start_y = max(0, int(center[1] - sigma // 2))
         end_y = min(img_size[0], int(center[1] + (sigma + 1) // 2))
-        
+
         if start_y < end_y and start_x < end_x:
             mask[:, :, start_y:end_y, start_x:end_x] = 0
         return mask
@@ -282,17 +311,22 @@ class MultiscalePixelMasking(ModelsExplainer):
         """
         Calculates the full multiscale saliency map for a single image.
         This method fulfills the ModelsExplainer "contract".
-        
+
         Returns:
             np.ndarray: Normalized saliency map with shape (H, W).
         """
+        # start timer
+        start_time = time.time()
+
         # 1. Prepare image and get original score
         if image_tensor.dim() == 3:
             img_tensor_base = image_tensor.unsqueeze(0).to(self.device)
         elif image_tensor.dim() == 4 and image_tensor.shape[0] == 1:
             img_tensor_base = image_tensor.to(self.device)
         else:
-            raise ValueError(f"Input image tensor has unexpected dimensions: {image_tensor.shape}")
+            raise ValueError(
+                f"Input image tensor has unexpected dimensions: {image_tensor.shape}"
+            )
 
         with torch.no_grad():
             original_output, _ = self.model(img_tensor_base)
@@ -305,44 +339,62 @@ class MultiscalePixelMasking(ModelsExplainer):
         )
 
         img_size = img_tensor_base.shape[2:]
-        saliency_map_final = torch.zeros(img_size, dtype=torch.float32, device=self.device)
+        saliency_map_final = torch.zeros(
+            img_size, dtype=torch.float32, device=self.device
+        )
 
         # 2. Main Occlusion Loop
         sigma_progress = self._progress(self.sigma_list, desc="MPM sigma levels")
         for sigma in sigma_progress:
-            saliency_map_sigma = torch.zeros(img_size, dtype=torch.float32, device=self.device)
-            all_pixel_coords = list(itertools.product(range(img_size[0]), range(img_size[1])))
+            saliency_map_sigma = torch.zeros(
+                img_size, dtype=torch.float32, device=self.device
+            )
+            all_pixel_coords = list(
+                itertools.product(range(img_size[0]), range(img_size[1]))
+            )
             total_pixels = len(all_pixel_coords)
             num_batches = math.ceil(total_pixels / self.pixel_batch_size)
-            batch_progress = self._progress(range(num_batches), desc=f"MPM sigma {sigma}")
+            batch_progress = self._progress(
+                range(num_batches), desc=f"MPM sigma {sigma}"
+            )
             for batch_idx in batch_progress:
                 batch_start_idx = batch_idx * self.pixel_batch_size
-                batch_end_idx = min(total_pixels, (batch_idx + 1) * self.pixel_batch_size)
+                batch_end_idx = min(
+                    total_pixels, (batch_idx + 1) * self.pixel_batch_size
+                )
                 current_coords_batch = all_pixel_coords[batch_start_idx:batch_end_idx]
                 actual_batch_size = len(current_coords_batch)
 
-                if actual_batch_size == 0: continue
+                if actual_batch_size == 0:
+                    continue
 
                 # Create a list of [1, 1, H, W] masks
                 masks_list = []
                 for y_coord, x_coord in current_coords_batch:
                     masks_list.append(
-                        self._generate_mask(img_size, (x_coord, y_coord), sigma, self.device)
+                        self._generate_mask(
+                            img_size, (x_coord, y_coord), sigma, self.device
+                        )
                     )
-                
+
                 # Stack into a single [B, 1, H, W] tensor
                 batch_of_masks = torch.cat(masks_list, dim=0)
 
                 # Perform one batched masking operation.
                 # Broadcasting ( [1, C, H, W] * [B, 1, H, W] ) -> [B, C, H, W]
-                batch_of_masked_images = img_tensor_base * batch_of_masks + self.mask_value * (1 - batch_of_masks)
+                batch_of_masked_images = (
+                    img_tensor_base * batch_of_masks
+                    + self.mask_value * (1 - batch_of_masks)
+                )
 
                 with torch.no_grad():
                     output_batch, _ = self.model(batch_of_masked_images)
                     # Get the scores for the correct target_index
                     masked_scores_tensor_batch = output_batch[:, target_index].squeeze()
                     if masked_scores_tensor_batch.dim() == 0:
-                        masked_scores_tensor_batch = masked_scores_tensor_batch.unsqueeze(0)
+                        masked_scores_tensor_batch = (
+                            masked_scores_tensor_batch.unsqueeze(0)
+                        )
 
                 for k in range(actual_batch_size):
                     y, x = current_coords_batch[k]
@@ -364,10 +416,12 @@ class MultiscalePixelMasking(ModelsExplainer):
 
         # 3. Normalize and Return Results
         saliency_map_numpy = saliency_map_final.cpu().numpy()
-        
+
         if normalize:
             # Use the same normalization function as GradCAM for consistency
-            saliency_map_numpy = normalize_data(saliency_map_numpy, min_range=-1, max_range=1)
+            saliency_map_numpy = normalize_data(
+                saliency_map_numpy, min_range=-1, max_range=1
+            )
             debug(
                 "MPM: normalized aggregated map -> range [%.4f, %.4f]"
                 % (saliency_map_numpy.min(), saliency_map_numpy.max())
@@ -377,7 +431,11 @@ class MultiscalePixelMasking(ModelsExplainer):
                 "MPM: returned raw aggregated map -> range [%.4f, %.4f]"
                 % (saliency_map_numpy.min(), saliency_map_numpy.max())
             )
-        
+
+        # log total elapsed time
+        elapsed = time.time() - start_time
+        debug("MPM total run time: %.2f seconds", elapsed)
+
         return saliency_map_numpy
 
     def _progress(self, iterable, desc):
