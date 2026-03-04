@@ -1754,67 +1754,11 @@ def experiment_3d_plot_ensemble_heatmaps(
     best_variant_per_arch: bool = True,
     sigma_override: list = None,
     pixel_batch_override: int = None,
-    mode: str = "stacking",
+    modes: List[str] = ["stacking", "bagging"],
 ) -> Dict[str, Any]:
     """
-    Generate ensemble saliency heatmaps using MultiscalePixelMasking.
-
-    The behaviour depends on ``mode``:
-
-    * ``stacking`` (default) - reconstructs coefficients from the trained
-      stacking meta-learner and produces a weighted linear combination of
-      per-model MPM maps.  This matches the original implementation for
-      experiment 3D.
-
-    * ``bagging`` - disregards the meta-learner and simply averages the
-      individual model saliency maps.  The final heatmap is the uniform mean
-      across all pruned base models.
-
-    Since the StackingMetaLearner is a linear model (y = Wx + b), the ensemble
-    saliency at each pixel equals the weighted sum of per-model saliency maps
-    for the ``stacking`` mode:
-
-        ΔEnsemble(x, y) = Σ_i  w_i · ΔModel_i(x, y)
-
-    where w_i are the meta-learner's learned coefficients and ΔModel_i is the
-    change in model i's prediction when pixel (x, y) is occluded.
-
-    In ``bagging`` mode the coefficients are all equal and sum to one.
-
-    This decomposition is exact for any linear meta-learner and avoids loading
-    all base models into GPU memory simultaneously.
-
-    NOTE: GradCAM cannot be used here because gradients do not flow from the
-    meta-learner back through the base models' feature maps.
-    MPM (occlusion-based) works because it only requires forward passes.
-
-    Steps:
-        1. (stacking only) Load meta-learner weights → extract per-model
-           coefficients
-        2. Reconstruct the pruned-model ordering used during stacking training
-        3. Select sample images at IQR quantiles (low / mid / high authenticity)
-        4. For each image × each pruned model: generate raw MPM saliency map
-        5. Combine maps via coefficient-weighted sum (averaging for bagging)
-        6. Normalize and plot: Original | Saliency | Overlay
-
-    Args:
-        global_test_indices: Pre-computed test indices per dataset type.
-            If None, recomputed deterministically from dataset sizes + SEED.
-        models_filter: Architecture filter. Must match the filter used when
-            training the stacking meta-learner in experiment_3c.
-        num_sample_images: Number of sample images (3 → Q1 / Q2 / Q3).
-        device: Compute device.
-        save_plots: Whether to save matplotlib plots to disk.
-        best_variant_per_arch: If True, use one variant per architecture
-            (6 models instead of ~60) with summed coefficients. Assumes
-            variants of the same architecture produce similar saliency.
-        sigma_override: Override XAI sigma list (e.g. [17] for faster runs).
-        pixel_batch_override: Override pixel_batch_size from config.
-        mode: Either ``"stacking"`` or ``"bagging"``.  ``stacking`` uses the
-            meta-learner coefficients; ``bagging`` uses a uniform average.
-
-    Returns:
-        Dict with selected image info and output paths.
+    Generate ensemble saliency heatmaps computing raw model heatmaps ONCE
+    and accumulating them for all requested modes simultaneously.
     """
     import gc
     from main.Utils.explainability import MultiscalePixelMasking
@@ -1829,22 +1773,22 @@ def experiment_3d_plot_ensemble_heatmaps(
     )
 
     info("=" * 80)
-    info(f"EXPERIMENT 3D: {mode.upper()} ENSEMBLE HEATMAPS (MPM)")
+    info(f"EXPERIMENT 3D: ENSEMBLE HEATMAPS FOR MODES: {modes}")
     info("=" * 80)
     info(
-        f"  mode={mode}, sigma={sigma}, pixel_batch={px_batch}, "
+        f"  sigma={sigma}, pixel_batch={px_batch}, "
         f"best_variant_per_arch={best_variant_per_arch}"
     )
 
     # ------------------------------------------------------------------
-    # 1. DISCOVER PRUNED WEIGHTS (same ordering as 3c)
+    # 1. DISCOVER PRUNED WEIGHTS
     # ------------------------------------------------------------------
     all_pruned_files = sorted(DIRS["weights"].glob("*_exp3b_*_greedy_pruned.pth"))
     if not all_pruned_files:
         error(f"No pruned weights found in {DIRS['weights']}")
         return {}
 
-    ordered_pairs: List[Tuple[str, Path]] = []  # (model_name, weight_path)
+    ordered_pairs: List[Tuple[str, Path]] = []
     for p in all_pruned_files:
         match = re.match(r"^([a-z0-9]+)_exp3b_variant(\d+)_greedy_pruned\.pth$", p.name)
         if match:
@@ -1861,69 +1805,65 @@ def experiment_3d_plot_ensemble_heatmaps(
     info(f"Found {num_base_models} pruned model variants")
 
     # ------------------------------------------------------------------
-    # 2. DETERMINE COEFFICIENTS (stacking vs bagging)
+    # 2. DETERMINE COEFFICIENTS FOR ALL REQUESTED MODES
     # ------------------------------------------------------------------
-    if mode == "stacking":
-        meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
-        if not meta_weights_path.exists():
-            error(f"Meta-learner weights not found: {meta_weights_path}")
-            error("Run experiment_3c with ensemble_mode including 'stacking' first.")
-            return {}
-
-        meta = StackingMetaLearner(num_base_models)
-        meta.load_state_dict(
-            torch.load(meta_weights_path, map_location="cpu", weights_only=True)
-        )
-        meta.eval()
-
-        coefficients = meta.fc.weight.detach().squeeze().numpy()  # (num_base_models,)
-        bias = meta.fc.bias.detach().item() if meta.fc.bias is not None else 0.0
-        info(
-            f"Meta-learner: {num_base_models} coefficients, "
-            f"range [{coefficients.min():.4f}, {coefficients.max():.4f}], bias={bias:.4f}"
-        )
-        for idx, (mname, wpath) in enumerate(ordered_pairs):
-            debug(f"  coeff[{idx}] = {coefficients[idx]:+.5f}  <- {wpath.name}")
-    elif mode == "bagging":
-        # uniform weights average
-        coefficients = np.ones(num_base_models, dtype=np.float64) / num_base_models
-        bias = 0.0
-        info(
-            f"Bagging ensemble: {num_base_models} models, equal weights={coefficients[0]:.4f}"
-        )
-    else:
-        error(f"Unknown mode '{mode}' - must be 'stacking' or 'bagging'")
-        return {}
+    raw_coeffs_by_mode = {}
+    for mode in modes:
+        if mode == "stacking":
+            meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
+            if not meta_weights_path.exists():
+                error(f"Meta-learner weights not found: {meta_weights_path}")
+                return {}
+            meta = StackingMetaLearner(num_base_models)
+            meta.load_state_dict(
+                torch.load(meta_weights_path, map_location="cpu", weights_only=True)
+            )
+            raw_coeffs_by_mode[mode] = meta.fc.weight.detach().squeeze().numpy()
+        elif mode == "bagging":
+            raw_coeffs_by_mode[mode] = (
+                np.ones(num_base_models, dtype=np.float64) / num_base_models
+            )
+        else:
+            error(f"Unknown mode '{mode}' - skipping coefficient generation.")
 
     # ------------------------------------------------------------------
     # 3. OPTIONALLY REDUCE TO ONE VARIANT PER ARCHITECTURE
     # ------------------------------------------------------------------
     if best_variant_per_arch:
+        # Use stacking weights to find the "best" representative variant if available, else use bagging
+        selection_mode = "stacking" if "stacking" in modes else modes[0]
+        sel_coeffs = raw_coeffs_by_mode[selection_mode]
+
         arch_groups: Dict[str, List[Tuple[int, Path, float]]] = defaultdict(list)
         for idx, (mname, wpath) in enumerate(ordered_pairs):
-            arch_groups[mname].append((idx, wpath, coefficients[idx]))
+            arch_groups[mname].append((idx, wpath, sel_coeffs[idx]))
 
         reduced_pairs: List[Tuple[str, Path]] = []
-        reduced_coeffs: List[float] = []
-        for arch_name in arch_groups:
-            variants = arch_groups[arch_name]
-            # Pick variant with largest |coefficient|
+        reduced_coeffs_by_mode = {m: [] for m in modes}
+
+        for arch_name, variants in arch_groups.items():
             best = max(variants, key=lambda t: abs(t[2]))
             reduced_pairs.append((arch_name, best[1]))
-            # Sum all variant coefficients as an approximation
-            arch_sum = sum(c for _, _, c in variants)
-            reduced_coeffs.append(arch_sum)
+
+            # Sum all variant coefficients as an approximation for EACH mode
+            for m in modes:
+                arch_sum = sum(raw_coeffs_by_mode[m][v[0]] for v in variants)
+                reduced_coeffs_by_mode[m].append(arch_sum)
+
             info(
-                f"  {arch_name}: best_variant={best[1].name} "
-                f"|w|={abs(best[2]):.4f}, arch_sum_w={arch_sum:+.4f}"
+                f"  {arch_name}: best_variant={best[1].name} | sel_w={abs(best[2]):.4f}"
             )
 
         ordered_pairs = reduced_pairs
-        coefficients = np.array(reduced_coeffs)
+        final_coeffs_by_mode = {
+            m: np.array(c) for m, c in reduced_coeffs_by_mode.items()
+        }
         info(f"Reduced to {len(ordered_pairs)} models (one per architecture)")
+    else:
+        final_coeffs_by_mode = raw_coeffs_by_mode
 
     # ------------------------------------------------------------------
-    # 4. SELECT SAMPLE IMAGES FROM TEST SET (IQR quantiles)
+    # 4. SELECT SAMPLE IMAGES FROM TEST SET
     # ------------------------------------------------------------------
     if global_test_indices is None:
         global_test_indices = {
@@ -1932,20 +1872,17 @@ def experiment_3d_plot_ensemble_heatmaps(
         }
 
     test_indices = global_test_indices["imagenet"]
-
-    # Gather authenticity scores for test images
     scores = np.array([imageNet_dataset[idx][1].item() for idx in test_indices])
 
-    # IQR quantiles
-    if num_sample_images == 3:
-        quantiles = [0.25, 0.50, 0.75]
-    else:
-        quantiles = np.linspace(0.1, 0.9, num_sample_images).tolist()
-
+    quantiles = (
+        [0.25, 0.50, 0.75]
+        if num_sample_images == 3
+        else np.linspace(0.1, 0.9, num_sample_images).tolist()
+    )
     quantile_values = np.quantile(scores, quantiles)
 
     selected: List[Dict[str, Any]] = []
-    used_positions = set()  # avoid picking the same test-set position twice
+    used_positions = set()
     for q, qval in zip(quantiles, quantile_values):
         dists = np.abs(scores - qval)
         order = np.argsort(dists)
@@ -1955,8 +1892,8 @@ def experiment_3d_plot_ensemble_heatmaps(
                 used_positions.add(chosen)
                 break
         dataset_idx = test_indices[chosen]
-        img_inet, label = imageNet_dataset[dataset_idx]  # C,H,W @ 224
-        img_dnet, _ = denseNet_dataset[dataset_idx]  # C,H,W @ 300
+        img_inet, label = imageNet_dataset[dataset_idx]
+        img_dnet, _ = denseNet_dataset[dataset_idx]
         selected.append(
             {
                 "quantile": q,
@@ -1966,56 +1903,48 @@ def experiment_3d_plot_ensemble_heatmaps(
                 "img_densenet": img_dnet,
             }
         )
-        info(
-            f"  Q{q:.0%}: authenticity={label.item():.4f} "
-            f"(dataset_idx={dataset_idx})"
-        )
+        info(f"  Q{q:.0%}: auth={label.item():.4f} (idx={dataset_idx})")
 
     # ------------------------------------------------------------------
-    # 5. GENERATE PER-MODEL MPM MAPS & COMBINE
+    # 5. GENERATE MAPS
     # ------------------------------------------------------------------
-    # separate outputs by mode name so bagging/stacking runs don't clash
-    heatmaps_dir = OUTPUT_DIR / "Heatmaps" / mode
-    heatmaps_dir.mkdir(parents=True, exist_ok=True)
+    output_size = (224, 224)
+    heatmaps_dirs = {m: OUTPUT_DIR / "Heatmaps" / m for m in modes}
+    for d in heatmaps_dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
 
-    output_size = (224, 224)  # common output resolution
-    all_ensemble_maps: List[np.ndarray] = []
+    all_ensemble_maps = {m: [] for m in modes}
     all_per_model_maps: List[Dict[str, np.ndarray]] = []
-
     total_runs = len(selected) * len(ordered_pairs)
     run_count = 0
 
     for img_info in selected:
         info(
-            f"\n--- Generating ensemble saliency for Q{img_info['quantile']:.0%} "
-            f"(auth={img_info['score']:.4f}) ---"
+            f"\n--- Generating saliency for Q{img_info['quantile']:.0%} (auth={img_info['score']:.4f}) ---"
         )
-        weighted_map = np.zeros(output_size, dtype=np.float64)
+
+        # Accumulators for each mode
+        weighted_maps = {m: np.zeros(output_size, dtype=np.float64) for m in modes}
         per_model: Dict[str, np.ndarray] = {}
 
         for coeff_idx, (model_name, weight_path) in enumerate(ordered_pairs):
             run_count += 1
-            w = coefficients[coeff_idx]
             config = MODEL_REGISTRY[model_name]
+            img_tensor = (
+                img_info["img_densenet"].unsqueeze(0)
+                if config["dataset"] is DENSENET_DATASET
+                else img_info["img_imagenet"].unsqueeze(0)
+            )
 
-            # Select image tensor at this model's native resolution
-            if config["dataset"] is DENSENET_DATASET:
-                img_tensor = img_info["img_densenet"].unsqueeze(0)
-            else:
-                img_tensor = img_info["img_imagenet"].unsqueeze(0)
+            info(f"  [{run_count}/{total_runs}] Running MPM on {weight_path.name}")
 
-            info(f"  [{run_count}/{total_runs}] {weight_path.name}  w={w:+.4f}")
-
-            # Load model
+            # GENERATE ONCE
             model = load_model_with_weights(
                 model_name, weight_path, device, freeze_backbone=False
             )
-
-            # Generate raw (un-normalized) MPM saliency
             mpm = MultiscalePixelMasking(model, sigma, px_batch, 0.0, use_tqdm=True)
             saliency = mpm.generate_map(img_tensor, target_index=0, normalize=False)
 
-            # Resize to common output resolution if needed
             if saliency.shape != output_size:
                 s = (
                     torch.tensor(saliency, dtype=torch.float32)
@@ -2027,69 +1956,64 @@ def experiment_3d_plot_ensemble_heatmaps(
                 )
                 saliency = s.squeeze().numpy()
 
-            weighted_map += w * saliency
-            per_model[f"{model_name}_{weight_path.stem}"] = saliency
+            # APPLY TO ALL MODES
+            for m in modes:
+                w = final_coeffs_by_mode[m][coeff_idx]
+                weighted_maps[m] += w * saliency
 
-            debug(
-                f"    raw saliency range: "
-                f"[{saliency.min():.4f}, {saliency.max():.4f}]"
-            )
+            per_model[f"{model_name}_{weight_path.stem}"] = saliency
 
             del model, mpm
             clear_gpu_memory()
             gc.collect()
 
-        # Normalize the combined ensemble map
-        ensemble_map = normalize_data(
-            weighted_map.astype(np.float32), min_range=-1, max_range=1
-        )
-        all_ensemble_maps.append(ensemble_map)
+        # Normalize the combined maps for each mode
+        for m in modes:
+            ensemble_map = normalize_data(
+                weighted_maps[m].astype(np.float32), min_range=-1, max_range=1
+            )
+            all_ensemble_maps[m].append(ensemble_map)
+
         all_per_model_maps.append(per_model)
-        info(
-            f"  Ensemble map range: "
-            f"[{ensemble_map.min():.4f}, {ensemble_map.max():.4f}]"
-        )
 
     # ------------------------------------------------------------------
-    # 6. PLOT & SAVE using visualize_and_save_saliency
+    # 6. PLOT & SAVE
     # ------------------------------------------------------------------
-    # visualize_and_save_saliency expects saliency in [0, 1] range,
-    # so we rescale the [-1, 1] ensemble maps accordingly.
-    for img_info, ens_map, per_model in zip(
-        selected, all_ensemble_maps, all_per_model_maps
-    ):
+    for idx, img_info in enumerate(selected):
         q_tag = f"q{img_info['quantile']:.2f}"
         idx_tag = f"idx{img_info['dataset_idx']}"
-
-        # Rescale ensemble map from [-1, 1] -> [0, 1] for the utility
-        ens_map_01 = (ens_map + 1.0) / 2.0
-        ens_map_01 = np.clip(ens_map_01, 0.0, 1.0)
+        per_model = all_per_model_maps[idx]
 
         if save_plots:
-            # Ensemble saliency: original + heatmap + overlay
-            prefix = f"ensemble_mpm_{q_tag}_{idx_tag}_auth{img_info['score']:.3f}"
-            visualize_and_save_saliency(
-                image_tensor=img_info["img_imagenet"],  # C, H, W (normalized)
-                saliency_map=ens_map_01,
-                output_dir=str(heatmaps_dir),
-                filename_prefix=prefix,
-                cmap_name="bwr",
-            )
-            info(
-                f"✓ Saved ensemble heatmap for Q{img_info['quantile']:.0%} "
-                f"-> {prefix}"
-            )
+            # Save the different ensemble heatmaps
+            for m in modes:
+                ens_map = all_ensemble_maps[m][idx]
+                ens_map_01 = np.clip((ens_map + 1.0) / 2.0, 0.0, 1.0)
 
-            # Per-model saliency maps (useful for debugging / detailed analysis)
-            per_model_dir = heatmaps_dir / f"per_model_{q_tag}"
+                prefix = f"ensemble_mpm_{q_tag}_{idx_tag}_auth{img_info['score']:.3f}"
+                visualize_and_save_saliency(
+                    image_tensor=img_info["img_imagenet"],
+                    saliency_map=ens_map_01,
+                    output_dir=str(heatmaps_dirs[m]),
+                    filename_prefix=prefix,
+                    cmap_name="bwr",
+                )
+                info(f"✓ Saved {m.upper()} ensemble heatmap -> {prefix}")
+
+            # Save per-model maps
+            per_model_dir = (
+                heatmaps_dirs[modes[0]].parent
+                / "shared_per_model"
+                / f"per_model_{q_tag}"
+            )
             per_model_dir.mkdir(parents=True, exist_ok=True)
             for tag, sal_map in per_model.items():
-                # Normalize each per-model map to [0, 1] independently
                 sal_min, sal_max = sal_map.min(), sal_map.max()
-                if sal_max - sal_min > 1e-8:
-                    sal_01 = (sal_map - sal_min) / (sal_max - sal_min)
-                else:
-                    sal_01 = np.zeros_like(sal_map)
+                sal_01 = (
+                    (sal_map - sal_min) / (sal_max - sal_min)
+                    if sal_max - sal_min > 1e-8
+                    else np.zeros_like(sal_map)
+                )
 
                 visualize_and_save_saliency(
                     image_tensor=img_info["img_imagenet"],
@@ -2099,29 +2023,11 @@ def experiment_3d_plot_ensemble_heatmaps(
                     cmap_name="bwr",
                 )
 
-            info(f"  ✓ Saved {len(per_model)} per-model maps in {per_model_dir}")
-
-    info(f"✓ All saliency visualizations saved in {heatmaps_dir}")
-
     info("=" * 80)
     info("EXPERIMENT 3D: HEATMAP GENERATION COMPLETE")
     info("=" * 80)
 
-    return {
-        "selected_images": [
-            {
-                "quantile": s["quantile"],
-                "score": s["score"],
-                "dataset_idx": s["dataset_idx"],
-            }
-            for s in selected
-        ],
-        "num_models_used": len(ordered_pairs),
-        "best_variant_per_arch": best_variant_per_arch,
-        "sigma": list(sigma),
-        "pixel_batch": px_batch,
-        "output_dir": str(heatmaps_dir),
-    }
+    return {"status": "success", "modes_processed": modes}
 
 
 # ============================================================================
@@ -2224,24 +2130,20 @@ def run_experiment_3(
         )
         results["evaluation"] = eval_results
 
-    # Stage 3D: Heatmap Generation (requires pruned weights from 3C)
+    # Stage 3D: Heatmap Generation
     if run_heatmaps:
-        # default parameters for heatmap plotting
         if heatmap_kwargs is None:
             heatmap_kwargs = {}
-        heatmap_results: Dict[str, Any] = {}
 
-        # call plotting function for each requested ensemble mode
-        for mode in ensemble_mode:
-            info(f"Generating heatmaps for mode='{mode}'")
-            res = experiment_3d_plot_ensemble_heatmaps(
-                global_test_indices=global_test_indices,
-                models_filter=models,
-                device=device,
-                mode=mode,
-                **heatmap_kwargs,
-            )
-            heatmap_results[mode] = res
+        # <-- CHANGED: Replaced the 'for' loop with a single unified call
+        info(f"Generating combined heatmaps for modes: {ensemble_mode}")
+        heatmap_results = experiment_3d_plot_ensemble_heatmaps(
+            global_test_indices=global_test_indices,
+            models_filter=models,
+            device=device,
+            modes=ensemble_mode,  # Passes the whole list at once
+            **heatmap_kwargs,
+        )
         results["heatmaps"] = heatmap_results
 
     # Save combined results
