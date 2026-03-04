@@ -1754,17 +1754,32 @@ def experiment_3d_plot_ensemble_heatmaps(
     best_variant_per_arch: bool = True,
     sigma_override: list = None,
     pixel_batch_override: int = None,
+    mode: str = "stacking",
 ) -> Dict[str, Any]:
     """
-    Generate stacking ensemble saliency heatmaps using MultiscalePixelMasking.
+    Generate ensemble saliency heatmaps using MultiscalePixelMasking.
+
+    The behaviour depends on ``mode``:
+
+    * ``stacking`` (default) - reconstructs coefficients from the trained
+      stacking meta-learner and produces a weighted linear combination of
+      per-model MPM maps.  This matches the original implementation for
+      experiment 3D.
+
+    * ``bagging`` - disregards the meta-learner and simply averages the
+      individual model saliency maps.  The final heatmap is the uniform mean
+      across all pruned base models.
 
     Since the StackingMetaLearner is a linear model (y = Wx + b), the ensemble
-    saliency at each pixel equals the weighted sum of per-model saliency maps:
+    saliency at each pixel equals the weighted sum of per-model saliency maps
+    for the ``stacking`` mode:
 
         ΔEnsemble(x, y) = Σ_i  w_i · ΔModel_i(x, y)
 
     where w_i are the meta-learner's learned coefficients and ΔModel_i is the
     change in model i's prediction when pixel (x, y) is occluded.
+
+    In ``bagging`` mode the coefficients are all equal and sum to one.
 
     This decomposition is exact for any linear meta-learner and avoids loading
     all base models into GPU memory simultaneously.
@@ -1774,11 +1789,12 @@ def experiment_3d_plot_ensemble_heatmaps(
     MPM (occlusion-based) works because it only requires forward passes.
 
     Steps:
-        1. Load meta-learner weights → extract per-model coefficients
+        1. (stacking only) Load meta-learner weights → extract per-model
+           coefficients
         2. Reconstruct the pruned-model ordering used during stacking training
         3. Select sample images at IQR quantiles (low / mid / high authenticity)
         4. For each image × each pruned model: generate raw MPM saliency map
-        5. Combine maps via coefficient-weighted sum
+        5. Combine maps via coefficient-weighted sum (averaging for bagging)
         6. Normalize and plot: Original | Saliency | Overlay
 
     Args:
@@ -1794,6 +1810,8 @@ def experiment_3d_plot_ensemble_heatmaps(
             variants of the same architecture produce similar saliency.
         sigma_override: Override XAI sigma list (e.g. [17] for faster runs).
         pixel_batch_override: Override pixel_batch_size from config.
+        mode: Either ``"stacking"`` or ``"bagging"``.  ``stacking`` uses the
+            meta-learner coefficients; ``bagging`` uses a uniform average.
 
     Returns:
         Dict with selected image info and output paths.
@@ -1811,10 +1829,10 @@ def experiment_3d_plot_ensemble_heatmaps(
     )
 
     info("=" * 80)
-    info("EXPERIMENT 3D: STACKING ENSEMBLE HEATMAPS (MPM)")
+    info(f"EXPERIMENT 3D: {mode.upper()} ENSEMBLE HEATMAPS (MPM)")
     info("=" * 80)
     info(
-        f"  sigma={sigma}, pixel_batch={px_batch}, "
+        f"  mode={mode}, sigma={sigma}, pixel_batch={px_batch}, "
         f"best_variant_per_arch={best_variant_per_arch}"
     )
 
@@ -1843,29 +1861,39 @@ def experiment_3d_plot_ensemble_heatmaps(
     info(f"Found {num_base_models} pruned model variants")
 
     # ------------------------------------------------------------------
-    # 2. LOAD META-LEARNER & EXTRACT COEFFICIENTS
+    # 2. DETERMINE COEFFICIENTS (stacking vs bagging)
     # ------------------------------------------------------------------
-    meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
-    if not meta_weights_path.exists():
-        error(f"Meta-learner weights not found: {meta_weights_path}")
-        error("Run experiment_3c with ensemble_mode including 'stacking' first.")
+    if mode == "stacking":
+        meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
+        if not meta_weights_path.exists():
+            error(f"Meta-learner weights not found: {meta_weights_path}")
+            error("Run experiment_3c with ensemble_mode including 'stacking' first.")
+            return {}
+
+        meta = StackingMetaLearner(num_base_models)
+        meta.load_state_dict(
+            torch.load(meta_weights_path, map_location="cpu", weights_only=True)
+        )
+        meta.eval()
+
+        coefficients = meta.fc.weight.detach().squeeze().numpy()  # (num_base_models,)
+        bias = meta.fc.bias.detach().item() if meta.fc.bias is not None else 0.0
+        info(
+            f"Meta-learner: {num_base_models} coefficients, "
+            f"range [{coefficients.min():.4f}, {coefficients.max():.4f}], bias={bias:.4f}"
+        )
+        for idx, (mname, wpath) in enumerate(ordered_pairs):
+            debug(f"  coeff[{idx}] = {coefficients[idx]:+.5f}  <- {wpath.name}")
+    elif mode == "bagging":
+        # uniform weights average
+        coefficients = np.ones(num_base_models, dtype=np.float64) / num_base_models
+        bias = 0.0
+        info(
+            f"Bagging ensemble: {num_base_models} models, equal weights={coefficients[0]:.4f}"
+        )
+    else:
+        error(f"Unknown mode '{mode}' - must be 'stacking' or 'bagging'")
         return {}
-
-    meta = StackingMetaLearner(num_base_models)
-    meta.load_state_dict(
-        torch.load(meta_weights_path, map_location="cpu", weights_only=True)
-    )
-    meta.eval()
-
-    coefficients = meta.fc.weight.detach().squeeze().numpy()  # (num_base_models,)
-    bias = meta.fc.bias.detach().item() if meta.fc.bias is not None else 0.0
-    info(
-        f"Meta-learner: {num_base_models} coefficients, "
-        f"range [{coefficients.min():.4f}, {coefficients.max():.4f}], bias={bias:.4f}"
-    )
-
-    for idx, (mname, wpath) in enumerate(ordered_pairs):
-        debug(f"  coeff[{idx}] = {coefficients[idx]:+.5f}  <- {wpath.name}")
 
     # ------------------------------------------------------------------
     # 3. OPTIONALLY REDUCE TO ONE VARIANT PER ARCHITECTURE
@@ -1946,7 +1974,8 @@ def experiment_3d_plot_ensemble_heatmaps(
     # ------------------------------------------------------------------
     # 5. GENERATE PER-MODEL MPM MAPS & COMBINE
     # ------------------------------------------------------------------
-    heatmaps_dir = OUTPUT_DIR / "Heatmaps"
+    # separate outputs by mode name so bagging/stacking runs don't clash
+    heatmaps_dir = OUTPUT_DIR / "Heatmaps" / mode
     heatmaps_dir.mkdir(parents=True, exist_ok=True)
 
     output_size = (224, 224)  # common output resolution
@@ -2126,12 +2155,19 @@ def run_experiment_3(
         run_training: Whether to run training (Experiment 3A)
         run_pruning: Whether to run pruning (Experiment 3B)
         run_evaluation: Whether to run ensemble evaluation (Experiment 3C)
-        run_heatmaps: Whether to generate stacking ensemble MPM heatmaps (Experiment 3D)
+        run_heatmaps: Whether to generate ensemble MPM heatmaps (Experiment 3D).
+            If True the function will call :func:`experiment_3d_plot_ensemble_heatmaps`
+            once for each mode listed in ``ensemble_mode`` (see below).
         save_results: Whether to save results to JSON
-        ensemble_mode: List of ensemble modes to use (bagging, stacking, stacking_cv)
+        ensemble_mode: List of ensemble modes to use (bagging, stacking, stacking_cv).
+            This list also drives which heatmap variants are created when
+            ``run_heatmaps`` is True.  For example ``["bagging"]`` will produce
+            an averaged heatmap while ``["stacking"]`` will use the learned
+            meta-learner coefficients.
         stacking_cv_folds: Number of folds for stacking_cv
         stacking_cv_repeats: Number of repeated CV rounds for stacking_cv
-        heatmap_kwargs: Extra keyword arguments forwarded to experiment_3d_plot_ensemble_heatmaps
+        heatmap_kwargs: Extra keyword arguments forwarded to
+            :func:`experiment_3d_plot_ensemble_heatmaps` (common to all modes)
     Returns:
         Combined results from all stages
     """
@@ -2188,13 +2224,24 @@ def run_experiment_3(
         )
         results["evaluation"] = eval_results
 
-    # Stage 3D: Heatmap Generation (requires stacking weights from 3C)
+    # Stage 3D: Heatmap Generation (requires pruned weights from 3C)
     if run_heatmaps:
-        hkw = dict(heatmap_kwargs or {})
-        hkw.setdefault("global_test_indices", global_test_indices)
-        hkw.setdefault("models_filter", models)
-        hkw.setdefault("device", str(device))
-        heatmap_results = experiment_3d_plot_ensemble_heatmaps(**hkw)
+        # default parameters for heatmap plotting
+        if heatmap_kwargs is None:
+            heatmap_kwargs = {}
+        heatmap_results: Dict[str, Any] = {}
+
+        # call plotting function for each requested ensemble mode
+        for mode in ensemble_mode:
+            info(f"Generating heatmaps for mode='{mode}'")
+            res = experiment_3d_plot_ensemble_heatmaps(
+                global_test_indices=global_test_indices,
+                models_filter=models,
+                device=device,
+                mode=mode,
+                **heatmap_kwargs,
+            )
+            heatmap_results[mode] = res
         results["heatmaps"] = heatmap_results
 
     # Save combined results
@@ -2271,7 +2318,7 @@ if __name__ == "__main__":
         run_evaluation=False,
         run_heatmaps=True,
         save_results=True,
-        ensemble_mode=["bagging", "stacking", "stacking_cv"],
+        ensemble_mode=["bagging"],
         stacking_cv_folds=5,
         stacking_cv_repeats=1,
     )

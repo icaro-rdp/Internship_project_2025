@@ -98,6 +98,9 @@ python -m Image_Authenticity_prediction evaluate --model vgg16 --weights path/to
 python -m Image_Authenticity_prediction experiment-one --train --prune --test
 python -m Image_Authenticity_prediction experiment-two --xai-methods both
 python -m Image_Authenticity_prediction experiment-three --strategy both
+
+# generate ensemble heatmaps for bagging strategy (use --heatmaps flag)
+python -m Image_Authenticity_prediction experiment-three --strategy bagging --heatmaps
 ```
 
 ### Python API
