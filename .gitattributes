@@ -1,0 +1,9 @@
+# GitHub Linguist overrides
+# Exclude Jupyter notebooks from language statistics — they are large binary-ish
+# JSON files that inflate byte counts and obscure the actual Python codebase.
+*.ipynb linguist-detectable=false
+
+# Mark cluster job shell scripts and config files as non-code
+*.sh     linguist-detectable=false
+*.yaml   linguist-detectable=false
+*.toml   linguist-detectable=false
