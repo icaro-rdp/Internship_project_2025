@@ -4,7 +4,7 @@ start each response with "using custom instructions:"
 
 ## Exploring the repository
 
-When using an AI agent to explore the codebase, start with high-level questions about the project structure, main modules, and functionality. To do this, you can start looking at the `main/Documentation/00_index.md`, then move on to the main directories and files in the repository. This is useful not to generate new code if not necessary, but to understand the context and existing code before making changes or additions. For instance, if a utility function is needed, first check if a similar function already exists in the codebase in `main/Utils` to avoid duplication. If you need to understand how a specific module works, look for its docstrings and any related documentation in the repository.
+When using an AI agent to explore the codebase, start with high-level questions about the project structure, main modules, and functionality.For instance, if a utility function is needed, first check if a similar function already exists in the codebase in `main/Utils` to avoid duplication. If you need to understand how a specific module works, look for its docstrings and any related documentation in the repository.
 
 ## Setup & commands
 

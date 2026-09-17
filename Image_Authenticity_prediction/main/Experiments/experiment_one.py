@@ -545,19 +545,21 @@ def experiment_1b_prune_all_models(
     RANKINGS_DIR.mkdir(parents=True, exist_ok=True)
     RANKING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Simple behavior: use every .pth file in WEIGHTS_DIR (process each file)
-    # Resolve weights dir relative to this script so behavior is robust to CWD
-    OUTPUT_DIR = Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants"
-    WEIGHTS_DIR = OUTPUT_DIR / "Weights"
+    # Resolve weights dir: respect module-level WEIGHTS_DIR if it exists, otherwise fall back relative to script
+    target_weights_dir = (
+        WEIGHTS_DIR
+        if (WEIGHTS_DIR is not None and WEIGHTS_DIR.exists())
+        else (Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants" / "Weights")
+    )
 
-    if not WEIGHTS_DIR.exists():
-        error(f"Weights directory not found: {WEIGHTS_DIR}")
+    if not target_weights_dir.exists():
+        error(f"Weights directory not found: {target_weights_dir}")
         return {}
 
     # Collect all .pth files (you asked to simply take all files in the Weights folder)
-    all_pth_files = sorted(WEIGHTS_DIR.glob("*.pth"))
+    all_pth_files = sorted(target_weights_dir.glob("*.pth"))
     if not all_pth_files:
-        error(f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A first.")
+        error(f"No .pth files found in {target_weights_dir}. Please run Experiment 1A first.")
         return {}
 
     # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
@@ -951,20 +953,23 @@ def experiment_one_test_models(
     # Create output directories
     TEST_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Resolve weights dir relative to this script so behavior is robust to CWD
-    OUTPUT_DIR = Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants"
-    WEIGHTS_DIR = OUTPUT_DIR / "Weights"
+    # Resolve weights dir: respect module-level WEIGHTS_DIR if it exists, otherwise fall back relative to script
+    target_weights_dir = (
+        WEIGHTS_DIR
+        if (WEIGHTS_DIR is not None and WEIGHTS_DIR.exists())
+        else (Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants" / "Weights")
+    )
 
-    if not WEIGHTS_DIR.exists():
-        error(f"Weights directory not found: {WEIGHTS_DIR}")
+    if not target_weights_dir.exists():
+        error(f"Weights directory not found: {target_weights_dir}")
         return {}
 
     # Collect all .pth files
-    all_pth_files = sorted(WEIGHTS_DIR.glob("*.pth"))
+    all_pth_files = sorted(target_weights_dir.glob("*.pth"))
 
     if not all_pth_files:
         error(
-            f"No .pth files found in {WEIGHTS_DIR}. Please run Experiment 1A and 1B first."
+            f"No .pth files found in {target_weights_dir}. Please run Experiment 1A and 1B first."
         )
         return {}
 

@@ -472,6 +472,8 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
 
             traceback.print_exc()
 
+    return results
+
 
 # ============================================================================
 # 5. MAIN EXECUTION
