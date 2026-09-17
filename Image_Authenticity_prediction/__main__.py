@@ -281,6 +281,7 @@ def experiment_three_command(args):
         run_training=args.train,
         run_pruning=args.train,
         run_evaluation=args.evaluate,
+        run_heatmaps=args.heatmaps,
         save_results=args.save_results,
         ensemble_mode=ensemble_mode,
     )
@@ -513,6 +514,23 @@ def main():
         action="store_false",
         help="Do not save results to JSON",
     )
+
+    # heatmap options (Experiment 3D)
+    exp3_parser.add_argument(
+        "--heatmaps",
+        action="store_true",
+        default=False,
+        help="Generate ensemble heatmaps for the chosen strategy(ies)",
+    )
+    exp3_parser.add_argument(
+        "--no-heatmaps",
+        dest="heatmaps",
+        action="store_false",
+        help="Do not generate any heatmaps",
+    )
+    # note: the mode(s) used by heatmap generation are determined by
+    # the --strategy argument; passing --heatmaps in combination with
+    # --strategy bagging will produce bagging heatmaps, etc.
 
     # Parse arguments
     args = parser.parse_args()

@@ -158,6 +158,19 @@ python -m Image_Authenticity_prediction experiment-three \
     --train \
     --evaluate \
     --save-results
+
+# ------------------------------------------------------------
+# Heatmap generation (Experiment 3D)
+# ------------------------------------------------------------
+# By default heatmaps are not produced; specify ``--heatmaps`` along
+# with the desired ``--strategy`` to create them.  The output will live
+# under ``main/Experiments/tmp_Outputs/Experiment_3_ensemble/Heatmaps``.
+
+# Generate bagging heatmaps only
+python -m Image_Authenticity_prediction experiment-three --strategy bagging --heatmaps
+
+# Generate both bagging and stacking maps
+python -m Image_Authenticity_prediction experiment-three --strategy both --heatmaps
 ```
 
 ### Get Help

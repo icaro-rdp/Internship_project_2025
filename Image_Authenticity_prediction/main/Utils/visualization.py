@@ -7,14 +7,16 @@ from typing import Any, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import cv2  # OpenCV for image processing
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import matplotlib.colors as colors
-import seaborn as sns
 import pandas as pd
+import seaborn as sns
 import torch
+
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from .logger import info, warn, error, debug
+from matplotlib import cm
+import matplotlib.colors as colors
+
+from .logger import warn, error, debug
 
 
 def visualize_similarity_matrix(
@@ -512,7 +514,7 @@ def visualize_and_save_saliency(
     cmap_name: str = "bwr",
 ) -> None:
     """
-    Visualizes saliency map, creates an overlay, and saves images.
+    Visualizes saliency map, creates a colored overlay on a grayscale original, and saves plain images.
     """
     if image_tensor.is_cuda:
         debug(
@@ -524,15 +526,13 @@ def visualize_and_save_saliency(
     image_specific_output_dir = os.path.join(output_dir, filename_prefix)
     os.makedirs(image_specific_output_dir, exist_ok=True)
 
-    temp_dir = os.path.join(image_specific_output_dir, "temp_heatmap_cache")
-    os.makedirs(temp_dir, exist_ok=True)
-
     if saliency_map.ndim != 2:
         error(
             "Saliency map has unexpected dimensions %s. Expected (H, W). Skipping visualization.",
             saliency_map.shape,
         )
         return
+
     saliency_map = np.clip(saliency_map, 0.0, 1.0)
 
     NUMPY_DIR = os.path.join(
@@ -551,15 +551,15 @@ def visualize_and_save_saliency(
         )
         return
 
+    # Convert tensor to uint8 image array
     img_np = img_denorm_tensor.numpy().transpose(1, 2, 0)
     img_np = np.clip(img_np, 0.0, 1.0)
     img_uint8 = (img_np * 255).astype(np.uint8)
 
+    # Ensure base image is in BGR format for OpenCV saving
     if img_uint8.shape[2] == 1:
-        img_display = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2RGB)
         img_bgr = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
     elif img_uint8.shape[2] == 3:
-        img_display = img_uint8
         img_bgr = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR)
     else:
         error(
@@ -569,99 +569,52 @@ def visualize_and_save_saliency(
         )
         return
 
+    # 1. Save Original Image (Plain, without text/borders)
     orig_save_path = os.path.join(
         image_specific_output_dir, f"{filename_prefix}_original.png"
     )
-    plt.figure(
-        figsize=(img_display.shape[1] / 100, img_display.shape[0] / 100), dpi=100
-    )  # Match size
-    plt.imshow(img_display)
-    plt.axis("off")
-    plt.title("Original Image")
-    plt.savefig(orig_save_path, bbox_inches="tight", pad_inches=0)
-    plt.close()
+    cv2.imwrite(orig_save_path, img_bgr)
 
+    # 2. Generate and Save Heatmap Image (Plain)
     try:
         cmap = cm.get_cmap(cmap_name)
     except ValueError:
         warn(f"Colormap '{cmap_name}' not found. Using default 'viridis'.")
         cmap = cm.get_cmap("viridis")
-    norm = colors.Normalize(vmin=0, vmax=1)
 
-    heatmap_save_path = os.path.join(
-        image_specific_output_dir, f"{filename_prefix}_heatmap_{cmap_name}.png"
-    )
-    plt.figure(
-        figsize=(saliency_map.shape[1] / 100, saliency_map.shape[0] / 100), dpi=100
-    )  # Match size
-    plt.imshow(saliency_map, cmap=cmap, norm=norm)
-    plt.colorbar(label=f"Saliency")
-    plt.title(f"Saliency Heatmap ({cmap_name})")
-    plt.axis("off")
-    plt.savefig(heatmap_save_path, bbox_inches="tight", pad_inches=0)
-    plt.close()
+    # Apply colormap directly to the normalized array (returns RGBA floats [0, 1])
+    heatmap_rgba = cmap(saliency_map)
+    heatmap_rgb = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
+    heatmap_bgr = cv2.cvtColor(heatmap_rgb, cv2.COLOR_RGB2BGR)
 
-    temp_heatmap_path = os.path.join(
-        temp_dir, f"{filename_prefix}_temp_heatmap_for_overlay.png"
-    )
-    fig_width_inches = img_display.shape[1] / 100.0
-    fig_height_inches = img_display.shape[0] / 100.0
-    plt.figure(figsize=(fig_width_inches, fig_height_inches), dpi=100)
-    plt.imshow(saliency_map, cmap=cmap, norm=norm)
-    plt.axis("off")
-    plt.savefig(temp_heatmap_path, bbox_inches="tight", pad_inches=0, dpi=100)
-    plt.close()
-
-    colored_heatmap_bgr = cv2.imread(temp_heatmap_path)
-    if os.path.exists(temp_heatmap_path):
-        os.remove(temp_heatmap_path)
-    if os.path.exists(temp_dir) and not os.listdir(temp_dir):
-        try:
-            os.rmdir(temp_dir)
-        except OSError:
-            pass  # Might fail if another process/thread is accessing
-
-    if colored_heatmap_bgr is None:
-        error(
-            "Could not read temporary heatmap file for %s: %s. Skipping overlay.",
-            filename_prefix,
-            temp_heatmap_path,
-        )
-        return
-
-    if colored_heatmap_bgr.shape[:2] != img_bgr.shape[:2]:
+    # Resize heatmap to match original image dimensions if necessary
+    if heatmap_bgr.shape[:2] != img_bgr.shape[:2]:
         debug(
             "Resizing heatmap from %s to %s for %s",
-            colored_heatmap_bgr.shape[:2],
+            heatmap_bgr.shape[:2],
             img_bgr.shape[:2],
             filename_prefix,
         )
-        colored_heatmap_bgr = cv2.resize(
-            colored_heatmap_bgr,
+        heatmap_bgr = cv2.resize(
+            heatmap_bgr,
             (img_bgr.shape[1], img_bgr.shape[0]),
             interpolation=cv2.INTER_LINEAR,
         )
 
-    overlay = cv2.addWeighted(
-        img_bgr, 1.0 - overlay_alpha, colored_heatmap_bgr, overlay_alpha, 0.0
+    heatmap_save_path = os.path.join(
+        image_specific_output_dir, f"{filename_prefix}_heatmap_{cmap_name}.png"
     )
-    overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+    cv2.imwrite(heatmap_save_path, heatmap_bgr)
 
+    # 3. Save Grayscale Original + Colored Overlay
+    # Convert the original color image to grayscale, then back to BGR so it has 3 channels for blending
+    gray_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray_base_bgr = cv2.cvtColor(gray_img, cv2.COLOR_GRAY2BGR)
+
+    overlay = cv2.addWeighted(
+        gray_base_bgr, 1.0 - overlay_alpha, heatmap_bgr, overlay_alpha, 0.0
+    )
     overlay_save_path = os.path.join(
         image_specific_output_dir, f"{filename_prefix}_overlay_{cmap_name}.png"
     )
-    success = cv2.imwrite(
-        overlay_save_path, cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
-    )
-    if not success:
-        error(
-            "cv2.imwrite failed for overlay %s. Trying plt.savefig.", overlay_save_path
-        )
-        plt.figure(
-            figsize=(overlay_rgb.shape[1] / 100, overlay_rgb.shape[0] / 100), dpi=100
-        )
-        plt.imshow(overlay_rgb)
-        plt.axis("off")
-        plt.title(f"Saliency Overlay ({cmap_name})")
-        plt.savefig(overlay_save_path, bbox_inches="tight", pad_inches=0)
-        plt.close()
+    cv2.imwrite(overlay_save_path, overlay)
