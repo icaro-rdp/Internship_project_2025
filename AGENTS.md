@@ -123,3 +123,18 @@ def fetch_user(user_id: int) -> dict[str, str]:
 logger.info("Fetched %d users for tenant %s", count, tenant_id)  # correct
 logger.info(f"Fetched {count} users for tenant {tenant_id}")      # avoid
 ```
+
+## Agent skills
+
+### Issue tracker
+
+GitHub issues via `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Custom triage label vocabulary (`need-approval`, `needs-info`, `to-implement`, `to-review`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context (`CONTEXT.md` and `docs/adr/` at repo root). See `docs/agents/domain.md`.
+
