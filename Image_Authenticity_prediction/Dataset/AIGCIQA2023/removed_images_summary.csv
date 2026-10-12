@@ -1,0 +1,44 @@
+Category,Challenge,count
+Animals,Complex,24
+Animals,Fine-grained Detail,24
+Animals,Imagination,24
+Animals,Style & Format,24
+Animals,Writing & Symbols,24
+Artifacts,Complex,24
+Artifacts,Fine-grained Detail,24
+Artifacts,Imagination,24
+Artifacts,Simple Detail,24
+Artifacts,Style & Format,24
+Artifacts,Writing & Symbols,24
+Arts,Style & Format,24
+Food & Beverage,Imagination,24
+Food & Beverage,Style & Format,24
+Food & Beverage,Writing & Symbols,24
+Illustrations,Complex,24
+Illustrations,Fine-grained Detail,24
+Illustrations,Imagination,24
+Illustrations,Linguistic Structures,24
+Illustrations,Perspective,24
+Illustrations,Quantity,24
+Illustrations,Simple Detail,24
+Illustrations,Style & Format,24
+Illustrations,Writing & Symbols,24
+Indoor Scenes,Imagination,24
+Indoor Scenes,Writing & Symbols,24
+Outdoor Scenes,Imagination,24
+Outdoor Scenes,Style & Format,24
+Outdoor Scenes,Writing & Symbols,24
+People,Imagination,24
+People,Style & Format,24
+People,Writing & Symbols,24
+Produce & Plants,Imagination,24
+Produce & Plants,Style & Format,24
+Produce & Plants,Writing & Symbols,24
+Vehicles,Imagination,24
+Vehicles,Style & Format,24
+Vehicles,Writing & Symbols,24
+World Knowledge,Complex,24
+World Knowledge,Fine-grained Detail,24
+World Knowledge,Imagination,24
+World Knowledge,Style & Format,24
+World Knowledge,Writing & Symbols,24

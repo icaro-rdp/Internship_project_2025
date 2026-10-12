@@ -1,0 +1,101 @@
+Challenge,Category,Prompt,Status,Exclusion_Reason
+Basic,Animals,a corgi,Kept,Retained (natural/photorealistic candidate)
+Basic,Artifacts,a bench,Kept,Retained (natural/photorealistic candidate)
+Basic,Food & Beverage,a green pepper,Kept,Retained (natural/photorealistic candidate)
+Basic,Illustrations,a book cover,Kept,Retained (natural/photorealistic candidate)
+Basic,Indoor Scenes,a kitchen,Kept,Retained (natural/photorealistic candidate)
+Basic,Outdoor Scenes,a fall landscape,Kept,Retained (natural/photorealistic candidate)
+Basic,People,a girl,Kept,Retained (natural/photorealistic candidate)
+Basic,Produce & Plants,a flower,Kept,Retained (natural/photorealistic candidate)
+Basic,Vehicles,a boat,Kept,Retained (natural/photorealistic candidate)
+Basic,World Knowledge,a photo of san francisco's golden gate bridge,Kept,Retained (natural/photorealistic candidate)
+Complex,Animals,A donkey is playing tug-of-war against an octopus. The donkey holds the rope in its mouth. A cat is jumping over the rope.,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Complex,Artifacts,a propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Complex,Food & Beverage,a pineapple with one beer to its left and two beers on its right,Kept,Retained (natural/photorealistic candidate)
+Complex,Illustrations,"A set of 2x2 emoji icons with happy, angry, surprised and sobbing faces. The emoji icons look like colorful macarons. All of the macarons are wearing cowboy hats.",Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Complex,Indoor Scenes,A cozy living room with a painting of a corgi on the wall above a couch and a round coffee table in front of a couch and a vase of flowers on a coffee table,Kept,Retained (natural/photorealistic candidate)
+Complex,Outdoor Scenes,Snow mountain and tree reflection in the lake,Kept,Retained (natural/photorealistic candidate)
+Complex,People,a grandmother reading a book to her grandson and granddaughter,Kept,Retained (natural/photorealistic candidate)
+Complex,Produce & Plants,a tree reflected in the sunroof of a blue car,Kept,Retained (natural/photorealistic candidate)
+Complex,Vehicles,a blue semi-truck and its trailer jumping over a row of motorcycles. there are metal ramps on either side of the motorcycles. ,Kept,Retained (natural/photorealistic candidate)
+Complex,World Knowledge,"An anime illustration of Sydney Opera House sitting next to Eiffel tower, under a blue night sky of roiling energy, exploding yellow stars, and radiating swirls of blu",Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Fine-grained Detail,Animals,a dolphin in an astronaut suit on saturn,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Fine-grained Detail,Artifacts,purple lego dollhouse with a pool and a swing,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Fine-grained Detail,Food & Beverage,a bloody mary cocktail next to a napkin,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,Illustrations,a kids' book cover with an illustration of white dog driving a red pickup truck,Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Fine-grained Detail,Indoor Scenes,A bare kitchen has wood cabinets and white appliances,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,Outdoor Scenes,a fall landscape with a small cottage next to a lake,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,People,a library filled with kids reading books,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,Produce & Plants,a small garden with an apple tree behind it,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,Vehicles,a large white yacht in a calm bay on a sunny day,Kept,Retained (natural/photorealistic candidate)
+Fine-grained Detail,World Knowledge,a teddy bear on a skateboard in times square,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Imagination,Animals,A blue colored dog,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Artifacts,a sword slicing through a loaf of bread,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Food & Beverage,A bowl of soup that looks like a monster with tofu says deep learning,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Illustrations,a drawing of a series of musical notes wrapped around the Earth,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Indoor Scenes,a small kitchen with a white goat in it,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Outdoor Scenes,A large city fountain that has milk instead of water. Several cats are leaning into the fountain.,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,People,A photo of an astronaut riding a horse in the forest.,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Produce & Plants,an orange wearing a cowboy hat,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,Vehicles,A bicycle on top of a boat,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Imagination,World Knowledge,an elephant walking on the Great Wall,Removed,Excluded Challenge: Imagination (counterfactual / physically impossible)
+Linguistic Structures,Animals,A bird gives an apple to a squirrel,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Artifacts,a closet without clothes,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Food & Beverage,a plate that has no bananas on it. there is a glass without orange juice next to it.,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Illustrations,We painted the wall with cracks.,Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Linguistic Structures,Indoor Scenes,a kitchen without a refrigerator,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Outdoor Scenes,a street without vehicles,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,People,a classroom without any students,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Produce & Plants,a banana without its peel,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,Vehicles,a car with no windows,Kept,Retained (natural/photorealistic candidate)
+Linguistic Structures,World Knowledge,An aerial view of Ha Long Bay without any boats,Kept,Retained (natural/photorealistic candidate)
+Perspective,Animals,view of a giraffe and a zebra in the middle of a field,Kept,Retained (natural/photorealistic candidate)
+Perspective,Artifacts,view of a clock tower from above,Kept,Retained (natural/photorealistic candidate)
+Perspective,Food & Beverage,a close-up of an old-fashioned cocktail,Kept,Retained (natural/photorealistic candidate)
+Perspective,Illustrations,A robot with a black visor and the number 42 on its chest. It stands proudly in front of an F1 race car. The sun is setting on a cityscape in the background. wide-angle view. comic book illustration.,Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Perspective,Indoor Scenes,an aerial view of a dining room,Kept,Retained (natural/photorealistic candidate)
+Perspective,Outdoor Scenes,an aerial photo of a sandy island in the ocean,Kept,Retained (natural/photorealistic candidate)
+Perspective,People,two people facing each other,Kept,Retained (natural/photorealistic candidate)
+Perspective,Produce & Plants,a cross-section view of a walnut,Kept,Retained (natural/photorealistic candidate)
+Perspective,Vehicles,an overhead view of a pickup truck with boxes in its flatbed,Kept,Retained (natural/photorealistic candidate)
+Perspective,World Knowledge,an aerial view of the Great Wall,Kept,Retained (natural/photorealistic candidate)
+Quantity,Animals,Four cats surrounding a dog,Kept,Retained (natural/photorealistic candidate)
+Quantity,Artifacts,two red balls on a table,Kept,Retained (natural/photorealistic candidate)
+Quantity,Food & Beverage,three green peppers,Kept,Retained (natural/photorealistic candidate)
+Quantity,Illustrations,three small yellow boxes,Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Quantity,Indoor Scenes,two pianos next to each other,Kept,Retained (natural/photorealistic candidate)
+Quantity,Outdoor Scenes,a tennis court with three yellow cones on it,Kept,Retained (natural/photorealistic candidate)
+Quantity,People,three children on a couch,Kept,Retained (natural/photorealistic candidate)
+Quantity,Produce & Plants,ten red apples,Kept,Retained (natural/photorealistic candidate)
+Quantity,Vehicles,two motorcycles facing each other,Kept,Retained (natural/photorealistic candidate)
+Quantity,World Knowledge,Times Square with thousands of dogs running around,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Animals,A giraffe walking through a green grass covered field,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Artifacts,a teddy bear on a skateboard,Removed,"Excluded Specific Prompt: Surreal, toy, or fictional entities in realistic category"
+Simple Detail,Food & Beverage,A bowl of Chicken Pho,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Illustrations,A heart made of chocolate,Removed,"Excluded Category: Illustrations (drawings, emojis, graphic designs)"
+Simple Detail,Indoor Scenes,a coffee table with a magazine on it,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Outdoor Scenes,Sunset over the sea,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,People,a woman with long hair,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Produce & Plants,a pumpkin with a candle in it,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,Vehicles,A red bus is driving on the road,Kept,Retained (natural/photorealistic candidate)
+Simple Detail,World Knowledge,a boat in the canals of venice,Kept,Retained (natural/photorealistic candidate)
+Style & Format,Animals,A photo of a panda made of water.,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Artifacts,A spaceship made of cardboard.,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Arts,an oil painting of a tree and a building,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Food & Beverage,a painting of the food of china,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Illustrations,"an emoji of a baby penguin wearing a blue hat, red gloves, green shirt, and yellow pants",Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Outdoor Scenes,a painting of a white country home with a wrap-around porch,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,People,"a portrait of a man wearing sunglasses and a business suit, painting in pop art style",Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Produce & Plants,A photo of a lotus flower made of water. ,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,Vehicles,a cartoon of a train going to the moon,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Style & Format,World Knowledge,Downtown Shanghai at sunrise. detailed ink wash.,Removed,"Excluded Challenge: Style & Format (artistic media, paintings, cartoons, non-photo)"
+Writing & Symbols,Animals,"a cartoon of a dog saying ""I see what you did there""",Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Artifacts,A sign that says Deep Learning,Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Food & Beverage,"Two cups of coffee, one with latte art of the words ""LOVE"" written in one. The other has latte art of the words ""PEACE"" written in the other.",Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Illustrations,the word 'START',Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Indoor Scenes,"a yellow wall with 'Hello, world.' written on it",Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Outdoor Scenes,a store front with 'Grassy Meadow' written on it,Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,People,the word 'HELLO' on a girl's face,Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Produce & Plants,the word 'APPLE' on an apple,Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,Vehicles,a hot air balloon with chameleon logo. the sun is shining and puffy white clouds are in the background.,Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"
+Writing & Symbols,World Knowledge,"A green sign that says ""Very Deep Learning"" and is at the edge of the Grand Canyon.",Removed,"Excluded Challenge: Writing & Symbols (text rendering, typography, signage)"

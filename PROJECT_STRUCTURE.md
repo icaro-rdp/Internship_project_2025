@@ -14,13 +14,15 @@ Image_Authenticity_prediction/
 ├── PROJECT_STRUCTURE.md           # This file
 ├── TODO.md                        # Development tasks and known issues
 │
-├── Dataset/                       # 🚫 GITIGNORED - User must create
+├── Dataset/                       # ✅ Dataset annotations & manifests (images gitignored)
 │   ├── AIGCIQA2023/              # Main dataset location
-│   │   ├── real_images_annotations.csv
-│   │   └── Image/                # Images folder
-│   │       ├── 0.png
-│   │       ├── 1.png
-│   │       └── ...
+│   │   ├── DATASET_EXCLUSIONS.md # Full exclusion criteria and reproduction guide
+│   │   ├── prompt_exclusion_manifest.csv # 100-prompt status, criteria, and rationale
+│   │   ├── real_images_annotations.csv # 1,368 retained image annotations (tracked in git)
+│   │   ├── removed_images_details.csv # Full metadata of 1,032 excluded images
+│   │   ├── removed_images_summary.csv # Aggregated category/challenge counts
+│   │   ├── removed_images.txt    # Paths of 1,032 excluded images
+│   │   └── Image/                # 🚫 GITIGNORED - Local image files (0.png, ...)
 │   └── Single_score/             # Single participant scores (25 CSV files)
 │       ├── participant_01.csv
 │       ├── participant_02.csv
@@ -322,13 +324,15 @@ Exports: `GradCAM`, `MultiscalePixelMasking`, `FeatureMapsPruner`
 
 The `.gitignore` file excludes the following:
 
-### 1. Dataset Directory
+### 1. Dataset Images & Heavy Media
 
-**Pattern**: `Dataset/`, `Image_Authenticity_prediction/Dataset`, `*.pkl`, `*.h5`
+**Pattern**: `**/Dataset/**/Image/`, `**/Dataset/**/*.png`, `**/Dataset/**/*.jpg`, `*.pkl`, `*.h5`
 
-**Why**: Large image files (GBs) should not be in version control
+**Why**: Large raw image files (GBs) should not be stored in version control.
 
-**User Action Required**: Create `Dataset/AIGCIQA2023/` and `Dataset/Single_score/` and add dataset files locally
+**Tracked**: All dataset manifests, annotations, and exclusion criteria (`real_images_annotations.csv`, `prompt_exclusion_manifest.csv`, `removed_images_details.csv`, `removed_images_summary.csv`, `DATASET_EXCLUSIONS.md`) are tracked in git under `Image_Authenticity_prediction/Dataset/AIGCIQA2023/`.
+
+**User Action Required**: Place the raw AIGCIQA2023 image assets in `Image_Authenticity_prediction/Dataset/AIGCIQA2023/Image/allimg/` for local visual evaluation.
 
 ### 2. Output Directories
 

@@ -59,11 +59,25 @@ Models/*/*/5_imgs_masking_experiment_outputs/*
 Models/*/5_imgs_masking_experiment_outputs/*
 Models/*/multiscale_masking_outputs_ensemble/*
 
-Datasets
-Image_Authenticity_prediction/Dataset
+# Dataset images and large media (ignore images, keep CSV annotations and manifests)
+**/Dataset/**/Image/
+**/Dataset/**/allimg/
+**/Dataset/**/*.png
+**/Dataset/**/*.jpg
+**/Dataset/**/*.jpeg
+**/Dataset/**/*.webp
+**/Datasets/**/Image/
+**/Datasets/**/*.png
 *.pkl
 *.h5
 old_files
+
+# Individual participant scores (private research data, do not distribute publicly)
+**/Dataset/**/Single_score/
+**/Dataset/**/Single_score/**
+**/Dataset/**/Single_scores/
+**/Dataset/**/Single_scores/**
+
 
 # Logs and temporary files
 *.log

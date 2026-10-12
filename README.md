@@ -48,6 +48,7 @@ Complete documentation for this project:
 
 - **[SETUP_GUIDE.md](SETUP_GUIDE.md)** - Setup instructions, dataset structure, import patterns, and troubleshooting
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - Detailed project architecture and module organization
+- **[DATASET_EXCLUSIONS.md](Dataset/AIGCIQA2023/DATASET_EXCLUSIONS.md)** - Dataset filtering criteria, prompt taxonomy, and reproduction manifest
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Command reference and common operations
 - **[TODO.md](TODO.md)** - Development roadmap and known issues
 - **Experiment Reports**:
@@ -69,19 +70,18 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install pandas pillow numpy matplotlib tqdm scipy scikit-learn scikit-image seaborn opencv-python
 ```
 
-### Dataset Setup
+### Dataset Setup & Exclusions
 
-```bash
-# Create dataset directories
-mkdir -p Dataset/AIGCIQA2023 Dataset/Single_score
+The dataset annotations and exclusion manifests are tracked directly in git under `Image_Authenticity_prediction/Dataset/AIGCIQA2023/`. Large image assets (`Image/`) are git-ignored.
 
-# Place your data (ask project maintainer for dataset access) in the following structure:
-# - Dataset/AIGCIQA2023/real_images_annotations.csv
-# - Dataset/AIGCIQA2023/Image/ (image files)
-# - Dataset/Single_score/ (25 participant CSV files)
-```
+- **Tracked Annotations**: `Image_Authenticity_prediction/Dataset/AIGCIQA2023/real_images_annotations.csv` (1,368 retained images across 57 prompts and 6 models).
+- **Full Exclusion Rationale & Manifest**: See [`DATASET_EXCLUSIONS.md`](Image_Authenticity_prediction/Dataset/AIGCIQA2023/DATASET_EXCLUSIONS.md) and [`prompt_exclusion_manifest.csv`](Image_Authenticity_prediction/Dataset/AIGCIQA2023/prompt_exclusion_manifest.csv) for the exact prompt-level criteria behind the 43 excluded prompts (1,032 images).
+- **Reproduction Test**: Verify dataset partitioning and consistency with `uv run pytest tests/test_dataset_exclusions.py`.
 
-See [SETUP_GUIDE.md#git-ignored-directories](SETUP_GUIDE.md#-git-ignored-directories) for detailed dataset setup.
+To run visual evaluations, place the raw AIGCIQA2023 images into:
+`Image_Authenticity_prediction/Dataset/AIGCIQA2023/Image/allimg/`
+
+See [SETUP_GUIDE.md#git-ignored-directories](SETUP_GUIDE.md#-git-ignored-directories) for additional setup details.
 
 ## 💡 Usage
 
@@ -139,23 +139,33 @@ All models use transfer learning with pretrained weights and custom regression h
 
 ## 📊 Dataset
 
-Uses **AIGCIQA2023** dataset with Mean Opinion Scores (MOS) for image authenticity.
+Uses the **AIGCIQA2023** dataset with Mean Opinion Scores (MOS) for image authenticity, quality, and correspondence.
 
-**Structure:**
+To focus strictly on natural image realism rather than stylized or impossible content, 43 prompts (1,032 images) were excluded at the prompt level, retaining 57 prompts (1,368 images) of natural scenes and real-world entities.
+
+See **[DATASET_EXCLUSIONS.md](Dataset/AIGCIQA2023/DATASET_EXCLUSIONS.md)** for complete exclusion criteria, taxonomy, and reproduction manifests.
+
+**Directory Structure:**
 
 ```
 Dataset/
 ├── AIGCIQA2023/
-│   ├── real_images_annotations.csv    # Aggregated annotations
-│   └── Image/                         # Image files
-└── Single_score/                      # Individual participant scores (25 CSV)$$
+│   ├── DATASET_EXCLUSIONS.md          # Exclusion rationale and reproduction guide
+│   ├── prompt_exclusion_manifest.csv  # Complete 100-prompt status and criteria
+│   ├── real_images_annotations.csv    # 1,368 retained image annotations (tracked in git)
+│   ├── removed_images_details.csv     # Full metadata of all 1,032 excluded images
+│   ├── removed_images_summary.csv     # Aggregated category/challenge counts
+│   ├── removed_images.txt             # Paths of all 1,032 excluded images
+│   └── Image/                         # Image files (gitignored to avoid syncing large media)
+│       └── allimg/ (0.png, ...)
+└── Single_score/                      # Individual participant scores (25 CSVs)
 ```
 
 ## 🤝 Contributing
 
 Research project by Icaro Re Depaolini as part of thesis work at CiMEC, University of Trento.
 
-For questions or contributions, please contact the project maintainer via GitHub .
+For questions or contributions, please contact the project maintainer via [GitHub](https://github.com/icaro-rdp/Internship_project_2025).
 
 ## 📄 License
 
