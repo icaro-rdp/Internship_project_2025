@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from Image_Authenticity_prediction.main.descriptive_analysis import (
+from Image_Authenticity_prediction.main.Experiments.analysis_quality_vs_authenticity import (
     compare_cohort_discrepancies,
     compute_correlation_metrics,
     compute_decile_statistics,
@@ -120,13 +120,13 @@ def test_boundary_dissociations_and_cohort_comparison() -> None:
 
 
 def test_run_descriptive_analysis_pipeline(tmp_path: Path) -> None:
-    """Verify complete analysis runner creates plots, tables, and report in tmp dir."""
+    """Verify complete analysis runner creates multi-panel plots and tables in tmp dir."""
     res = run_descriptive_analysis(output_dir=tmp_path, top_k=5)
 
     assert "kept_corr" in res
     assert "discarded_corr" in res
+    assert "combined_corr" in res
     assert "cohort_comparison" in res
-    assert (tmp_path / "REBUTTAL_REPORT.md").exists()
 
     # Verify tables
     tables_dir = tmp_path / "Tables"
@@ -134,16 +134,14 @@ def test_run_descriptive_analysis_pipeline(tmp_path: Path) -> None:
     assert (tables_dir / "kept_top_5_dissociations.csv").exists()
     assert (tables_dir / "kept_joint_10x10_deciles.csv").exists()
     assert (tables_dir / "discarded_joint_10x10_deciles.csv").exists()
+    assert (tables_dir / "combined_joint_10x10_deciles.csv").exists()
     assert (tables_dir / "kept_boundary_dissociations.csv").exists()
     assert (tables_dir / "discarded_boundary_dissociations.csv").exists()
+    assert (tables_dir / "combined_boundary_dissociations.csv").exists()
     assert (tables_dir / "cohort_discrepancy_comparison.csv").exists()
 
-    # Verify plots
-    plots_ind_dir = tmp_path / "Plots" / "Individual"
+    # Verify multi-panel plots
     plots_panel_dir = tmp_path / "Plots" / "Panels"
-    assert (plots_ind_dir / "kept_auth_deciles_quality.png").exists()
-    assert (plots_ind_dir / "kept_qa_scatter_dissociations.png").exists()
-    assert (plots_ind_dir / "kept_joint_10x10_heatmap.png").exists()
     assert (plots_panel_dir / "figure_qa_condensed_4panel.png").exists()
     assert (plots_panel_dir / "figure_qa_bidirectional_6panel.png").exists()
     assert (plots_panel_dir / "figure_joint_10x10_heatmaps.png").exists()

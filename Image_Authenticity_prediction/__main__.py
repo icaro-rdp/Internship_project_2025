@@ -293,7 +293,7 @@ def experiment_three_command(args):
 
 def descriptive_qa_command(args: argparse.Namespace) -> None:
     """Execute descriptive Quality vs Authenticity analysis command."""
-    from main.descriptive_analysis import (
+    from Image_Authenticity_prediction.main.Experiments.analysis_quality_vs_authenticity import (
         run_descriptive_analysis,
     )
 

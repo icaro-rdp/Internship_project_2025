@@ -4,17 +4,17 @@ import argparse
 import logging
 from pathlib import Path
 
-from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from scipy import stats
 
 logger = logging.getLogger(__name__)
 
 CANONICAL_DATASET_DIR = (
-    Path(__file__).resolve().parent.parent / "Dataset" / "AIGCIQA2023"
+    Path(__file__).resolve().parent.parent.parent / "Dataset" / "AIGCIQA2023"
 )
 
 # Vibrant pastel palettes: Blue (Kept), Orange/Amber (Excluded), Green (Combined)
@@ -75,6 +75,48 @@ def load_datasets(dataset_dir: Path | None = None) -> dict[str, pd.DataFrame]:
         "Excluded": df_excl,
         "Combined": df_comb,
     }
+
+
+def load_kept_dataset(dataset_dir: Path | None = None) -> pd.DataFrame:
+    """Load Kept photorealistic dataset."""
+    return load_datasets(dataset_dir)["Kept"]
+
+
+def load_discarded_dataset(dataset_dir: Path | None = None) -> pd.DataFrame:
+    """Load Excluded non-photorealistic dataset labeled as Discarded."""
+    df = load_datasets(dataset_dir)["Excluded"].copy()
+    df["cohort"] = "Discarded"
+    return df
+
+
+def load_combined_dataset(dataset_dir: Path | None = None) -> pd.DataFrame:
+    """Load Combined full dataset."""
+    return load_datasets(dataset_dir)["Combined"]
+
+
+def compute_standardized_discrepancy(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute z-scores and standardized discrepancy (z_diff = z_Quality - z_Authenticity)."""
+    df_s = df.copy()
+    df_s["z_Quality"] = (df_s["Quality"] - df_s["Quality"].mean()) / df_s[
+        "Quality"
+    ].std()
+    df_s["z_Authenticity"] = (
+        df_s["Authenticity"] - df_s["Authenticity"].mean()
+    ) / df_s["Authenticity"].std()
+    df_s["z_diff"] = df_s["z_Quality"] - df_s["z_Authenticity"]
+    return df_s
+
+
+def compute_joint_decile_contingency(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute 10x10 joint contingency cross-tabulation matrix."""
+    df_c = df.copy()
+    if "authenticity_decile" not in df_c.columns:
+        df_c = compute_deciles(df_c, "Authenticity", 10, prefix="A")
+    if "quality_decile" not in df_c.columns:
+        df_c = compute_deciles(df_c, "Quality", 10, prefix="Q")
+    return pd.crosstab(
+        df_c["authenticity_decile"], df_c["quality_decile"], dropna=False
+    )
 
 
 def compute_deciles(
@@ -174,8 +216,12 @@ def extract_boundary_dissociations(
     top_n: int = 20,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Extract highest-Q items in A1 and lowest-Q items in A10."""
+    df_c = df.copy()
+    if "authenticity_decile" not in df_c.columns:
+        df_c = compute_deciles(df_c, "Authenticity", 10, prefix="A")
+
     a1_top_q = (
-        df[df["authenticity_decile"] == "A1"]
+        df_c[df_c["authenticity_decile"] == "A1"]
         .sort_values("Quality", ascending=False)
         .head(top_n)
         .copy()
@@ -183,7 +229,7 @@ def extract_boundary_dissociations(
     a1_top_q["boundary_type"] = "Lowest Authenticity (A1) with Highest Quality"
 
     a10_low_q = (
-        df[df["authenticity_decile"] == "A10"]
+        df_c[df_c["authenticity_decile"] == "A10"]
         .sort_values("Quality", ascending=True)
         .head(top_n)
         .copy()
@@ -578,7 +624,7 @@ def run_descriptive_analysis(
     top_k: int = 20,
 ) -> dict:
     """Execute Quality vs Authenticity analysis across Kept, Excluded, and Combined cohorts."""
-    repo_root = Path(__file__).resolve().parent.parent.parent
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
     out_base = output_dir or (repo_root / "Outputs" / "Descriptive_analysis")
     plots_panel_dir = out_base / "Plots" / "Panels"
     tables_dir = out_base / "Tables"
