@@ -12,33 +12,33 @@ Usage:
 
 import argparse
 import sys
-import torch
 from pathlib import Path
+
+import torch
 
 # Add the parent directory to the path to allow imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from main.Models import (
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
-    DenseNet161AuthenticityPredictor,
-    InceptionV3AuthenticityPredictor,
-    EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor,
-)
 from main.data import (
-    IMAGENET_DATASET,
     DENSENET_DATASET,
+    IMAGENET_DATASET,
     INCEPTIONV3_DATASET,
 )
+from main.Models import (
+    BarlowTwinsAuthenticityPredictor,
+    DenseNet161AuthenticityPredictor,
+    EfficientNetB3AuthenticityPredictor,
+    InceptionV3AuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
+)
+from main.train import plot_loss_history, test_model, train_model
 from main.Utils.config import (
-    load_config,
-    get_device,
     get_data_config,
+    get_device,
     get_paths_config,
 )
-from main.train import train_model, test_model, plot_loss_history
 from torch.utils.data import DataLoader
 
 # Model registry
@@ -171,7 +171,7 @@ def experiment_one_command(args):
     print("=" * 80)
     print("STARTING EXPERIMENT ONE")
     print("=" * 80)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  - Models: {args.models if args.models else 'all'}")
     print(f"  - Run training: {args.train}")
     print(f"  - Run pruning: {args.prune}")
@@ -182,7 +182,7 @@ def experiment_one_command(args):
     print("=" * 80)
 
     # Run experiment
-    results = run_experiment_one_complete(
+    run_experiment_one_complete(
         models_to_process=args.models,
         run_training=args.train,
         run_pruning=args.prune,
@@ -203,7 +203,7 @@ def experiment_two_command(args):
     print("=" * 80)
     print("STARTING EXPERIMENT TWO")
     print("=" * 80)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  - Models: {args.models if args.models else 'all'}")
     print(f"  - XAI Methods: {args.xai_methods}")
     print(f"  - Variants: {args.variants}")
@@ -262,7 +262,7 @@ def experiment_three_command(args):
     print("=" * 80)
     print("STARTING EXPERIMENT THREE")
     print("=" * 80)
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  - Models: {args.models if args.models else 'all'}")
     print(f"  - Strategy: {args.strategy}")
     print(f"  - Train: {args.train}")
@@ -288,6 +288,37 @@ def experiment_three_command(args):
 
     print("=" * 80)
     print("EXPERIMENT THREE COMPLETE")
+    print("=" * 80)
+
+
+def descriptive_qa_command(args: argparse.Namespace) -> None:
+    """Execute descriptive Quality vs Authenticity analysis command."""
+    from main.descriptive_analysis import (
+        run_descriptive_analysis,
+    )
+
+    print("=" * 80)
+    print("STARTING QUALITY VS AUTHENTICITY DESCRIPTIVE ANALYSIS")
+    print("=" * 80)
+    print("Configuration:")
+    print(f"  - Top K: {args.top_k}")
+    out_label = (
+        args.output_dir if args.output_dir else "Default (Outputs/Descriptive_analysis)"
+    )
+    print(f"  - Output Dir: {out_label}")
+    print("=" * 80)
+
+    dataset_path = Path(args.dataset_dir) if args.dataset_dir else None
+    output_path = Path(args.output_dir) if args.output_dir else None
+
+    run_descriptive_analysis(
+        dataset_dir=dataset_path,
+        output_dir=output_path,
+        top_k=args.top_k,
+    )
+
+    print("=" * 80)
+    print("QUALITY VS AUTHENTICITY ANALYSIS COMPLETE")
     print("=" * 80)
 
 
@@ -532,6 +563,30 @@ def main():
     # the --strategy argument; passing --heatmaps in combination with
     # --strategy bagging will produce bagging heatmaps, etc.
 
+    # Descriptive Quality vs Authenticity parser
+    qa_parser = subparsers.add_parser(
+        "descriptive-qa",
+        help="Run Quality vs Authenticity decile and dissociation analysis",
+    )
+    qa_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=20,
+        help="Number of extreme dissociation cases to extract per direction (default: 20)",
+    )
+    qa_parser.add_argument(
+        "--dataset-dir",
+        type=str,
+        default=None,
+        help="Path to AIGCIQA2023 dataset directory (default: canonical location)",
+    )
+    qa_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: Outputs/Descriptive_analysis)",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -545,6 +600,8 @@ def main():
         experiment_two_command(args)
     elif args.command == "experiment-three":
         experiment_three_command(args)
+    elif args.command == "descriptive-qa":
+        descriptive_qa_command(args)
     else:
         parser.print_help()
 
