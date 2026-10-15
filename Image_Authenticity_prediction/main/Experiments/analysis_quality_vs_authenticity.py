@@ -107,13 +107,20 @@ def compute_standardized_discrepancy(df: pd.DataFrame) -> pd.DataFrame:
     return df_s
 
 
-def compute_joint_decile_contingency(df: pd.DataFrame) -> pd.DataFrame:
+def compute_joint_decile_contingency(
+    df: pd.DataFrame,
+    bin_strategy: str = "quantile",
+) -> pd.DataFrame:
     """Compute 10x10 joint contingency cross-tabulation matrix."""
     df_c = df.copy()
     if "authenticity_decile" not in df_c.columns:
-        df_c = compute_deciles(df_c, "Authenticity", 10, prefix="A")
+        df_c = compute_deciles(
+            df_c, "Authenticity", 10, prefix="A", bin_strategy=bin_strategy
+        )
     if "quality_decile" not in df_c.columns:
-        df_c = compute_deciles(df_c, "Quality", 10, prefix="Q")
+        df_c = compute_deciles(
+            df_c, "Quality", 10, prefix="Q", bin_strategy=bin_strategy
+        )
     return pd.crosstab(
         df_c["authenticity_decile"], df_c["quality_decile"], dropna=False
     )
@@ -124,14 +131,39 @@ def compute_deciles(
     score_col: str,
     num_bins: int = 10,
     prefix: str | None = None,
+    bin_strategy: str = "quantile",
 ) -> pd.DataFrame:
-    """Add equal-frequency quantile decile column (e.g. A1..A10 or Q1..Q10)."""
+    """Add equal-frequency quantile decile or equal-width bin column (e.g. A1..A10 or Q1..Q10).
+
+    Args:
+        df: Input DataFrame containing score_col.
+        score_col: Column name to discretize into bins.
+        num_bins: Number of bins (default: 10).
+        prefix: Optional prefix for bin labels (defaults to first letter of score_col).
+        bin_strategy: Discretization method, either 'quantile' (equal-frequency)
+            or 'equal_width' (equal-interval). Defaults to 'quantile'.
+
+    Returns:
+        DataFrame with an added decile/bin category column.
+
+    Raises:
+        ValueError: If bin_strategy is not 'quantile' or 'equal_width'.
+    """
     df_out = df.copy()
     p = prefix or score_col[0].upper()
     labels = [f"{p}{i + 1}" for i in range(num_bins)]
-    df_out[f"{score_col.lower()}_decile"] = pd.qcut(
-        df_out[score_col], q=num_bins, labels=labels, duplicates="drop"
-    )
+    if bin_strategy == "quantile":
+        df_out[f"{score_col.lower()}_decile"] = pd.qcut(
+            df_out[score_col], q=num_bins, labels=labels, duplicates="drop"
+        )
+    elif bin_strategy == "equal_width":
+        df_out[f"{score_col.lower()}_decile"] = pd.cut(
+            df_out[score_col], bins=num_bins, labels=labels, include_lowest=True
+        )
+    else:
+        raise ValueError(
+            f"Unsupported bin_strategy: '{bin_strategy}'. Must be 'quantile' or 'equal_width'."
+        )
     return df_out
 
 
@@ -214,11 +246,14 @@ def extract_top_k_dissociations(
 def extract_boundary_dissociations(
     df: pd.DataFrame,
     top_n: int = 20,
+    bin_strategy: str = "quantile",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Extract highest-Q items in A1 and lowest-Q items in A10."""
     df_c = df.copy()
     if "authenticity_decile" not in df_c.columns:
-        df_c = compute_deciles(df_c, "Authenticity", 10, prefix="A")
+        df_c = compute_deciles(
+            df_c, "Authenticity", 10, prefix="A", bin_strategy=bin_strategy
+        )
 
     a1_top_q = (
         df_c[df_c["authenticity_decile"] == "A1"]
@@ -298,6 +333,7 @@ def _draw_boxplot_panel(
     title: str,
     xlabel: str,
     ylabel: str,
+    median_label: str = "Decile Median",
 ) -> None:
     """Draw pastel decile boxplot with jittered strip points and median trend."""
     sns.boxplot(
@@ -335,7 +371,7 @@ def _draw_boxplot_panel(
         linewidth=1.8,
         marker="o",
         markersize=5.0,
-        label="Decile Median",
+        label=median_label,
         zorder=4,
     )
 
@@ -452,17 +488,29 @@ def _draw_scatter_panel(
 def plot_condensed_6panel(
     cohort_data: dict[str, dict],
     output_path: Path,
+    bin_strategy: str = "quantile",
 ) -> None:
     """Generate 3x2 condensed figure (Rows: Kept, Excluded, Combined)."""
     _setup_plot_theme()
     fig, axes = plt.subplots(3, 2, figsize=(15, 18), dpi=300)
 
     panel_letters = [("A", "B"), ("C", "D"), ("E", "F")]
+    bin_type_name = "Decile" if bin_strategy == "quantile" else "Equal-Width Bin"
+    xlabel_text = (
+        "Authenticity Deciles (A1 = Lowest, A10 = Highest)"
+        if bin_strategy == "quantile"
+        else "Authenticity Bins (Equal-Width, A1 = Lowest, A10 = Highest)"
+    )
     for row_idx, cohort in enumerate(["Kept", "Excluded", "Combined"]):
         data = cohort_data[cohort]
         df = data["df"]
         style = COHORT_STYLES[cohort]
         let_box, let_scat = panel_letters[row_idx]
+
+        median_label = (
+            "Bin Median" if bin_strategy == "equal_width" else "Decile Median"
+        )
+        scat_suffix = " (Equal-Width)" if bin_strategy == "equal_width" else ""
 
         _draw_boxplot_panel(
             ax=axes[row_idx, 0],
@@ -470,9 +518,10 @@ def plot_condensed_6panel(
             bin_col="authenticity_decile",
             target_col="Quality",
             style=style,
-            title=f"{let_box}: {style['label']} — Quality by Authenticity Decile (N = {len(df):,})",
-            xlabel="Authenticity Deciles (A1 = Lowest, A10 = Highest)",
+            title=f"{let_box}: {style['label']} — Quality by Authenticity {bin_type_name} (N = {len(df):,})",
+            xlabel=xlabel_text,
             ylabel="Quality Rating (MOS)",
+            median_label=median_label,
         )
         _draw_scatter_panel(
             ax=axes[row_idx, 1],
@@ -481,11 +530,14 @@ def plot_condensed_6panel(
             top_high_a=data["top_a"],
             corr=data["corr"],
             style=style,
-            title=f"{let_scat}: {style['label']} — Quality vs. Authenticity",
+            title=f"{let_scat}: {style['label']} — Quality vs. Authenticity{scat_suffix}",
         )
 
+    sup_strategy = (
+        "Equal-Width Bins" if bin_strategy == "equal_width" else "Quantile Deciles"
+    )
     fig.suptitle(
-        "Quality vs. Authenticity Distributions and Dissociations (Kept, Excluded, and Combined)",
+        f"Quality vs. Authenticity Distributions and Dissociations ({sup_strategy})",
         fontsize=15,
         fontweight="bold",
         y=0.99,
@@ -499,12 +551,26 @@ def plot_condensed_6panel(
 def plot_bidirectional_9panel(
     cohort_data: dict[str, dict],
     output_path: Path,
+    bin_strategy: str = "quantile",
 ) -> None:
     """Generate 3x3 bidirectional figure (Rows: Kept, Excluded, Combined)."""
     _setup_plot_theme()
     fig, axes = plt.subplots(3, 3, figsize=(22, 18), dpi=300)
 
     panel_letters = [("A", "B", "C"), ("D", "E", "F"), ("G", "H", "I")]
+    bin_type_name = "Decile" if bin_strategy == "quantile" else "Equal-Width Bin"
+    median_label = "Bin Median" if bin_strategy == "equal_width" else "Decile Median"
+    scat_suffix = " (Equal-Width)" if bin_strategy == "equal_width" else ""
+    a_label = (
+        "Authenticity Deciles (A1 = Lowest, A10 = Highest)"
+        if bin_strategy == "quantile"
+        else "Authenticity Bins (Equal-Width, A1 = Lowest, A10 = Highest)"
+    )
+    q_label = (
+        "Quality Deciles (Q1 = Lowest, Q10 = Highest)"
+        if bin_strategy == "quantile"
+        else "Quality Bins (Equal-Width, Q1 = Lowest, Q10 = Highest)"
+    )
     for row_idx, cohort in enumerate(["Kept", "Excluded", "Combined"]):
         data = cohort_data[cohort]
         df = data["df"]
@@ -517,9 +583,10 @@ def plot_bidirectional_9panel(
             bin_col="authenticity_decile",
             target_col="Quality",
             style=style,
-            title=f"{let_aq}: {cohort} — Quality by Authenticity Decile (N = {len(df):,})",
-            xlabel="Authenticity Deciles (A1 = Lowest, A10 = Highest)",
+            title=f"{let_aq}: {cohort} — Quality by Authenticity {bin_type_name} (N = {len(df):,})",
+            xlabel=a_label,
             ylabel="Quality Rating (MOS)",
+            median_label=median_label,
         )
         _draw_boxplot_panel(
             ax=axes[row_idx, 1],
@@ -527,9 +594,10 @@ def plot_bidirectional_9panel(
             bin_col="quality_decile",
             target_col="Authenticity",
             style=style,
-            title=f"{let_qa}: {cohort} — Authenticity by Quality Decile (N = {len(df):,})",
-            xlabel="Quality Deciles (Q1 = Lowest, Q10 = Highest)",
+            title=f"{let_qa}: {cohort} — Authenticity by Quality {bin_type_name} (N = {len(df):,})",
+            xlabel=q_label,
             ylabel="Authenticity Rating (MOS)",
+            median_label=median_label,
         )
         _draw_scatter_panel(
             ax=axes[row_idx, 2],
@@ -538,11 +606,12 @@ def plot_bidirectional_9panel(
             top_high_a=data["top_a"],
             corr=data["corr"],
             style=style,
-            title=f"{let_scat}: {cohort} — Quality vs. Authenticity Scatter",
+            title=f"{let_scat}: {cohort} — Quality vs. Authenticity Scatter{scat_suffix}",
         )
 
+    sup_strategy = "Equal-Width Bin" if bin_strategy == "equal_width" else "Decile"
     fig.suptitle(
-        "Bidirectional Decile Analysis Across Kept, Excluded, and Combined Cohorts",
+        f"Bidirectional {sup_strategy} Analysis Across Kept, Excluded, and Combined Cohorts",
         fontsize=16,
         fontweight="bold",
         y=0.99,
@@ -556,58 +625,76 @@ def plot_bidirectional_9panel(
 def plot_comparative_joint_heatmaps(
     cohort_data: dict[str, dict],
     output_path: Path,
+    bin_strategy: str = "quantile",
 ) -> None:
-    """Plot 1x3 side-by-side 10x10 joint contingency heatmaps (X=Authenticity, Y=Quality)."""
+    """Plot 1x3 side-by-side 10x10 joint contingency heatmaps in percentages (X=Authenticity, Y=Quality)."""
     _setup_plot_theme()
-    fig, axes = plt.subplots(1, 3, figsize=(24, 7.5), dpi=300)
+    fig, axes = plt.subplots(1, 3, figsize=(26, 7.5), dpi=300)
 
     panel_letters = ["A", "B", "C"]
+    a_label = (
+        "Authenticity Deciles (Quantile, A1 = Lowest, A10 = Highest)"
+        if bin_strategy == "quantile"
+        else "Authenticity Bins (Equal-Width, A1 = Lowest, A10 = Highest)"
+    )
+    q_label = (
+        "Quality Deciles (Quantile, Q1 = Lowest, Q10 = Highest)"
+        if bin_strategy == "quantile"
+        else "Quality Bins (Equal-Width, Q1 = Lowest, Q10 = Highest)"
+    )
     for col_idx, cohort in enumerate(["Kept", "Excluded", "Combined"]):
         data = cohort_data[cohort]
         ct = data["joint_ct"]
         style = COHORT_STYLES[cohort]
 
         # Transpose so X = Authenticity (A1..A10) and Y = Quality (Q1..Q10), with Q10 at top
-        grid = ct.T.iloc[::-1]
-        vmax = int(grid.to_numpy().max())
+        # Convert raw counts to percentages summing to 100% across all 100 cells
+        total_stimuli = ct.to_numpy().sum()
+        grid = (ct.T.iloc[::-1] / total_stimuli) * 100
+        vmax = float(grid.to_numpy().max())
+        annot_labels = grid.map(lambda v: "0%" if np.isclose(v, 0.0) else f"{v:.2f}%")
 
         sns.heatmap(
             grid,
-            annot=True,
-            fmt="d",
+            annot=annot_labels,
+            fmt="",
             cmap=style["cmap"],
             norm=PowerNorm(gamma=0.65, vmin=0, vmax=vmax),
-            annot_kws={"fontsize": 9.5, "fontweight": "bold"},
-            cbar_kws={"label": "Number of Stimuli"},
+            annot_kws={"fontsize": 7.8, "fontweight": "bold"},
+            cbar_kws={"label": "Percentage of Stimuli (%)"},
             linewidths=0.6,
             linecolor="#dcdcdc",
             ax=axes[col_idx],
         )
+        strategy_label = (
+            "Equal-Width Bins" if bin_strategy == "equal_width" else "Quantile Deciles"
+        )
         axes[col_idx].set_title(
-            f"{panel_letters[col_idx]}: {style['label']} (N = {len(data['df']):,}, r = {data['corr']['pearson_r']:.3f})",
+            f"{panel_letters[col_idx]}: {style['label']} — {strategy_label} (N = {len(data['df']):,}, r = {data['corr']['pearson_r']:.3f})",
             fontsize=11.5,
             fontweight="bold",
             pad=10,
         )
         axes[col_idx].set_xlabel(
-            "Authenticity Deciles (A1 = Lowest, A10 = Highest)",
+            a_label,
             fontsize=10,
             labelpad=7,
         )
         axes[col_idx].set_ylabel(
-            "Quality Deciles (Q1 = Lowest, Q10 = Highest)",
+            q_label,
             fontsize=10,
             labelpad=7,
         )
         axes[col_idx].tick_params(axis="y", rotation=0)
 
+    matrix_type = "Equal-Width" if bin_strategy == "equal_width" else "Decile"
     fig.suptitle(
-        "10×10 Joint Decile Contingency Matrices: Quality (Y) vs. Authenticity (X)",
+        f"10×10 Joint {matrix_type} Distribution Matrices (% of Stimuli): Quality (Y) vs. Authenticity (X)",
         fontsize=15,
         fontweight="bold",
         y=0.99,
     )
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+    fig.tight_layout(rect=[0.01, 0.0, 0.99, 0.95], w_pad=6.0)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path)
     plt.close(fig)
@@ -622,6 +709,7 @@ def run_descriptive_analysis(
     dataset_dir: Path | None = None,
     output_dir: Path | None = None,
     top_k: int = 20,
+    bin_strategy: str = "quantile",
 ) -> dict:
     """Execute Quality vs Authenticity analysis across Kept, Excluded, and Combined cohorts."""
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -635,11 +723,16 @@ def run_descriptive_analysis(
     datasets = load_datasets(dataset_dir)
     cohort_data: dict[str, dict] = {}
 
+    suffix = "_equal_width" if bin_strategy == "equal_width" else ""
+    table_bin_tag = "bins_equal_width" if bin_strategy == "equal_width" else "deciles"
+
     for cohort, df in datasets.items():
         prefix_slug = "discarded" if cohort == "Excluded" else cohort.lower()
 
-        df = compute_deciles(df, "Authenticity", 10, prefix="A")
-        df = compute_deciles(df, "Quality", 10, prefix="Q")
+        df = compute_deciles(
+            df, "Authenticity", 10, prefix="A", bin_strategy=bin_strategy
+        )
+        df = compute_deciles(df, "Quality", 10, prefix="Q", bin_strategy=bin_strategy)
 
         corr = compute_correlation_metrics(df)
         stats_a_q = compute_decile_statistics(df, "authenticity_decile", "Quality")
@@ -649,17 +742,25 @@ def run_descriptive_analysis(
         )
 
         top_q, top_a = extract_top_k_dissociations(df, top_k=top_k)
-        a1_top_q, a10_low_q = extract_boundary_dissociations(df, top_n=top_k)
+        a1_top_q, a10_low_q = extract_boundary_dissociations(
+            df, top_n=top_k, bin_strategy=bin_strategy
+        )
 
         # Save CSV tables
-        stats_a_q.to_csv(tables_dir / f"{prefix_slug}_quality_by_auth_deciles.csv")
-        stats_q_a.to_csv(tables_dir / f"{prefix_slug}_auth_by_quality_deciles.csv")
-        joint_ct.to_csv(tables_dir / f"{prefix_slug}_joint_10x10_deciles.csv")
+        stats_a_q.to_csv(
+            tables_dir / f"{prefix_slug}_quality_by_auth_{table_bin_tag}.csv"
+        )
+        stats_q_a.to_csv(
+            tables_dir / f"{prefix_slug}_auth_by_quality_{table_bin_tag}.csv"
+        )
+        joint_ct.to_csv(tables_dir / f"{prefix_slug}_joint_10x10_{table_bin_tag}.csv")
         pd.concat([top_q, top_a], ignore_index=True).to_csv(
-            tables_dir / f"{prefix_slug}_top_{top_k}_dissociations.csv", index=False
+            tables_dir / f"{prefix_slug}_top_{top_k}_dissociations{suffix}.csv",
+            index=False,
         )
         pd.concat([a1_top_q, a10_low_q], ignore_index=True).to_csv(
-            tables_dir / f"{prefix_slug}_boundary_dissociations.csv", index=False
+            tables_dir / f"{prefix_slug}_boundary_dissociations{suffix}.csv",
+            index=False,
         )
 
         cohort_data[cohort] = {
@@ -674,21 +775,24 @@ def run_descriptive_analysis(
         cohort_data["Kept"]["df"], cohort_data["Excluded"]["df"]
     )
     pd.DataFrame([cohort_comp]).to_csv(
-        tables_dir / "cohort_discrepancy_comparison.csv", index=False
+        tables_dir / f"cohort_discrepancy_comparison{suffix}.csv", index=False
     )
 
-    logger.info("Generating multi-panel figures...")
+    logger.info("Generating multi-panel figures (%s)...", bin_strategy)
     plot_condensed_6panel(
         cohort_data,
-        output_path=plots_panel_dir / "figure_qa_condensed_4panel.png",
+        output_path=plots_panel_dir / f"figure_qa_condensed_4panel{suffix}.png",
+        bin_strategy=bin_strategy,
     )
     plot_bidirectional_9panel(
         cohort_data,
-        output_path=plots_panel_dir / "figure_qa_bidirectional_6panel.png",
+        output_path=plots_panel_dir / f"figure_qa_bidirectional_6panel{suffix}.png",
+        bin_strategy=bin_strategy,
     )
     plot_comparative_joint_heatmaps(
         cohort_data,
-        output_path=plots_panel_dir / "figure_joint_10x10_heatmaps.png",
+        output_path=plots_panel_dir / f"figure_joint_10x10_heatmaps{suffix}.png",
+        bin_strategy=bin_strategy,
     )
 
     logger.info("Descriptive analysis complete! Outputs saved to %s", out_base)
@@ -698,6 +802,7 @@ def run_descriptive_analysis(
         "combined_corr": cohort_data["Combined"]["corr"],
         "cohort_comparison": cohort_comp,
         "output_directory": str(out_base),
+        "bin_strategy": bin_strategy,
     }
 
 
@@ -709,14 +814,28 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--dataset-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--bin-strategy",
+        type=str,
+        choices=["quantile", "equal_width", "both"],
+        default="both",
+        help="Binning strategy: 'quantile' (equal-frequency), 'equal_width' (equal-interval), or 'both' (default: both)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    run_descriptive_analysis(
-        dataset_dir=args.dataset_dir,
-        output_dir=args.output_dir,
-        top_k=args.top_k,
+    strategies = (
+        ["quantile", "equal_width"]
+        if args.bin_strategy == "both"
+        else [args.bin_strategy]
     )
+    for strategy in strategies:
+        run_descriptive_analysis(
+            dataset_dir=args.dataset_dir,
+            output_dir=args.output_dir,
+            top_k=args.top_k,
+            bin_strategy=strategy,
+        )
 
 
 if __name__ == "__main__":

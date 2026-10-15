@@ -302,6 +302,7 @@ def descriptive_qa_command(args: argparse.Namespace) -> None:
     print("=" * 80)
     print("Configuration:")
     print(f"  - Top K: {args.top_k}")
+    print(f"  - Bin Strategy: {args.bin_strategy}")
     out_label = (
         args.output_dir if args.output_dir else "Default (Outputs/Descriptive_analysis)"
     )
@@ -311,11 +312,19 @@ def descriptive_qa_command(args: argparse.Namespace) -> None:
     dataset_path = Path(args.dataset_dir) if args.dataset_dir else None
     output_path = Path(args.output_dir) if args.output_dir else None
 
-    run_descriptive_analysis(
-        dataset_dir=dataset_path,
-        output_dir=output_path,
-        top_k=args.top_k,
+    strategies = (
+        ["quantile", "equal_width"]
+        if args.bin_strategy == "both"
+        else [args.bin_strategy]
     )
+    for strategy in strategies:
+        print(f"\n--- Running descriptive analysis ({strategy}) ---")
+        run_descriptive_analysis(
+            dataset_dir=dataset_path,
+            output_dir=output_path,
+            top_k=args.top_k,
+            bin_strategy=strategy,
+        )
 
     print("=" * 80)
     print("QUALITY VS AUTHENTICITY ANALYSIS COMPLETE")
@@ -585,6 +594,13 @@ def main():
         type=str,
         default=None,
         help="Output directory (default: Outputs/Descriptive_analysis)",
+    )
+    qa_parser.add_argument(
+        "--bin-strategy",
+        type=str,
+        choices=["quantile", "equal_width", "both"],
+        default="both",
+        help="Binning strategy: 'quantile' (equal-frequency), 'equal_width' (equal-interval), or 'both' (default: both)",
     )
 
     # Parse arguments

@@ -145,3 +145,38 @@ def test_run_descriptive_analysis_pipeline(tmp_path: Path) -> None:
     assert (plots_panel_dir / "figure_qa_condensed_4panel.png").exists()
     assert (plots_panel_dir / "figure_qa_bidirectional_6panel.png").exists()
     assert (plots_panel_dir / "figure_joint_10x10_heatmaps.png").exists()
+
+
+def test_equal_width_binning_and_pipeline(tmp_path: Path) -> None:
+    """Verify equal-width binning, pipeline generation, and 100% contingency sum."""
+    df_kept = load_kept_dataset()
+    df_bins = compute_deciles(
+        df_kept, "Authenticity", num_bins=10, bin_strategy="equal_width"
+    )
+    assert "authenticity_decile" in df_bins.columns
+    assert df_bins["authenticity_decile"].isna().sum() == 0
+
+    counts = df_bins["authenticity_decile"].value_counts().sort_index()
+    assert len(counts) == 10
+    assert counts.sum() == 1368
+    # In equal-width binning, tails have significantly fewer items than central bins
+    assert counts["A1"] < 50
+    assert counts["A10"] < 50
+    assert counts["A6"] > 200
+
+    res = run_descriptive_analysis(
+        output_dir=tmp_path, top_k=5, bin_strategy="equal_width"
+    )
+    assert res["bin_strategy"] == "equal_width"
+
+    # Verify equal-width table filenames
+    tables_dir = tmp_path / "Tables"
+    assert (tables_dir / "kept_quality_by_auth_bins_equal_width.csv").exists()
+    assert (tables_dir / "kept_joint_10x10_bins_equal_width.csv").exists()
+    assert (tables_dir / "cohort_discrepancy_comparison_equal_width.csv").exists()
+
+    # Verify equal-width plot filenames
+    plots_panel_dir = tmp_path / "Plots" / "Panels"
+    assert (plots_panel_dir / "figure_qa_condensed_4panel_equal_width.png").exists()
+    assert (plots_panel_dir / "figure_qa_bidirectional_6panel_equal_width.png").exists()
+    assert (plots_panel_dir / "figure_joint_10x10_heatmaps_equal_width.png").exists()
