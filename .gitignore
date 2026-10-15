@@ -78,6 +78,10 @@ old_files
 **/Dataset/**/Single_scores/
 **/Dataset/**/Single_scores/**
 
+# AIGCIQA2023 raw data
+Image_Authenticity_prediction/Dataset/AIGCIQA2023/AIGCIQA2023.json
+Image_Authenticity_prediction/Dataset/AIGCIQA2023/DATA/
+
 
 # Logs and temporary files
 *.log
