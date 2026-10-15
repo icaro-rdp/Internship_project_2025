@@ -39,6 +39,10 @@ ENV/
 #Output directories
 */main/Experiments/Outputs/*
 Image_Authenticity_prediction/main/Experiments/Outputs
+Outputs/benchmark*.json
+Outputs/benchmark*/
+scripts/benchmarks/
+
 
 #Test 
 # */main/Experiments/test/*
