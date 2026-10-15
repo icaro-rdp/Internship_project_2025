@@ -1,23 +1,21 @@
-import torch
-from torch.utils.data import Dataset
-from torchvision import transforms
-import pandas as pd
-from PIL import Image
 import os
-from pathlib import Path
-import numpy as np
 import random
-from torch.utils.data import DataLoader, random_split, Subset
-from typing import Optional, Tuple, Callable, Dict, Union
+from collections.abc import Callable
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from PIL import Image
 from torch import Tensor
+from torch.utils.data import Dataset, Subset
+from torchvision import transforms
 
 
 class ImageAuthenticityDataset(Dataset):
     """Dataset for image quality assessment."""
 
-    def __init__(
-        self, csv_file_name: str, transform: Optional[Callable] = None
-    ) -> None:
+    def __init__(self, csv_file_name: str, transform: Callable | None = None) -> None:
         """
         Args:
             csv_file_name (str): Name of the CSV file with annotations.
@@ -44,13 +42,13 @@ class ImageAuthenticityDataset(Dataset):
             )
 
         self.data: pd.DataFrame = pd.read_csv(str(self.csv_file))
-        self.transform: Optional[Callable] = transform
+        self.transform: Callable | None = transform
 
     def __len__(self) -> int:
         """Returns the number of samples in the dataset."""
         return len(self.data)
 
-    def __getitem__(self, idx: int) -> Tuple[Tensor, Tensor]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         """
         Retrieves an image and its labels by index.
 
@@ -112,6 +110,18 @@ DENSENET_TRANSFORM: transforms.Compose = transforms.Compose(
     ]
 )
 
+CLIP_TRANSFORM: transforms.Compose = transforms.Compose(
+    [
+        transforms.Resize((256, 256)),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.48145466, 0.4578275, 0.40821073],
+            std=[0.26862954, 0.26130258, 0.27577711],
+        ),
+    ]
+)
+
 
 ANNOTATION_FILE: str = "real_images_annotations.csv"
 BATCH_SIZE: int = 64
@@ -125,6 +135,9 @@ imageNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(
 )
 denseNet_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(
     csv_file_name=ANNOTATION_FILE, transform=DENSENET_TRANSFORM
+)
+clip_dataset: ImageAuthenticityDataset = ImageAuthenticityDataset(
+    csv_file_name=ANNOTATION_FILE, transform=CLIP_TRANSFORM
 )
 
 
@@ -146,11 +159,12 @@ VAL_FRAC = 0.1
 TEST_FRAC = 0.2
 
 total_size: int = len(imageNet_dataset)
-if total_size != len(denseNet_dataset):
-    # The two datasets are expected to be created from the same CSV; if they
+if total_size != len(denseNet_dataset) or total_size != len(clip_dataset):
+    # The datasets are expected to be created from the same CSV; if they
     # differ in size something is wrong — fail early with a helpful message.
     raise ValueError(
-        f"Dataset size mismatch: imageNet_dataset={len(imageNet_dataset)} vs denseNet_dataset={len(denseNet_dataset)}"
+        f"Dataset size mismatch: imageNet_dataset={len(imageNet_dataset)}, "
+        f"denseNet_dataset={len(denseNet_dataset)}, clip_dataset={len(clip_dataset)}"
     )
 
 # Calculate sizes to match Experiment 1 logic exactly
@@ -176,19 +190,29 @@ densenet_train_ds = Subset(denseNet_dataset, train_idx)
 densenet_val_ds = Subset(denseNet_dataset, val_idx)
 densenet_test_ds = Subset(denseNet_dataset, test_idx)
 
-IMAGENET_DATASET: Dict[str, Dataset] = {
+clip_train_ds = Subset(clip_dataset, train_idx)
+clip_val_ds = Subset(clip_dataset, val_idx)
+clip_test_ds = Subset(clip_dataset, test_idx)
+
+IMAGENET_DATASET: dict[str, Dataset] = {
     "train": imagenet_train_ds,
     "val": imagenet_val_ds,
     "test": imagenet_test_ds,
 }
 
-DENSENET_DATASET: Dict[str, Dataset] = {
+DENSENET_DATASET: dict[str, Dataset] = {
     "train": densenet_train_ds,
     "val": densenet_val_ds,
     "test": densenet_test_ds,
 }
 
-INCEPTIONV3_DATASET: Dict[str, Dataset] = {
+CLIP_DATASET: dict[str, Dataset] = {
+    "train": clip_train_ds,
+    "val": clip_val_ds,
+    "test": clip_test_ds,
+}
+
+INCEPTIONV3_DATASET: dict[str, Dataset] = {
     "train": densenet_train_ds,
     "val": densenet_val_ds,
     "test": densenet_test_ds,

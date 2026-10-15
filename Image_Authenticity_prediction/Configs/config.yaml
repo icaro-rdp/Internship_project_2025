@@ -105,6 +105,9 @@ models:
   inceptionv3:
     target_layer: null # Cannot be pruned with current method
     input_size: 299
+  clip_vit_b16:
+    target_layer: "visual_projection"
+    input_size: 224
 
 # =============================================================================
 # Visualization Settings

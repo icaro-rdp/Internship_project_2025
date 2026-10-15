@@ -22,7 +22,7 @@ The pipeline supports **10 variants per model** and two pruning strategies (**gr
 
 ### Supported Model Architectures
 
-The experiment supports 6 state-of-the-art CNN architectures:
+The experiment supports 7 vision architectures (6 CNNs and 1 Vision Transformer):
 
 | Model | Input Size | Target Layer for Pruning | Dataset |
 |-------|-----------|-------------------------|---------|
@@ -32,8 +32,9 @@ The experiment supports 6 state-of-the-art CNN architectures:
 | **DenseNet161** | 300×300 | `features.denseblock4.denselayer24.conv2` | DenseNet-specific |
 | **EfficientNetB3** | 224×224 | `features.8.0` (last conv2d) | ImageNet |
 | **BarlowTwins** | 224×224 | `features.7.2.conv3` (before avgpool) | ImageNet |
+| **CLIP ViT-B/16** | 224×224 | `visual_projection` (512-d unit row) | CLIP (ImageNet crop geometry) |
 
-**Note:** Each model is a **binary classifier** predicting image authenticity scores (AI-generated vs. Real).
+**Note:** Each model predicts continuous scalar authenticity scores matching human Mean Opinion Scores (MOS).
 
 ---
 

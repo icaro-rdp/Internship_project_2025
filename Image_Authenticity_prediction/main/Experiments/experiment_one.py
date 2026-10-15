@@ -1,50 +1,49 @@
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-import sys
-from pathlib import Path
-import numpy as np
-import gc
-import time
+import json
 import re
+import sys
+import time
 import traceback
 from pathlib import Path
-import json
 
+import numpy as np
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, Subset
 
 # Add main package to path - go up from  Experiments/ -> main/ -> Image_Authenticity_prediction/
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import models
+from main.data import (
+    CLIP_DATASET,
+    DENSENET_DATASET,
+    IMAGENET_DATASET,
+    clip_dataset,
+    denseNet_dataset,
+    imageNet_dataset,
+)
 from main.Models import (
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
+    BarlowTwinsAuthenticityPredictor,
+    CLIPViTAuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
 )
+from main.train import plot_loss_history, test_model, train_model
 
 # Import utilities
 from main.Utils import FeatureMapsPruner
-from main.Utils.pruning import check_pruning_statistics
-from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
-from main.Utils.logger import info, warn, error, debug
+from main.Utils.cleanup import cleanup_model_and_data, clear_gpu_memory
 from main.Utils.config import (
-    get_training_config,
-    get_pruning_config,
     get_data_config,
-    get_model_config,
+    get_pruning_config,
+    get_training_config,
 )
-from main.train import train_model, test_model, plot_loss_history
-from main.data import (
-    IMAGENET_DATASET,
-    DENSENET_DATASET,
-    imageNet_dataset,
-    denseNet_dataset,
-)
-
+from main.Utils.logger import debug, error, info, warn
+from main.Utils.pruning import check_pruning_statistics
 
 # ============================================================================
 # Configuration
@@ -55,24 +54,28 @@ MODEL_REGISTRY = {
     "vgg16": {
         "class": VGG16AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
+        "backbone_dataset": imageNet_dataset,
         "target_layer": "features.28",  # Last conv layer
         "input_size": 224,
     },
     "vgg19": {
         "class": VGG19AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
+        "backbone_dataset": imageNet_dataset,
         "target_layer": "features.34",  # Last conv layer
         "input_size": 224,
     },
     "resnet152": {
         "class": ResNet152AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
+        "backbone_dataset": imageNet_dataset,
         "target_layer": "features.7.2.conv3",  # Last residual block
         "input_size": 224,
     },
     "densenet161": {
         "class": DenseNet161AuthenticityPredictor,
         "dataset": DENSENET_DATASET,
+        "backbone_dataset": denseNet_dataset,
         "target_layer": "features.denseblock4.denselayer24.conv2",  # Last dense block conv layer
         "input_size": 300,
     },
@@ -85,13 +88,22 @@ MODEL_REGISTRY = {
     "efficientnetb3": {
         "class": EfficientNetB3AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
+        "backbone_dataset": imageNet_dataset,
         "target_layer": "features.8.0",  # Last conv2d of the last block
         "input_size": 224,
     },
     "barlowtwins": {
         "class": BarlowTwinsAuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
+        "backbone_dataset": imageNet_dataset,
         "target_layer": "features.7.2.conv3",  # Last layer before avgpool
+        "input_size": 224,
+    },
+    "clip_vit_b16": {
+        "class": CLIPViTAuthenticityPredictor,
+        "dataset": CLIP_DATASET,
+        "backbone_dataset": clip_dataset,
+        "target_layer": "visual_projection",  # Visual projection layer for unit pruning
         "input_size": 224,
     },
 }
@@ -123,7 +135,11 @@ TEST_RESULTS_DIR = OUTPUT_DIR / "Test_Results"
 
 
 def experiment_1a_train_all_models(
-    models_to_train=None, save_plots=True, verbose=True, global_test_indices=None
+    models_to_train=None,
+    save_plots=True,
+    verbose=True,
+    global_test_indices=None,
+    num_variants=None,
 ):
     """
     Experiment 1A: Train all model architectures with early stopping.
@@ -135,6 +151,8 @@ def experiment_1a_train_all_models(
         verbose (bool): Whether to print detailed progress.
         global_test_indices (list, optional): Pre-defined global test indices.
                                               If None, creates them internally.
+        num_variants (int, optional): Number of variants per model to train.
+                                      If None, uses value from config.
 
     Returns:
         dict: Dictionary containing training results for each model.
@@ -148,8 +166,12 @@ def experiment_1a_train_all_models(
     TRAINING_PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     TRAINING_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Number of variants per model (default 10 variants)
-    variants_per_model = 10
+    # Number of variants per model
+    variants_per_model = (
+        num_variants
+        if num_variants is not None
+        else TRAINING_CONFIG.get("num_variants", 10)
+    )
 
     # Prepare a global test index set so the test split is identical across
     # all models and variants. We derive it from the imageNet_dataset length
@@ -171,6 +193,8 @@ def experiment_1a_train_all_models(
     # Select models to train
     if models_to_train is None:
         models_to_train = list(MODEL_REGISTRY.keys())
+    else:
+        models_to_train = list(models_to_train)
 
     # Results storage
     results = {}
@@ -191,15 +215,18 @@ def experiment_1a_train_all_models(
                 )
 
             # Determine the base full dataset for this model so we can re-split
-            # Use imageNet_dataset / denseNet_dataset depending on config
-            backbone_dataset = None
-            if config["dataset"] is IMAGENET_DATASET:
-                backbone_dataset = imageNet_dataset
-            elif config["dataset"] is DENSENET_DATASET:
-                backbone_dataset = denseNet_dataset
-            else:
-                # Fall back to provided split if we can't find base dataset
-                backbone_dataset = None
+            # Use imageNet_dataset / denseNet_dataset / clip_dataset depending on config
+            backbone_dataset = config.get("backbone_dataset")
+            if backbone_dataset is None:
+                if config["dataset"] is IMAGENET_DATASET:
+                    backbone_dataset = imageNet_dataset
+                elif config["dataset"] is DENSENET_DATASET:
+                    backbone_dataset = denseNet_dataset
+                elif config["dataset"] is CLIP_DATASET:
+                    backbone_dataset = clip_dataset
+                else:
+                    # Fall back to provided split if we can't find base dataset
+                    backbone_dataset = None
 
             # Train variants
             for variant_idx in range(1, variants_per_model + 1):
@@ -228,8 +255,8 @@ def experiment_1a_train_all_models(
                     pass
 
                 # Create train/val/test split for this variant by using a different seed
-                from torch.utils.data import random_split
                 import torch as _torch
+                from torch.utils.data import random_split
 
                 if backbone_dataset is not None:
                     total_size = len(backbone_dataset)
@@ -323,10 +350,18 @@ def experiment_1a_train_all_models(
 
                 # Evaluate on test set
                 info("Evaluating on test set...")
-                test_loss = test_model(
-                    best_model, test_loader, criterion, TRAINING_CONFIG["device"]
+                test_results = test_model(
+                    best_model,
+                    test_loader,
+                    criterion,
+                    TRAINING_CONFIG["device"],
+                    return_additional_metrics=True,
                 )
-                test_rmse = np.sqrt(test_loss)  # Compute RMSE from MSE
+                test_loss = test_results["mse"]
+                test_rmse = test_results["rmse"]
+                test_plcc = test_results["plcc"]
+                test_srcc = test_results["srcc"]
+                test_krcc = test_results["krcc"]
 
                 # Save model weights for this variant
                 weights_path = (
@@ -365,6 +400,9 @@ def experiment_1a_train_all_models(
                 results.setdefault(model_name, {})[f"variant{variant_idx}"] = {
                     "final_test_mse": test_loss,
                     "final_test_rmse": test_rmse,
+                    "final_test_plcc": test_plcc,
+                    "final_test_srcc": test_srcc,
+                    "final_test_krcc": test_krcc,
                     "final_val_loss": history["val_loss"][-1],
                     "best_val_loss": min(history["val_loss"]),
                     "epochs_trained": len(history["train_loss"]),
@@ -373,7 +411,11 @@ def experiment_1a_train_all_models(
                 }
 
                 info(f"✓ {model_name.upper()} variant {variant_idx} training complete!")
-                info(f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}")
+                plcc_str = f"{test_plcc:.4f}" if test_plcc is not None else "N/A"
+                srcc_str = f"{test_srcc:.4f}" if test_srcc is not None else "N/A"
+                info(
+                    f"  - Test MSE: {test_loss:.4f}, RMSE: {test_rmse:.4f}, PLCC: {plcc_str}, SRCC: {srcc_str}"
+                )
                 info(
                     f"  - Best Val Loss: {results[model_name][f'variant{variant_idx}']['best_val_loss']:.4f}"
                 )
@@ -404,6 +446,18 @@ def experiment_1a_train_all_models(
                         avg_rmse = float(
                             np.mean([v["final_test_rmse"] for _, v in variant_items])
                         )
+                        valid_plcc = [
+                            v["final_test_plcc"]
+                            for _, v in variant_items
+                            if v.get("final_test_plcc") is not None
+                        ]
+                        valid_srcc = [
+                            v["final_test_srcc"]
+                            for _, v in variant_items
+                            if v.get("final_test_srcc") is not None
+                        ]
+                        avg_plcc = float(np.mean(valid_plcc)) if valid_plcc else None
+                        avg_srcc = float(np.mean(valid_srcc)) if valid_srcc else None
 
                         # Populate model-level summary fields
                         results[model_name]["best_variant"] = best_variant
@@ -413,8 +467,16 @@ def experiment_1a_train_all_models(
                         results[model_name]["final_test_rmse"] = best_data[
                             "final_test_rmse"
                         ]
+                        results[model_name]["final_test_plcc"] = best_data.get(
+                            "final_test_plcc"
+                        )
+                        results[model_name]["final_test_srcc"] = best_data.get(
+                            "final_test_srcc"
+                        )
                         results[model_name]["avg_test_mse"] = avg_mse
                         results[model_name]["avg_test_rmse"] = avg_rmse
+                        results[model_name]["avg_test_plcc"] = avg_plcc
+                        results[model_name]["avg_test_srcc"] = avg_srcc
                         # Keep reference to the best weights file if available
                         results[model_name]["weights_path"] = best_data.get(
                             "weights_path"
@@ -480,6 +542,8 @@ def experiment_1a_train_all_models(
                         f"{model_name}_{variant_key}",
                         variant_data["final_test_mse"],
                         variant_data["final_test_rmse"],
+                        variant_data.get("final_test_plcc"),
+                        variant_data.get("final_test_srcc"),
                     )
                 )
 
@@ -490,12 +554,22 @@ def experiment_1a_train_all_models(
     info(f"Successfully trained: {successful_variants}/{total_expected} variants")
 
     if all_variants:
-        info("Variant Performance (Test Loss):")
-        info(f"{'Variant':<25} {'MSE':<10} {'RMSE':<10}")
-        info("-" * 47)
+        info("Variant Performance (Test Metrics):")
+        info(f"{'Variant':<28} {'MSE':<10} {'RMSE':<10} {'PLCC':<10} {'SRCC':<10}")
+        info("-" * 68)
         sorted_variants = sorted(all_variants, key=lambda x: x[1])  # Sort by MSE
-        for rank, (variant_name, test_mse, test_rmse) in enumerate(sorted_variants, 1):
-            info(f"{rank}. {variant_name:<22} {test_mse:<10.4f} {test_rmse:<10.4f}")
+        for rank, (
+            variant_name,
+            test_mse,
+            test_rmse,
+            plcc_val,
+            srcc_val,
+        ) in enumerate(sorted_variants, 1):
+            p_str = f"{plcc_val:.4f}" if plcc_val is not None else "N/A"
+            s_str = f"{srcc_val:.4f}" if srcc_val is not None else "N/A"
+            info(
+                f"{rank}. {variant_name:<25} {test_mse:<10.4f} {test_rmse:<10.4f} {p_str:<10} {s_str:<10}"
+            )
 
     if failed_models:
         warn(f"Failed models: {', '.join(failed_models)}")
@@ -549,7 +623,12 @@ def experiment_1b_prune_all_models(
     target_weights_dir = (
         WEIGHTS_DIR
         if (WEIGHTS_DIR is not None and WEIGHTS_DIR.exists())
-        else (Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants" / "Weights")
+        else (
+            Path(__file__).resolve().parent
+            / "Outputs"
+            / "Experiment_1_variants"
+            / "Weights"
+        )
     )
 
     if not target_weights_dir.exists():
@@ -559,7 +638,9 @@ def experiment_1b_prune_all_models(
     # Collect all .pth files (you asked to simply take all files in the Weights folder)
     all_pth_files = sorted(target_weights_dir.glob("*.pth"))
     if not all_pth_files:
-        error(f"No .pth files found in {target_weights_dir}. Please run Experiment 1A first.")
+        error(
+            f"No .pth files found in {target_weights_dir}. Please run Experiment 1A first."
+        )
         return {}
 
     # Group by model name extracted from filename prefix like 'vgg16_exp1a...'
@@ -630,13 +711,16 @@ def experiment_1b_prune_all_models(
             # Use global test indices if provided, else fallback to config dataset
             if global_test_indices is not None:
                 # Determine the base full dataset for this model
-                backbone_dataset = None
-                if config["dataset"] is IMAGENET_DATASET:
-                    backbone_dataset = imageNet_dataset
-                elif config["dataset"] is DENSENET_DATASET:
-                    backbone_dataset = denseNet_dataset
-                else:
-                    backbone_dataset = None
+                backbone_dataset = config.get("backbone_dataset")
+                if backbone_dataset is None:
+                    if config["dataset"] is IMAGENET_DATASET:
+                        backbone_dataset = imageNet_dataset
+                    elif config["dataset"] is DENSENET_DATASET:
+                        backbone_dataset = denseNet_dataset
+                    elif config["dataset"] is CLIP_DATASET:
+                        backbone_dataset = clip_dataset
+                    else:
+                        backbone_dataset = None
 
                 if backbone_dataset is not None:
                     test_ds = Subset(backbone_dataset, global_test_indices)
@@ -957,7 +1041,12 @@ def experiment_one_test_models(
     target_weights_dir = (
         WEIGHTS_DIR
         if (WEIGHTS_DIR is not None and WEIGHTS_DIR.exists())
-        else (Path(__file__).resolve().parent / "Outputs" / "Experiment_1_variants" / "Weights")
+        else (
+            Path(__file__).resolve().parent
+            / "Outputs"
+            / "Experiment_1_variants"
+            / "Weights"
+        )
     )
 
     if not target_weights_dir.exists():
@@ -1036,39 +1125,45 @@ def experiment_one_test_models(
             # Use global test indices if provided, else fallback to config dataset
             if global_test_indices is not None:
                 # Determine the base full dataset for this model
-                backbone_dataset = None
-                if config["dataset"] is IMAGENET_DATASET:
-                    backbone_dataset = imageNet_dataset
-                elif config["dataset"] is DENSENET_DATASET:
-                    backbone_dataset = denseNet_dataset
-                else:
-                    backbone_dataset = None
+                backbone_dataset = config.get("backbone_dataset")
+                if backbone_dataset is None:
+                    if config["dataset"] is IMAGENET_DATASET:
+                        backbone_dataset = imageNet_dataset
+                    elif config["dataset"] is DENSENET_DATASET:
+                        backbone_dataset = denseNet_dataset
+                    elif config["dataset"] is CLIP_DATASET:
+                        backbone_dataset = clip_dataset
+                    else:
+                        backbone_dataset = None
 
                 if backbone_dataset is not None:
                     test_ds = Subset(backbone_dataset, global_test_indices)
+                    test_num_workers = min(NUM_WORKERS, 2)
                     test_loader = DataLoader(
                         test_ds,
                         batch_size=BATCH_SIZE,
                         shuffle=False,
-                        num_workers=NUM_WORKERS,
+                        num_workers=test_num_workers,
                     )
                 else:
                     # Fallback
                     dataset = config["dataset"]
+                    test_num_workers = min(NUM_WORKERS, 2)
                     test_loader = DataLoader(
                         dataset["test"],
                         batch_size=BATCH_SIZE,
                         shuffle=False,
-                        num_workers=NUM_WORKERS,
+                        num_workers=test_num_workers,
                     )
             else:
                 # Fallback to original
                 dataset = config["dataset"]
+                test_num_workers = min(NUM_WORKERS, 2)
                 test_loader = DataLoader(
                     dataset["test"],
                     batch_size=BATCH_SIZE,
                     shuffle=False,
-                    num_workers=NUM_WORKERS,
+                    num_workers=test_num_workers,
                 )
 
             # Setup criterion and device
@@ -1174,7 +1269,7 @@ def experiment_one_test_models(
                                 f"Original weights not found for {weights_path.name}: expected {baseline_weights_path.name}"
                             )
                             pruning_stats = {
-                                "error": f"Original weights missing: {str(baseline_weights_path)}"
+                                "error": f"Original weights missing: {baseline_weights_path!s}"
                             }
                     else:
                         warn(
@@ -1185,9 +1280,9 @@ def experiment_one_test_models(
                         }
 
                 if pruning_stats is not None:
-                    results[model_name][variant_tag][
-                        "pruning_statistics"
-                    ] = pruning_stats
+                    results[model_name][variant_tag]["pruning_statistics"] = (
+                        pruning_stats
+                    )
 
                 info(f"✓ {model_name.upper()} {variant_tag} testing complete!")
                 plcc_str = (
@@ -1251,7 +1346,6 @@ def experiment_one_test_models(
 
             for variant_tag, variant_data in sorted_variants:
                 if isinstance(variant_data, dict) and "test_mse" in variant_data:
-
                     # Parse variant_tag to separate variant from pruning type
                     pruning_type = "Baseline"
                     display_variant = variant_tag
@@ -1307,6 +1401,7 @@ def run_experiment_one_complete(
     run_testing=False,
     pruning_method="both",
     threshold=0.0,
+    num_variants=None,
 ):
     """
     Run the complete Experiment 1 pipeline (1A + 1B).
@@ -1320,11 +1415,15 @@ def run_experiment_one_complete(
                              Default is 'both' to run both methods.
         run_testing (bool): Whether to run testing of trained and pruned models.
         threshold (float): Threshold for negative_impact pruning.
+        num_variants (int, optional): Number of variants to train per model.
 
     Returns:
         dict: Dictionary containing results from both experiments.
               Structure: {'training': {...}, 'pruning': {...}, 'testing': {...}}
     """
+    if models_to_process is not None:
+        models_to_process = list(models_to_process)
+
     # Create global test indices to ensure consistency between training and pruning
     try:
         total_size = len(imageNet_dataset)
@@ -1348,6 +1447,7 @@ def run_experiment_one_complete(
             save_plots=True,
             verbose=True,
             global_test_indices=global_test_indices,
+            num_variants=num_variants,
         )
         results["training"] = training_results
 
@@ -1392,54 +1492,97 @@ def run_experiment_one_complete(
 # ============================================================================
 
 if __name__ == "__main__":
+    import argparse
 
-    """
-    Instruction to run Experiment 1:
-    ===========================================================================
-    - cd to the Image_Authenticity_prediction/main/Experiments/ directory
-    - activate your Python environment : conda activate <your_env>
-    - python experiment_one.py
-    ===========================================================================
-
-    # Run complete pipeline for all models
-    results = run_experiment_one_complete()
-
-    # Run only training
-    results = run_experiment_one_complete(run_pruning=False)
-
-    # Run only pruning (requires trained models)
-    results = run_experiment_one_complete(run_training=False)
-
-    # Run for specific models only
-    results = run_experiment_one_complete(
-        models_to_process=['vgg16', 'resnet152'],
-        pruning_method='both'
+    parser = argparse.ArgumentParser(
+        description="Run Experiment 1: Training, Pruning, and Testing"
+    )
+    parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        default=None,
+        choices=list(MODEL_REGISTRY.keys()),
+        help="Specific models to process (e.g. clip_vit_b16, vgg16). Default: all models.",
+    )
+    parser.add_argument(
+        "--variants",
+        type=int,
+        default=None,
+        help="Number of variants per model to train (default: from config, e.g. 10)",
+    )
+    parser.add_argument(
+        "--train",
+        dest="run_training",
+        action="store_true",
+        default=None,
+        help="Run training phase (Experiment 1A)",
+    )
+    parser.add_argument(
+        "--no-train",
+        dest="run_training",
+        action="store_false",
+        help="Skip training phase",
+    )
+    parser.add_argument(
+        "--prune",
+        dest="run_pruning",
+        action="store_true",
+        default=None,
+        help="Run pruning phase (Experiment 1B)",
+    )
+    parser.add_argument(
+        "--no-prune",
+        dest="run_pruning",
+        action="store_false",
+        help="Skip pruning phase",
+    )
+    parser.add_argument(
+        "--test",
+        dest="run_testing",
+        action="store_true",
+        default=None,
+        help="Run testing phase",
+    )
+    parser.add_argument(
+        "--no-test",
+        dest="run_testing",
+        action="store_false",
+        help="Skip testing phase",
+    )
+    parser.add_argument(
+        "--pruning-method",
+        type=str,
+        default="both",
+        choices=["greedy", "negative_impact", "both"],
+        help="Pruning method to execute ('greedy', 'negative_impact', or 'both')",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.0,
+        help="Threshold for negative_impact pruning",
     )
 
-    # Run only greedy pruning
-    results = run_experiment_one_complete(
-        models_to_process=None,
-        run_training=False,
-        pruning_method='greedy'
-    )
+    args = parser.parse_args()
 
-    # Run only negative impact pruning
-    results = run_experiment_one_complete(
-        models_to_process=None,
-        run_training=False,
-        pruning_method='negative_impact',
-        threshold=0.0
-    )
-    """
+    # Determine execution flags: if explicitly passed on CLI, use them;
+    # otherwise default to testing only
+    run_training = args.run_training if args.run_training is not None else False
+    run_pruning = args.run_pruning if args.run_pruning is not None else False
+    run_testing = args.run_testing if args.run_testing is not None else True
 
     # Start timer
     start_time = time.time()
 
-    # Change the following line to configure which parts to run your experiment
     results = run_experiment_one_complete(
-        run_training=False,
-        run_pruning=False,
-        run_testing=True,
+        models_to_process=args.models,
+        run_training=run_training,
+        run_pruning=run_pruning,
+        run_testing=run_testing,
+        pruning_method=args.pruning_method,
+        threshold=args.threshold,
+        num_variants=args.variants,
     )
 
     # End timer and calculate elapsed time

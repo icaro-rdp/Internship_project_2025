@@ -12,6 +12,7 @@ from typing import Any, List, Optional
 
 __all__ = [
     "BarlowTwinsAuthenticityPredictor",
+    "CLIPViTAuthenticityPredictor",
     "EfficientNetB3AuthenticityPredictor",
     "DenseNet161AuthenticityPredictor",
     "ResNet152AuthenticityPredictor",

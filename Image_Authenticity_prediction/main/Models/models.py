@@ -1,22 +1,71 @@
 """Model definitions for authenticity predictors using various backbones."""
 
 import torch
-import torch.nn as nn
 import torch.hub
+from torch import nn
 from torchvision.models import (
-    efficientnet_b3,
-    densenet161,
-    EfficientNet_B3_Weights,
     DenseNet161_Weights,
-    resnet152,
-    ResNet152_Weights,
-    inception_v3,
-    vgg16,
-    VGG16_Weights,
-    vgg19,
-    VGG19_Weights,
+    EfficientNet_B3_Weights,
     Inception_V3_Weights,
+    ResNet152_Weights,
+    VGG16_Weights,
+    VGG19_Weights,
+    densenet161,
+    efficientnet_b3,
+    inception_v3,
+    resnet152,
+    vgg16,
+    vgg19,
 )
+from transformers import CLIPVisionModelWithProjection
+
+
+class CLIPViTAuthenticityPredictor(nn.Module):
+    """Authenticity predictor using CLIP ViT-B/16 vision backbone.
+
+    Attaches a regression head to the 512-dimensional visual projection embeddings
+    of OpenAI CLIP ViT-B/16.
+    """
+
+    def __init__(self, freeze_backbone: bool = True) -> None:
+        """Initialize the CLIP ViT predictor with frozen backbone and regression head.
+
+        Args:
+            freeze_backbone: Whether to freeze all backbone vision model parameters.
+        """
+        super().__init__()
+        clip_model = CLIPVisionModelWithProjection.from_pretrained(
+            "openai/clip-vit-base-patch16"
+        )
+
+        if freeze_backbone:
+            for param in clip_model.parameters():
+                param.requires_grad = False
+
+        self.vision_model = clip_model.vision_model
+        self.visual_projection = clip_model.visual_projection
+
+        self.regression_head = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass through vision backbone and regression head.
+
+        Args:
+            x: Batch of RGB image tensors of shape (B, 3, 224, 224).
+
+        Returns:
+            Tuple containing authenticity predictions of shape (B, 1) and
+            visual projection features of shape (B, 512).
+        """
+        vision_outputs = self.vision_model(pixel_values=x)
+        features = self.visual_projection(vision_outputs.pooler_output)
+        predictions = self.regression_head(features)
+        return predictions, features
 
 
 class BarlowTwinsAuthenticityPredictor(nn.Module):

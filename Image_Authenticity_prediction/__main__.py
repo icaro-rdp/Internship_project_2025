@@ -20,12 +20,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent))
 
 from main.data import (
+    CLIP_DATASET,
     DENSENET_DATASET,
     IMAGENET_DATASET,
     INCEPTIONV3_DATASET,
 )
 from main.Models import (
     BarlowTwinsAuthenticityPredictor,
+    CLIPViTAuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
     InceptionV3AuthenticityPredictor,
@@ -50,6 +52,8 @@ MODEL_REGISTRY = {
     "inceptionv3": InceptionV3AuthenticityPredictor,
     "efficientnetb3": EfficientNetB3AuthenticityPredictor,
     "barlowtwins": BarlowTwinsAuthenticityPredictor,
+    "clip_vit_b16": CLIPViTAuthenticityPredictor,
+    "clip": CLIPViTAuthenticityPredictor,
 }
 
 # Dataset mapping based on model input requirements
@@ -61,6 +65,8 @@ DATASET_MAPPING = {
     "barlowtwins": IMAGENET_DATASET,
     "densenet161": DENSENET_DATASET,
     "inceptionv3": INCEPTIONV3_DATASET,
+    "clip_vit_b16": CLIP_DATASET,
+    "clip": CLIP_DATASET,
 }
 
 
@@ -176,9 +182,10 @@ def experiment_one_command(args):
     print(f"  - Run training: {args.train}")
     print(f"  - Run pruning: {args.prune}")
     print(f"  - Run testing: {args.test}")
-    if args.prune:
-        print(f"  - Pruning method: {args.pruning_method}")
-        print(f"  - Pruning threshold: {args.threshold}")
+    kwargs = {}
+    if isinstance(getattr(args, "variants", None), int):
+        print(f"  - Variants per model: {args.variants}")
+        kwargs["num_variants"] = args.variants
     print("=" * 80)
 
     # Run experiment
@@ -189,6 +196,7 @@ def experiment_one_command(args):
         run_testing=args.test,
         pruning_method=args.pruning_method,
         threshold=args.threshold,
+        **kwargs,
     )
 
     print("=" * 80)
@@ -393,6 +401,12 @@ def main():
         nargs="+",
         choices=list(MODEL_REGISTRY.keys()),
         help="Specific models to process (default: all models)",
+    )
+    exp1_parser.add_argument(
+        "--variants",
+        type=int,
+        default=None,
+        help="Number of variants per model to train (default: from config, e.g. 10)",
     )
     exp1_parser.add_argument(
         "--train", action="store_true", help="Run training phase (Experiment 1A)"

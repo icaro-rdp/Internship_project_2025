@@ -9,6 +9,10 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 
+from Image_Authenticity_prediction.main.data import (
+    CLIP_DATASET,
+    clip_dataset,
+)
 from Image_Authenticity_prediction.main.Experiments import experiment_one
 from Image_Authenticity_prediction.main.Experiments.experiment_one import (
     MODEL_REGISTRY,
@@ -18,6 +22,9 @@ from Image_Authenticity_prediction.main.Experiments.experiment_one import (
     experiment_1b_prune_all_models,
     experiment_one_test_models,
     run_experiment_one_complete,
+)
+from Image_Authenticity_prediction.main.Models import (
+    CLIPViTAuthenticityPredictor,
 )
 
 
@@ -261,6 +268,99 @@ class TestExperimentOnePipelineStages:
         """Verify run_experiment_one_complete returns empty result dictionary when all phases disabled."""
         results = run_experiment_one_complete(
             models_to_process=["vgg16"],
+            run_training=False,
+            run_pruning=False,
+            run_testing=False,
+        )
+        assert isinstance(results, dict)
+        assert results["training"] is None
+        assert results["pruning"] is None
+        assert results["testing"] is None
+
+
+class TestCLIPViTIntegration:
+    """Tests for CLIP ViT-B/16 architecture, regression head, data routing, and registry."""
+
+    def test_clip_vit_registered_single_string_key(self) -> None:
+        """Verify clip_vit_b16 is registered strictly with single string key without aliases."""
+        assert "clip_vit_b16" in MODEL_REGISTRY
+        assert "clip" not in MODEL_REGISTRY
+        assert "clip_vit" not in MODEL_REGISTRY
+
+    def test_clip_vit_registry_configuration(self) -> None:
+        """Verify clip_vit_b16 registry entry satisfies configuration schema."""
+        entry = MODEL_REGISTRY["clip_vit_b16"]
+        assert entry["class"].__name__ == "CLIPViTAuthenticityPredictor"
+        assert set(entry["dataset"].keys()) == {"train", "val", "test"}
+        assert len(entry["dataset"]["test"]) == int(0.2 * 1368)
+        assert len(entry["backbone_dataset"]) == 1368
+        assert entry["target_layer"] == "visual_projection"
+        assert entry["input_size"] == 224
+
+    def test_clip_vit_architecture_and_forward_contract(self) -> None:
+        """Verify CLIPViTAuthenticityPredictor forward shape, freezing, and head structure."""
+        model = CLIPViTAuthenticityPredictor(freeze_backbone=True)
+
+        # Verify backbone freezing
+        for param in model.vision_model.parameters():
+            assert not param.requires_grad
+        for param in model.visual_projection.parameters():
+            assert not param.requires_grad
+        for param in model.regression_head.parameters():
+            assert param.requires_grad
+
+        # Forward pass contract: (predictions, features) -> ((B, 1), (B, 512))
+        dummy_input = torch.randn(2, 3, 224, 224)
+        predictions, features = model(dummy_input)
+
+        assert predictions.shape == (2, 1)
+        assert features.shape == (2, 512)
+
+    def test_clip_vit_reset_regression_head(self) -> None:
+        """Verify resetting regression head alters head parameters without touching backbone."""
+        model = CLIPViTAuthenticityPredictor(freeze_backbone=True)
+
+        backbone_param_before = next(model.vision_model.parameters()).clone().detach()
+        head_params_before = [
+            param.clone().detach() for param in model.regression_head.parameters()
+        ]
+
+        for layer in model.regression_head.modules():
+            if isinstance(layer, nn.Linear):
+                layer.reset_parameters()
+
+        backbone_param_after = next(model.vision_model.parameters()).clone().detach()
+        head_params_after = [
+            param.clone().detach() for param in model.regression_head.parameters()
+        ]
+
+        assert torch.equal(backbone_param_before, backbone_param_after)
+        any_changed = False
+        for before, after in zip(head_params_before, head_params_after, strict=True):
+            if not torch.equal(before, after):
+                any_changed = True
+                break
+        assert any_changed
+
+    def test_clip_dataset_and_splits_consistency(self) -> None:
+        """Verify clip_dataset and CLIP_DATASET match standard split geometry and size."""
+        assert len(clip_dataset) == 1368
+        assert "train" in CLIP_DATASET
+        assert "val" in CLIP_DATASET
+        assert "test" in CLIP_DATASET
+
+        train_len = len(CLIP_DATASET["train"])
+        val_len = len(CLIP_DATASET["val"])
+        test_len = len(CLIP_DATASET["test"])
+
+        assert train_len + val_len + test_len == 1368
+        assert test_len == int(0.2 * 1368)
+        assert val_len == int(0.1 * 1368)
+
+    def test_run_experiment_one_complete_clip_only_orchestration(self) -> None:
+        """Verify run_experiment_one_complete runs clip_vit_b16 without pruning."""
+        results = run_experiment_one_complete(
+            models_to_process=["clip_vit_b16"],
             run_training=False,
             run_pruning=False,
             run_testing=False,

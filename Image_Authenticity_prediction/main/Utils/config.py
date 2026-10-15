@@ -82,6 +82,7 @@ def get_training_config() -> Dict[str, Any]:
         "patience": config["training"]["patience"],
         "learning_rate": config["training"]["learning_rate"],
         "freeze_backbone": config["training"]["freeze_backbone"],
+        "num_variants": config["training"].get("num_variants", 10),
         "device": get_device(),
     }
 
