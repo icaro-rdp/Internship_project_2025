@@ -105,9 +105,7 @@ Each variant was evaluated on the identical 273-image test split:
 
 ---
 
-## 5. Comparison with Original Paper (arXiv:2604.07254)
-
-In the original paper (*"Non-identifiability of Explanations from Model Behavior in Deep Networks of Image Authenticity Judgments"*, Re Depaolini et al., 2026; [arXiv:2604.07254](https://arxiv.org/html/2604.07254v1)), six CNN architectures and two multi-architecture ensembles were evaluated on the Kept AIGCIQA2023 dataset.
+## 5. Comparison with other models
 
 ### 5.1 Cross-Architecture Benchmark Comparison
 
@@ -125,33 +123,4 @@ Below is the direct comparison with the reported baseline values from **Table 2*
 | Bagging Ensemble | 6.04 | 0.73 | 0.73 | — | — |
 | clip_vit_b16 | 6.02 ± 0.04 | 0.73 ± 0.01 | 0.75 ± 0.01 | 0.98 | 0.81 |
 
-Note: Human authenticity split-half reliability r_human = 0.67, giving human noise ceiling √(r_human) ≈ 0.82. Combined ceiling r_max ≈ √(r_human × r_model).
-
----
-
-### 5.2 Key Comparative Insights
-
-1. **Surpasses All Single CNN Architectures**:
-   - Outperforms the previous best single architecture (**Barlow Twins**) by **+0.1156 in SRCC** (0.7456 vs 0.63), **+0.1116 in PLCC** (0.7316 vs 0.62), and reduces RMSE by **1.08 scale points** (6.02 vs 7.10).
-2. **Surpasses the 60-Model Multi-Architecture Bagging Ensemble**:
-   - The paper's primary behavioral prediction benchmark was reached only by aggregating all 60 variants across all 6 architectures (RMSE = 6.04, PLCC = 0.73, SRCC = 0.73).
-   - A **single frozen `clip_vit_b16` architecture alone matches and exceeds the 60-model ensemble** in both correlation and RMSE.
-3. **Unprecedented Optimization Stability**:
-   - Mean pairwise correlation between predictions of different random seeds is r_model = 0.9757 (compared to 0.81 - 0.91 for CNNs).
-   - This elevates the observable PLCC ceiling to **0.8085**, and `clip_vit_b16` captures **90.5% of this observable ceiling**.
-
----
-
-## 6. Execution Reference
-
-To reproduce this evaluation or evaluate newly saved checkpoints:
-
-```bash
-# Evaluate existing checkpoints on the test set
-uv run python Image_Authenticity_prediction/main/Experiments/experiment_one.py \
-  --models clip_vit_b16 \
-  --no-train \
-  --no-prune \
-  --test
-```
 
