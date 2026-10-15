@@ -282,7 +282,7 @@ class MultiscalePixelMasking(ModelsExplainer):
     Occlusion masks are built and applied on the model's device in one vectorised
     operation per batch, and scores stay on the device until the map is complete,
     so each batch costs one forward pass plus a few tensor kernels and no host
-    synchronisation. See ``docs/adr/0003-mpm-performance.md``.
+    synchronisation. See ``docs/adr/0003-explainability-performance-optimization.md``.
     """
 
     def __init__(
