@@ -12,13 +12,13 @@
 This report documents the empirical training and evaluation of 10 independent Monte Carlo variants of the **CLIP Vision Transformer (`clip_vit_b16`)** on subjective human authenticity ratings (Mean Opinion Scores, MOS) from the Kept AIGCIQA2023 dataset (1,368 photorealistic natural-scene images).
 
 Across all 10 trained variants, the frozen CLIP ViT-B/16 representations demonstrate strong and stable predictive alignment with human authenticity judgments:
-- **Mean Pearson Linear Correlation (PLCC, $r$):** $0.7316 \pm 0.0059$
-- **Mean Spearman Rank Correlation (SRCC, $\rho$):** $0.7456 \pm 0.0055$
-- **Mean Kendall Tau Rank Correlation (KRCC, $\tau$):** $0.5375 \pm 0.0058$
-- **Mean Root Mean Squared Error (RMSE):** $6.0210 \pm 0.0449$
-- **Mean Squared Error (MSE):** $36.2545 \pm 0.5424$
+- **Mean Pearson Linear Correlation (PLCC, r):** 0.7316 ± 0.0059
+- **Mean Spearman Rank Correlation (SRCC, ρ):** 0.7456 ± 0.0055
+- **Mean Kendall Tau Rank Correlation (KRCC, τ):** 0.5375 ± 0.0058
+- **Mean Root Mean Squared Error (RMSE):** 6.0210 ± 0.0449
+- **Mean Squared Error (MSE):** 36.2545 ± 0.5424
 
-The standard deviation across variants is $\le 0.006$ for all correlation metrics, confirming that convergence is robust to random regression head weight initialization and variant-specific train/validation partitioning.
+The standard deviation across variants is ≤ 0.006 for all correlation metrics, confirming that convergence is robust to random regression head weight initialization and variant-specific train/validation partitioning.
 
 ---
 
@@ -29,25 +29,25 @@ The standard deviation across variants is $\le 0.006$ for all correlation metric
 | Component | Specification |
 | :--- | :--- |
 | **Vision Backbone** | `openai/clip-vit-base-patch16` (frozen, `requires_grad=False`) |
-| **Input Resolution** | $224 \times 224 \times 3$ |
-| **Preprocessing & Normalization** | Resize(256) $\to$ CenterCrop(224); $\mu = [0.48145, 0.45783, 0.40821]$, $\sigma = [0.26863, 0.26130, 0.27578]$ |
+| **Input Resolution** | 224 × 224 × 3 |
+| **Preprocessing & Normalization** | Resize(256) -> CenterCrop(224); μ = [0.48145, 0.45783, 0.40821], σ = [0.26863, 0.26130, 0.27578] |
 | **Feature Extraction Layer** | `visual_projection` output (512-dimensional embedding vector `image_embeds`) |
 | **Downstream Head** | 2-layer MLP: `Linear(512, 128) -> ReLU() -> Dropout(0.5) -> Linear(128, 1)` |
 | **Forward Contract** | Returns tuple `(predictions, features)` of shapes `((B, 1), (B, 512))` |
 
 ### 2.2 Data Partitioning & Monte Carlo Variants
 
-- **Total Kept Dataset:** 1,368 photorealistic images (57 prompts $\times$ 6 generative models $\times$ 4 images).
-- **Global Test Set:** 273 images (20% of dataset), partitioned with fixed global seed $42$. Shared identically across all models and variants to ensure zero test-set leakage.
-- **Variant Partitioning:** For variant $k \in \{1, \dots, 10\}$, the remaining 1,095 images are randomly split into:
-  - **Training Set:** 958 images ($\approx 70\%$ of total)
-  - **Validation Set:** 137 images ($\approx 10\%$ of total) using seed $42 + k$.
-- **Regression Head Reset:** For each variant $k$, the MLP layers are reinitialized using `reset_parameters()` to provide distinct optimization starting trajectories.
+- **Total Kept Dataset:** 1,368 photorealistic images (57 prompts × 6 generative models × 4 images).
+- **Global Test Set:** 273 images (20% of dataset), partitioned with fixed global seed 42. Shared identically across all models and variants to ensure zero test-set leakage.
+- **Variant Partitioning:** For variant k ∈ {1, ..., 10}, the remaining 1,095 images are randomly split into:
+  - **Training Set:** 958 images (≈ 70% of total)
+  - **Validation Set:** 137 images (≈ 10% of total) using seed 42 + k.
+- **Regression Head Reset:** For each variant k, the MLP layers are reinitialized using `reset_parameters()` to provide distinct optimization starting trajectories.
 
 ### 2.3 Training Hyperparameters
 
 - **Objective Function:** Mean Squared Error (`nn.MSELoss()`)
-- **Optimizer:** Adam ($\text{lr} = 0.001$)
+- **Optimizer:** Adam (lr = 0.001)
 - **Batch Size:** 64
 - **Max Epochs:** 500
 - **Early Stopping Patience:** 15 epochs monitoring validation loss
@@ -61,13 +61,13 @@ The standard deviation across variants is $\le 0.006$ for all correlation metric
 
 Summary statistics across the 10 independently trained variants evaluated on the global test partition:
 
-| Metric | Mean | Standard Deviation ($\sigma$) | Minimum | Maximum | Median |
+| Metric | Mean | Standard Deviation (σ) | Minimum | Maximum | Median |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Test MSE** | 36.2545 | 0.5424 | 35.5183 | 37.2675 | 36.1400 |
 | **Test RMSE** | 6.0210 | 0.0449 | 5.9597 | 6.1047 | 6.0114 |
-| **PLCC ($r$)** | 0.7316 | 0.0059 | 0.7215 | 0.7411 | 0.7330 |
-| **SRCC ($\rho$)** | 0.7456 | 0.0055 | 0.7337 | 0.7547 | 0.7464 |
-| **KRCC ($\tau$)** | 0.5375 | 0.0058 | 0.5268 | 0.5464 | 0.5379 |
+| **PLCC (r)** | 0.7316 | 0.0059 | 0.7215 | 0.7411 | 0.7330 |
+| **SRCC (ρ)** | 0.7456 | 0.0055 | 0.7337 | 0.7547 | 0.7464 |
+| **KRCC (τ)** | 0.5375 | 0.0058 | 0.5268 | 0.5464 | 0.5379 |
 
 ---
 
@@ -75,7 +75,7 @@ Summary statistics across the 10 independently trained variants evaluated on the
 
 Each variant was evaluated on the identical 273-image test split:
 
-| Model ID | Variant Tag | Train Seed | Test MSE | Test RMSE | PLCC ($r$) | SRCC ($\rho$) | KRCC ($\tau$) | Checkpoint Path |
+| Model ID | Variant Tag | Train Seed | Test MSE | Test RMSE | PLCC (r) | SRCC (ρ) | KRCC (τ) | Checkpoint Path |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | `clip_vit_b16` | `exp1a_variant1` | 43 | 36.3989 | 6.0332 | 0.7315 | 0.7431 | 0.5366 | `Outputs/Experiment_1_variants/Weights/clip_vit_b16_exp1a_variant1_best.pth` |
 | `clip_vit_b16` | `exp1a_variant2` | 44 | 36.0088 | 6.0007 | 0.7354 | 0.7471 | 0.5343 | `Outputs/Experiment_1_variants/Weights/clip_vit_b16_exp1a_variant2_best.pth` |
@@ -93,11 +93,11 @@ Each variant was evaluated on the identical 273-image test split:
 ## 4. Key Findings
 
 1. **Competitive Behavioral Predictive Alignment**:
-   - The frozen ViT-B/16 visual projection features achieve an average rank correlation $\text{SRCC} = 0.7456$ and linear correlation $\text{PLCC} = 0.7316$ without fine-tuning backbone transformer weights.
+   - The frozen ViT-B/16 visual projection features achieve an average rank correlation SRCC = 0.7456 and linear correlation PLCC = 0.7316 without fine-tuning backbone transformer weights.
    - This validates the hypothesis in ADR 0001 that multi-modal contrastively pretrained vision representations encode visual cues relevant to human authenticity perception.
 
 2. **Cross-Variant Stability**:
-   - The narrow variance ($\sigma_{\text{SRCC}} = 0.0055$, $\sigma_{\text{PLCC}} = 0.0059$) proves that the 512-dimensional visual embedding space offers an optimization landscape for linear/MLP regression that is free of local minima or seed sensitivity.
+   - The narrow variance (σ_SRCC = 0.0055, σ_PLCC = 0.0059) proves that the 512-dimensional visual embedding space offers an optimization landscape for linear/MLP regression that is free of local minima or seed sensitivity.
 
 3. **Readiness for Subsequent ADR 0001 Steps**:
    - **Step 2 (Explainability / Grad-CAM)**: The model contract `(predictions, features)` is verified, and the best-performing checkpoints are available for hooked gradient attribution at `layer_norm1`.
@@ -105,11 +105,11 @@ Each variant was evaluated on the identical 273-image test split:
 
 ---
 
-## 4. Comparison with Original Paper (arXiv:2604.07254)
+## 5. Comparison with Original Paper (arXiv:2604.07254)
 
 In the original paper (*"Non-identifiability of Explanations from Model Behavior in Deep Networks of Image Authenticity Judgments"*, Re Depaolini et al., 2026; [arXiv:2604.07254](https://arxiv.org/html/2604.07254v1)), six CNN architectures and two multi-architecture ensembles were evaluated on the Kept AIGCIQA2023 dataset.
 
-### 4.1 Cross-Architecture Benchmark Comparison
+### 5.1 Cross-Architecture Benchmark Comparison
 
 Below is the direct comparison with the reported baseline values from **Table 2** (Single Architectures) and **Table 7** (Ensembles across 60 variants):
 
@@ -125,24 +125,24 @@ Below is the direct comparison with the reported baseline values from **Table 2*
 | Bagging Ensemble | 6.04 | 0.73 | 0.73 | — | — |
 | clip_vit_b16 | 6.02 ± 0.04 | 0.73 ± 0.01 | 0.75 ± 0.01 | 0.98 | 0.81 |
 
-*(Note: Human authenticity split-half reliability $r_{\text{human}} = 0.67$, giving human noise ceiling $\sqrt{r_{\text{human}}} \approx 0.82$. Combined ceiling $r_{\max} \approx \sqrt{r_{\text{human}} \cdot r_{\text{model}}}$).*
+Note: Human authenticity split-half reliability r_human = 0.67, giving human noise ceiling √(r_human) ≈ 0.82. Combined ceiling r_max ≈ √(r_human × r_model).
 
 ---
 
-### 4.2 Key Comparative Insights
+### 5.2 Key Comparative Insights
 
 1. **Surpasses All Single CNN Architectures**:
-   - Outperforms the previous best single architecture (**Barlow Twins**) by **$+0.1156$ in SRCC** ($0.7456$ vs $0.63$), **$+0.1116$ in PLCC** ($0.7316$ vs $0.62$), and reduces RMSE by **$1.08$ scale points** ($6.02$ vs $7.10$).
+   - Outperforms the previous best single architecture (**Barlow Twins**) by **+0.1156 in SRCC** (0.7456 vs 0.63), **+0.1116 in PLCC** (0.7316 vs 0.62), and reduces RMSE by **1.08 scale points** (6.02 vs 7.10).
 2. **Surpasses the 60-Model Multi-Architecture Bagging Ensemble**:
-   - The paper's primary behavioral prediction benchmark was reached only by aggregating all 60 variants across all 6 architectures ($\text{RMSE} = 6.04$, $\text{PLCC} = 0.73$, $\text{SRCC} = 0.73$).
+   - The paper's primary behavioral prediction benchmark was reached only by aggregating all 60 variants across all 6 architectures (RMSE = 6.04, PLCC = 0.73, SRCC = 0.73).
    - A **single frozen `clip_vit_b16` architecture alone matches and exceeds the 60-model ensemble** in both correlation and RMSE.
 3. **Unprecedented Optimization Stability**:
-   - Mean pairwise correlation between predictions of different random seeds is $r_{\text{model}} = 0.9757$ (compared to $0.81 - 0.91$ for CNNs).
-   - This elevates the observable PLCC ceiling to **$0.8085$**, and `clip_vit_b16` captures **$90.5\%$ of this observable ceiling**.
+   - Mean pairwise correlation between predictions of different random seeds is r_model = 0.9757 (compared to 0.81 - 0.91 for CNNs).
+   - This elevates the observable PLCC ceiling to **0.8085**, and `clip_vit_b16` captures **90.5% of this observable ceiling**.
 
 ---
 
-## 5. Execution Reference
+## 6. Execution Reference
 
 To reproduce this evaluation or evaluate newly saved checkpoints:
 
