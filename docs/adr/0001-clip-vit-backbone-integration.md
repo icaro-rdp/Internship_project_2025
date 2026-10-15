@@ -33,8 +33,8 @@ To minimize complexity and validate behavioral performance early, we establish a
 - **Execution Gate**: Undertaken only after Step 1 confirms successful training convergence and competitive behavioral prediction.
 - **Scalar Regression Attribution Mechanics**:
   - Gradients are backpropagated directly from the scalar output $\hat{y}$ (`score.backward()`).
-  - **Positive Attribution ($\text{ReLU}(\text{Grad-CAM on } \hat{y})$)**: Identifies image regions driving predicted authenticity/quality *higher*.
-  - **Negative Attribution ($\text{ReLU}(\text{Grad-CAM on } -\hat{y})$)**: Identifies image regions pulling predicted authenticity/quality *lower*.
+  - **Positive Attribution ($\text{ReLU}(\text{Grad-CAM on } \hat{y})$)**: Identifies image regions driving predicted authenticity/quality _higher_.
+  - **Negative Attribution ($\text{ReLU}(\text{Grad-CAM on } -\hat{y})$)**: Identifies image regions pulling predicted authenticity/quality _lower_.
   - **Signed / Magnitude Attribution**: Absolute values or unthresholded maps reveal overall influential regions regardless of valence.
 - **ViT Gradient Flow & Hook Target**:
   - The regression head reads only the `[CLS]` token. In the final self-attention block, patch tokens (`1...196`) are discarded after self-attention; hooking the output of the final layer yields zero gradient on patch tokens.
@@ -58,8 +58,8 @@ To minimize complexity and validate behavioral performance early, we establish a
 - **Strict Validation-Based Pruning (ADR 0002 Compliance)**:
   - Importance score ranking and greedy pruning iterations are executed strictly on `val_loader` to prevent test-set leakage, reserving `test_loader` exclusively for out-of-sample evaluation.
 - **Considered Pruning Granularities**:
-  - *Attention Heads (12 heads $\times$ 12 layers = 144 heads)*: Pruning attention heads modifies intermediate representations non-linearly and evaluates transformer head redundancy rather than feature readout importance. Deferred as a potential follow-up.
-  - *Patch / Token Pruning*: Pruning spatial patch tokens is relevant for inference speedup but does not map onto the unit-importance analysis of Exp 1B.
+  - _Attention Heads (12 heads $\times$ 12 layers = 144 heads)_: Pruning attention heads modifies intermediate representations non-linearly and evaluates transformer head redundancy rather than feature readout importance. Deferred as a potential follow-up.
+  - _Patch / Token Pruning_: Pruning spatial patch tokens is relevant for inference speedup but does not map onto the unit-importance analysis of Exp 1B.
 
 ## Consequences
 
@@ -68,3 +68,4 @@ To minimize complexity and validate behavioral performance early, we establish a
 - **Registry & Routing**: `MODEL_REGISTRY` entries must explicitly identify CLIP's base dataset and normalization so that data loaders route correctly without fallback issues.
 - **Storage & Compute**: 10 variants $\times$ 3 conditions (baseline, greedy pruned, negative pruned) require caching the ~86M parameter ViT (~350 MB fp32 per checkpoint), totaling ~10 GB.
 - **Reviewer Alignment**: Systematically resolves Reviewer 1 Major Comments 1 and 6.
+
