@@ -113,17 +113,17 @@ In the original paper (*"Non-identifiability of Explanations from Model Behavior
 
 Below is the direct comparison with the reported baseline values from **Table 2** (Single Architectures) and **Table 7** (Ensembles across 60 variants):
 
-| Architecture / Model | Architecture Type | Test RMSE $\downarrow$ | PLCC ($r$) $\uparrow$ | SRCC ($\rho$) $\uparrow$ | Model Reliability ($r_{\text{model}}$) | Observable PLCC Ceiling ($r_{\max}$) | % of Ceiling Achieved |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **ResNet152** | CNN (Supervised) | $9.85 \pm 0.39$ | $0.51 \pm 0.02$ | $0.53 \pm 0.02$ | $0.91$ | $0.78$ | $65.4\%$ |
-| **EfficientNetB3** | CNN (Supervised) | $8.82 \pm 0.26$ | $0.50 \pm 0.02$ | $0.51 \pm 0.03$ | $0.84$ | $0.75$ | $66.7\%$ |
-| **VGG16** | CNN (Supervised) | $8.62 \pm 0.43$ | $0.54 \pm 0.03$ | $0.57 \pm 0.03$ | $0.81$ | $0.74$ | $73.0\%$ |
-| **VGG19** | CNN (Supervised) | $8.52 \pm 0.36$ | $0.56 \pm 0.03$ | $0.59 \pm 0.03$ | $0.81$ | $0.74$ | $75.7\%$ |
-| **DenseNet161** | CNN (Supervised) | $7.48 \pm 0.22$ | $0.63 \pm 0.02$ | $0.62 \pm 0.02$ | $0.90$ | $0.78$ | $80.8\%$ |
-| **Barlow Twins** *(Prev. Best Single)* | ResNet50 (Self-Supervised) | $7.10 \pm 0.11$ | $0.62 \pm 0.01$ | $0.63 \pm 0.01$ | $0.91$ | $0.78$ | $79.5\%$ |
-| **Stacking Ensemble** | 60 models across 6 archs | $6.14$ | $0.71$ | $0.70$ | — | — | — |
-| **Bagging Ensemble** | 60 models across 6 archs | $6.04$ | $0.73$ | $0.73$ | — | — | — |
-| **`clip_vit_b16` (Ours)** | **Vision Transformer (V-L)** | **$6.02 \pm 0.04$** | **$0.7316 \pm 0.0059$** | **$0.7456 \pm 0.0055$** | **$0.9757$** | **$0.8085$** | **$90.5\%$** |
+| Model | RMSE | PLCC | SRCC | Reliability | Ceiling |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| ResNet152 | 9.85 ± 0.39 | 0.51 ± 0.02 | 0.53 ± 0.02 | 0.91 | 0.78 |
+| EfficientNetB3 | 8.82 ± 0.26 | 0.50 ± 0.02 | 0.51 ± 0.03 | 0.84 | 0.75 |
+| VGG16 | 8.62 ± 0.43 | 0.54 ± 0.03 | 0.57 ± 0.03 | 0.81 | 0.74 |
+| VGG19 | 8.52 ± 0.36 | 0.56 ± 0.03 | 0.59 ± 0.03 | 0.81 | 0.74 |
+| DenseNet161 | 7.48 ± 0.22 | 0.63 ± 0.02 | 0.62 ± 0.02 | 0.90 | 0.78 |
+| Barlow Twins | 7.10 ± 0.11 | 0.62 ± 0.01 | 0.63 ± 0.01 | 0.91 | 0.78 |
+| Stacking Ensemble | 6.14 | 0.71 | 0.70 | — | — |
+| Bagging Ensemble | 6.04 | 0.73 | 0.73 | — | — |
+| clip_vit_b16 | 6.02 ± 0.04 | 0.73 ± 0.01 | 0.75 ± 0.01 | 0.98 | 0.81 |
 
 *(Note: Human authenticity split-half reliability $r_{\text{human}} = 0.67$, giving human noise ceiling $\sqrt{r_{\text{human}}} \approx 0.82$. Combined ceiling $r_{\max} \approx \sqrt{r_{\text{human}} \cdot r_{\text{model}}}$).*
 
