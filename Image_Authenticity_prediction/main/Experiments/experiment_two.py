@@ -194,19 +194,19 @@ def run_generation_loop(
     chunk_idx = 0
     flush_int = XAI_PARAMS["gc_interval"] if is_gc else XAI_PARAMS["mpm_interval"]
 
+    explainer = (
+        GradCAM(model, MODEL_REGISTRY[model_name]["target_layer"], False)
+        if is_gc
+        else MultiscalePixelMasking(
+            model, XAI_PARAMS["sigma"], XAI_PARAMS["px_batch"], 0
+        )
+    )
+
     try:
         info(f"Generating {method} for {stem}...")
-        for i, (img, _) in enumerate(loader):
+        for _i, (img, _) in enumerate(loader):
             img = img.to(device)
-            if is_gc:
-                cam = GradCAM(model, MODEL_REGISTRY[model_name]["target_layer"], False)
-                res = cam.generate_map(img, 0)
-                cam.cleanup()
-            else:
-                mpm = MultiscalePixelMasking(
-                    model, XAI_PARAMS["sigma"], XAI_PARAMS["px_batch"], 0
-                )
-                res = mpm.generate_map(img, 0)
+            res = explainer.generate_map(img, 0)
 
             if isinstance(res, torch.Tensor):
                 res = res.cpu().numpy()
@@ -217,6 +217,8 @@ def run_generation_loop(
                 batch_maps = []
                 chunk_idx += 1
                 gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         if batch_maps:
             np.save(temp_dir / f"part_{chunk_idx:04d}.npy", np.array(batch_maps))
@@ -230,6 +232,8 @@ def run_generation_loop(
 
     except Exception as e:
         error(f"Gen Error {stem}: {e}")
+    finally:
+        explainer.cleanup()
 
 
 # ============================================================================

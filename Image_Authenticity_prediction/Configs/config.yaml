@@ -60,7 +60,7 @@ xai:
   # Multiscale Pixel Masking parameters
   sigma: [3, 17, 65]
   mask_val: 0
-  pixel_batch: 256
+  pixel_batch: 128
   # Checkpoint intervals for memory management
   gradcam_interval: 50
   mpm_interval: 10

@@ -3,7 +3,7 @@ import importlib
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
-from typing import Literal, TypeVar
+from typing import TypeVar
 
 import numpy as np
 import torch
@@ -20,44 +20,6 @@ try:
     _tqdm = getattr(_tqdm_module, "tqdm", None)
 except (ImportError, AttributeError):
     _tqdm = None
-
-# Enable Ada Lovelace TF32 & cuDNN autotuning
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-
-
-def _apply_boxes_eager(
-    image: torch.Tensor,
-    rows: torch.Tensor,
-    cols: torch.Tensor,
-    r0: torch.Tensor,
-    r1: torch.Tensor,
-    c0: torch.Tensor,
-    c1: torch.Tensor,
-    mask_value: float | torch.Tensor,
-    out: torch.Tensor,
-) -> torch.Tensor:
-    """Vectorized occlusion mask application across arbitrary per-sample box bounds.
-
-    When compiled with TorchInductor, this fuses into a single zero-allocation Triton kernel.
-    """
-    row_hit = (rows >= r0) & (rows < r1)  # (B, H)
-    col_hit = (cols >= c0) & (cols < c1)  # (B, W)
-    occluded = (row_hit.unsqueeze(2) & col_hit.unsqueeze(1)).unsqueeze(
-        1
-    )  # (B, 1, H, W)
-    m_val = (
-        mask_value
-        if isinstance(mask_value, torch.Tensor)
-        else image.new_tensor(mask_value)
-    )
-    return torch.where(occluded, m_val, image, out=out)
-
-
-# Eager kernel for mask generation
-_apply_boxes_fused = _apply_boxes_eager
 
 
 def _gpu_normalize(
@@ -89,9 +51,9 @@ class ModelsExplainer(ABC):
         self,
         model: nn.Module,
         use_amp: bool = True,
-        channels_last: bool = True,
+        channels_last: bool = False,
         compile_model: bool = False,
-        compile_mode: str = "max-autotune",
+        compile_mode: str = "default",
     ):
         self.model = model
 
@@ -102,6 +64,11 @@ class ModelsExplainer(ABC):
             self.device = torch.device("cpu")
 
         self.is_cuda = self.device.type == "cuda"
+        if self.is_cuda:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = False
+
         self.use_amp = bool(use_amp and self.is_cuda)
         self.amp_dtype = (
             torch.bfloat16
@@ -153,7 +120,7 @@ class GradCAM(ModelsExplainer):
         target_layer: nn.Module | str,
         relu: bool = True,
         use_amp: bool = True,
-        channels_last: bool = True,
+        channels_last: bool = False,
         freeze_parameters: bool = True,
         gpu_normalize: bool = True,
         reshape_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
@@ -346,39 +313,33 @@ class GradCAM(ModelsExplainer):
 
 
 class MultiscalePixelMasking(ModelsExplainer):
-    """Ultra-fast Multiscale Pixel Masking (MPM) with:
-
-    1. Flattened multi-sigma work queue (eliminates per-sigma tail batches)
-    2. Static batch padding (zero recompilations with torch.compile CUDA Graphs)
-    3. Fused mask generation
-    4. Optional spatial striding (stride=1 for bit-exact, stride='auto' or int > 1 for 4x-16x speedup)
-    """
+    """Exact per-pixel Multiscale Pixel Masking (MPM) with GPU batching and periodic queue synchronization."""
 
     def __init__(
         self,
         model: nn.Module,
         sigma_list: Sequence[int],
-        pixel_batch_size: int = 512,
+        pixel_batch_size: int = 128,
         mask_value: float = 0.0,
-        stride: int | Literal["auto"] = 1,
         use_tqdm: bool = False,
         use_amp: bool = True,
-        channels_last: bool = True,
+        channels_last: bool = False,
         compile_model: bool = False,
         gpu_normalize: bool = True,
+        sync_interval: int = 32,
     ) -> None:
         super().__init__(
             model,
             use_amp=use_amp,
             channels_last=channels_last,
             compile_model=compile_model,
-            compile_mode="max-autotune",
+            compile_mode="default",
         )
         self.sigma_list = list(sigma_list)
         self.pixel_batch_size = int(pixel_batch_size)
         self.mask_value = float(mask_value)
-        self.stride = stride
         self.gpu_normalize = bool(gpu_normalize)
+        self.sync_interval = int(sync_interval)
         self.use_tqdm = bool(use_tqdm and _tqdm is not None)
         if use_tqdm and _tqdm is None:
             warn(
@@ -398,6 +359,19 @@ class MultiscalePixelMasking(ModelsExplainer):
         cols = torch.arange(width, device=pixel_indices.device)
         center_rows = (pixel_indices // width).unsqueeze(1)
         center_cols = (pixel_indices % width).unsqueeze(1)
+        return MultiscalePixelMasking._occlusion_masks_from_coords(
+            rows, cols, center_rows, center_cols, sigma
+        )
+
+    @staticmethod
+    def _occlusion_masks_from_coords(
+        rows: torch.Tensor,
+        cols: torch.Tensor,
+        center_rows: torch.Tensor,
+        center_cols: torch.Tensor,
+        sigma: int,
+    ) -> torch.Tensor:
+        """Build boolean occlusion masks from precomputed coordinate vectors."""
         before, after = sigma // 2, (sigma + 1) // 2
         row_hit = (rows >= center_rows - before) & (rows < center_rows + after)
         col_hit = (cols >= center_cols - before) & (cols < center_cols + after)
@@ -406,7 +380,8 @@ class MultiscalePixelMasking(ModelsExplainer):
     def _get_batch_buffer(
         self, channels: int, height: int, width: int, dtype: torch.dtype
     ) -> torch.Tensor:
-        target_shape = (self.pixel_batch_size, channels, height, width)
+        buffer_batch_size = min(self.pixel_batch_size, height * width)
+        target_shape = (buffer_batch_size, channels, height, width)
         if (
             self._cached_buffer is None
             or self._cached_buffer.shape != target_shape
@@ -423,6 +398,10 @@ class MultiscalePixelMasking(ModelsExplainer):
                 memory_format=memory_format,
             )
         return self._cached_buffer
+
+    def cleanup(self) -> None:
+        """Release cached GPU batch buffer."""
+        self._cached_buffer = None
 
     def generate_map(
         self,
@@ -443,168 +422,67 @@ class MultiscalePixelMasking(ModelsExplainer):
             )
 
         _, channels, height, width = image.shape
-        mask_fn = _apply_boxes_fused if self.is_cuda else _apply_boxes_eager
+        total_pixels = height * width
 
         with torch.inference_mode():
-            rows = torch.arange(height, device=self.device).unsqueeze(0)  # (1, H)
-            cols = torch.arange(width, device=self.device).unsqueeze(0)  # (1, W)
+            rows = torch.arange(height, device=self.device)
+            cols = torch.arange(width, device=self.device)
+            all_pixel_indices = torch.arange(total_pixels, device=self.device)
+            all_center_rows = (all_pixel_indices // width).unsqueeze(1)
+            all_center_cols = (all_pixel_indices % width).unsqueeze(1)
+            del all_pixel_indices
+
+            saliency_map_gpu = torch.zeros(
+                total_pixels, dtype=torch.float32, device=self.device
+            )
             batch_buffer = self._get_batch_buffer(channels, height, width, image.dtype)
+            mask_val_tensor = image.new_tensor(self.mask_value)
 
-            # Fast path: when stride == 1, flatten ALL (sigma, pixel) jobs into ONE unified queue
-            if self.stride == 1:
-                total_pixels = height * width
-                num_sigmas = len(self.sigma_list)
-                total_jobs = num_sigmas * total_pixels
+            with torch.amp.autocast(
+                device_type=self.device.type,
+                dtype=self.amp_dtype,
+                enabled=self.use_amp,
+            ):
+                original_output, _ = self.model(image)
+                original_score = original_output[0, target_index].float()
 
-                # Pad to an exact multiple of pixel_batch_size for static-shape CUDA Graphs
-                padded_jobs = (
-                    (total_jobs + self.pixel_batch_size - 1) // self.pixel_batch_size
-                ) * self.pixel_batch_size
-
-                job_indices = torch.arange(padded_jobs, device=self.device)
-                clamped_jobs = torch.clamp(job_indices, max=total_jobs - 1)
-
-                sigma_idx = clamped_jobs // total_pixels
-                pixel_idx = clamped_jobs % total_pixels
-
-                center_rows = (pixel_idx // width).unsqueeze(1)  # (N_pad, 1)
-                center_cols = (pixel_idx % width).unsqueeze(1)  # (N_pad, 1)
-
-                sigmas_tensor = torch.tensor(self.sigma_list, device=self.device)
-                job_sigmas = sigmas_tensor[sigma_idx].unsqueeze(1)  # (N_pad, 1)
-
-                before = job_sigmas // 2
-                after = (job_sigmas + 1) // 2
-                r0 = center_rows - before
-                r1 = center_rows + after
-                c0 = center_cols - before
-                c1 = center_cols + after
-
-                scores_padded = torch.empty(
-                    padded_jobs, dtype=torch.float32, device=self.device
-                )
-
-                with torch.amp.autocast(
-                    device_type=self.device.type,
-                    dtype=self.amp_dtype,
-                    enabled=self.use_amp,
-                ):
-                    original_output, _ = self.model(image)
-                    original_score = original_output[0, target_index].float()
-
-                    batch_starts = range(0, padded_jobs, self.pixel_batch_size)
-                    for batch_start in self._progress(
-                        batch_starts, "MPM unified batches"
+                for sigma in self._progress(self.sigma_list, desc="MPM sigma levels"):
+                    batch_starts = range(0, total_pixels, self.pixel_batch_size)
+                    for step_idx, batch_start in enumerate(
+                        self._progress(batch_starts, f"MPM sigma {sigma}"), start=1
                     ):
-                        batch_end = batch_start + self.pixel_batch_size
+                        batch_end = min(
+                            total_pixels, batch_start + self.pixel_batch_size
+                        )
+                        actual_batch_size = batch_end - batch_start
 
-                        # Populates static batch_buffer in-place
-                        mask_fn(
-                            image,
+                        occluded = self._occlusion_masks_from_coords(
                             rows,
                             cols,
-                            r0[batch_start:batch_end],
-                            r1[batch_start:batch_end],
-                            c0[batch_start:batch_end],
-                            c1[batch_start:batch_end],
-                            self.mask_value,
-                            batch_buffer,
+                            all_center_rows[batch_start:batch_end],
+                            all_center_cols[batch_start:batch_end],
+                            sigma,
                         )
 
-                        # Model ALWAYS sees static shape (pixel_batch_size, C, H, W)
-                        output_batch, _ = self.model(batch_buffer)
-                        scores_padded[batch_start:batch_end] = (
+                        masked_view = batch_buffer[:actual_batch_size]
+                        torch.where(occluded, mask_val_tensor, image, out=masked_view)
+
+                        output_batch, _ = self.model(masked_view)
+                        saliency_map_gpu[batch_start:batch_end] += (
                             original_score - output_batch[:, target_index].float()
                         )
 
-                # Reshape valid jobs to (num_sigmas, H, W) and sum over scales on GPU
-                saliency_map_gpu = (
-                    scores_padded[:total_jobs]
-                    .view(num_sigmas, height, width)
-                    .sum(dim=0)
-                )
+                        if (
+                            self.is_cuda
+                            and self.sync_interval > 0
+                            and step_idx % self.sync_interval == 0
+                        ):
+                            torch.cuda.synchronize(self.device)
 
-            else:
-                # Strided multiscale path (4x to 16x fewer forward passes)
-                saliency_map_gpu = torch.zeros(
-                    (height, width), dtype=torch.float32, device=self.device
-                )
+                    if self.is_cuda:
+                        torch.cuda.synchronize(self.device)
 
-                with torch.amp.autocast(
-                    device_type=self.device.type,
-                    dtype=self.amp_dtype,
-                    enabled=self.use_amp,
-                ):
-                    original_output, _ = self.model(image)
-                    original_score = original_output[0, target_index].float()
-
-                    for sigma in self._progress(
-                        self.sigma_list, desc="MPM sigma levels"
-                    ):
-                        s_step = (
-                            max(1, sigma // 4)
-                            if self.stride == "auto"
-                            else int(self.stride)
-                        )
-                        grid_r = torch.arange(0, height, s_step, device=self.device)
-                        grid_c = torch.arange(0, width, s_step, device=self.device)
-                        gh, gw = grid_r.numel(), grid_c.numel()
-                        num_grid = gh * gw
-
-                        padded_grid = (
-                            (num_grid + self.pixel_batch_size - 1)
-                            // self.pixel_batch_size
-                        ) * self.pixel_batch_size
-
-                        mesh_r, mesh_c = torch.meshgrid(grid_r, grid_c, indexing="ij")
-                        flat_r = mesh_r.reshape(-1)
-                        flat_c = mesh_c.reshape(-1)
-
-                        idx_pad = torch.clamp(
-                            torch.arange(padded_grid, device=self.device),
-                            max=num_grid - 1,
-                        )
-                        cr = flat_r[idx_pad].unsqueeze(1)
-                        cc = flat_c[idx_pad].unsqueeze(1)
-
-                        before, after = sigma // 2, (sigma + 1) // 2
-                        r0, r1 = cr - before, cr + after
-                        c0, c1 = cc - before, cc + after
-
-                        sigma_scores = torch.empty(
-                            padded_grid, dtype=torch.float32, device=self.device
-                        )
-
-                        for batch_start in range(0, padded_grid, self.pixel_batch_size):
-                            batch_end = batch_start + self.pixel_batch_size
-                            mask_fn(
-                                image,
-                                rows,
-                                cols,
-                                r0[batch_start:batch_end],
-                                r1[batch_start:batch_end],
-                                c0[batch_start:batch_end],
-                                c1[batch_start:batch_end],
-                                self.mask_value,
-                                batch_buffer,
-                            )
-                            output_batch, _ = self.model(batch_buffer)
-                            sigma_scores[batch_start:batch_end] = (
-                                original_score - output_batch[:, target_index].float()
-                            )
-
-                        coarse_map = sigma_scores[:num_grid].view(1, 1, gh, gw)
-                        if gh != height or gw != width:
-                            upsampled = F.interpolate(
-                                coarse_map,
-                                size=(height, width),
-                                mode="bilinear",
-                                align_corners=False,
-                            ).squeeze()
-                        else:
-                            upsampled = coarse_map.squeeze()
-
-                        saliency_map_gpu += upsampled
+            saliency_map_gpu = saliency_map_gpu.view(height, width)
 
             if normalize:
                 if self.gpu_normalize:

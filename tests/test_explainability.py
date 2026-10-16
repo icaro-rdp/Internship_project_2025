@@ -113,3 +113,16 @@ def test_normalized_map_spans_unit_range(
     assert saliency.shape == IMAGE_SHAPE[1:]
     assert saliency.min() == pytest.approx(-1.0)
     assert saliency.max() == pytest.approx(1.0)
+
+
+def test_cleanup_releases_cached_buffer(
+    model: TinyRegressor, image: torch.Tensor
+) -> None:
+    """Calling cleanup frees the preallocated batch buffer."""
+    explainer = MultiscalePixelMasking(model, SIGMAS, mask_value=MASK_VALUE)
+    assert explainer.pixel_batch_size == 128
+    assert explainer.channels_last is False
+    explainer.generate_map(image)
+    assert explainer._cached_buffer is not None
+    explainer.cleanup()
+    assert explainer._cached_buffer is None
