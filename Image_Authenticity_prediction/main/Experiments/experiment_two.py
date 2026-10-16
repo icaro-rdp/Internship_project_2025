@@ -101,9 +101,38 @@ XAI_PARAMS = get_xai_config()
 MODEL_ORDER = get_model_order()
 
 
+def save_test_samples_manifest() -> Path:
+    """Save an immutable manifest linking test split indices to image filenames and scores."""
+    manifest_path = DIRS["maps"] / "test_samples_manifest.json"
+    if manifest_path.exists():
+        return manifest_path
+
+    test_ds = CLIP_DATASET["test"]
+    manifest = []
+    for test_idx in range(len(test_ds)):
+        global_idx = int(test_ds.indices[test_idx])
+        row = test_ds.dataset.data.iloc[global_idx]
+        img_raw = str(row.iloc[3])
+        manifest.append(
+            {
+                "test_idx": test_idx,
+                "global_csv_idx": global_idx,
+                "image_path": img_raw,
+                "image_name": Path(img_raw).name,
+                "authenticity_score": float(row.iloc[1]),
+            }
+        )
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    info(f"Saved test samples manifest: {manifest_path} ({len(manifest)} items)")
+    return manifest_path
+
+
 def setup_directories():
     for p in DIRS.values():
         p.mkdir(parents=True, exist_ok=True)
+    save_test_samples_manifest()
 
 
 # ============================================================================

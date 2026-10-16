@@ -105,8 +105,8 @@ def test_render_overlay_rgb_dimensions_and_type() -> None:
     assert overlay.max() <= 255
 
 
-def test_generate_comparison_grid_and_save_overlays(tmp_path: Path) -> None:
-    """Verify figure grid and individual image files are written to disk."""
+def test_generate_comparison_grid_clean_strip_and_annotated(tmp_path: Path) -> None:
+    """Verify clean borderless strip and annotated figure are written to disk."""
     orig_rgb = np.ones((32, 32, 3), dtype=np.float32) * 0.5
     models_data: list[dict[str, Any]] = [
         {
@@ -117,18 +117,34 @@ def test_generate_comparison_grid_and_save_overlays(tmp_path: Path) -> None:
         }
     ]
 
-    grid_path = tmp_path / "grids" / "grid_sample_0001.png"
+    # 1. Clean borderless strip
+    clean_strip_path = tmp_path / "grids" / "strip_sample_0001.png"
     generate_comparison_grid(
         sample_idx=1,
         orig_rgb=orig_rgb,
         auth_score=0.75,
         models_data=models_data,
-        output_path=grid_path,
+        output_path=clean_strip_path,
+        annotate=False,
+    )
+    assert clean_strip_path.exists()
+    assert clean_strip_path.stat().st_size > 0
+
+    # 2. Labeled annotated figure
+    labeled_grid_path = tmp_path / "grids" / "grid_sample_0001.png"
+    generate_comparison_grid(
+        sample_idx=1,
+        orig_rgb=orig_rgb,
+        auth_score=0.75,
+        models_data=models_data,
+        output_path=labeled_grid_path,
+        annotate=True,
         dpi=100,
     )
-    assert grid_path.exists()
-    assert grid_path.stat().st_size > 0
+    assert labeled_grid_path.exists()
+    assert labeled_grid_path.stat().st_size > 0
 
+    # 3. Individual plain images
     sample_dir = tmp_path / "individual" / "sample_0001"
     save_individual_overlays(
         sample_idx=1,
@@ -138,4 +154,5 @@ def test_generate_comparison_grid_and_save_overlays(tmp_path: Path) -> None:
     )
     assert (sample_dir / "original.png").exists()
     assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_overlay.png").exists()
+    assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_heatmap.png").exists()
     assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_heatmap.png").exists()
