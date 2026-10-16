@@ -1,16 +1,16 @@
+import gc
+import json
+from pathlib import Path
+import re
+import shutil
+import sys
+import time
+from collections import defaultdict
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import sys
-from pathlib import Path
-import numpy as np
-import gc
-import time
-import re
-import json
-import shutil
-import matplotlib.pyplot as plt
-from collections import defaultdict
-from typing import Sequence, Tuple, Optional
 
 # ============================================================================
 # 1. SETUP & CONFIGURATION
@@ -18,28 +18,29 @@ from typing import Sequence, Tuple, Optional
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from main.data import CLIP_DATASET, DENSENET_DATASET, IMAGENET_DATASET
 from main.Models import (
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
+    BarlowTwinsAuthenticityPredictor,
+    CLIPViTAuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
 )
-from main.Utils.explainability import GradCAM, MultiscalePixelMasking
-from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
-from main.Utils.logger import info, warn, error, set_level
-from main.Utils.config import get_xai_config, get_data_config, get_model_order
+from main.Utils.cleanup import cleanup_model_and_data
 from main.Utils.comparisons import (
     compare_heatmaps,
     uniform_heatmaps,
 )
+from main.Utils.config import get_data_config, get_model_order, get_xai_config
+from main.Utils.explainability import GradCAM, MultiscalePixelMasking
+from main.Utils.logger import error, info, set_level, warn
 from main.Utils.visualization import (
-    visualize_similarity_matrix,
     visualize_similarity_distribution,
+    visualize_similarity_matrix,
     visualize_violin_distribution,
 )
-from main.data import IMAGENET_DATASET, DENSENET_DATASET
 
 # Load config
 _data_cfg = get_data_config()
@@ -86,6 +87,11 @@ MODEL_REGISTRY = {
         "dataset": IMAGENET_DATASET,
         "target_layer": "features.7.2.conv3",
     },
+    "clip_vit_b16": {
+        "class": CLIPViTAuthenticityPredictor,
+        "dataset": CLIP_DATASET,
+        "target_layer": "vision_model.encoder.layers.11.layer_norm1",
+    },
 }
 
 # XAI parameters - loaded from config
@@ -113,7 +119,7 @@ class NpEncoder(json.JSONEncoder):
             return float(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
-        return super(NpEncoder, self).default(obj)
+        return super().default(obj)
 
 
 # ============================================================================
@@ -151,15 +157,16 @@ def get_weight_files(models_filter, variants_filter):
             tag = re.search(r"exp1a_variant\d+", str(p)).group(0)
 
         keep = include_all
-        if not keep:
-            if "greedy" in req_vars and "greedy" in tag:
-                keep = True
-            elif "negative" in req_vars and "negative" in tag:
-                keep = True
-            elif "orig" in req_vars and "orig" in tag:
-                keep = True
-            elif "base" in req_vars and ("orig" in tag or "exp1a" in tag):
-                keep = True
+        if not keep and (
+            ("greedy" in req_vars and "greedy" in tag)
+            or ("negative" in req_vars and "negative" in tag)
+            or ("orig" in req_vars and "orig" in tag)
+            or (
+                ("base" in req_vars or "unpruned" in req_vars)
+                and ("orig" in tag or "exp1a" in tag)
+            )
+        ):
+            keep = True
 
         if keep:
             grouped[m_name].append(p)
@@ -293,17 +300,26 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
         if not d.exists():
             return {}
         g = defaultdict(dict)
+        known_models = sorted(MODEL_REGISTRY.keys(), key=len, reverse=True)
         for f in d.glob("*_maps.npy"):
             stem = f.stem.replace("_maps", "")
             if "_" not in stem:
                 continue
-            parts = stem.split("_", 1)
-            if len(parts) < 2:
+            matched_m = None
+            var = None
+            for km in known_models:
+                if stem.startswith(f"{km}_"):
+                    matched_m = km
+                    var = stem[len(km) + 1 :]
+                    break
+            if not matched_m or not var:
+                parts = stem.split("_", 1)
+                if len(parts) < 2:
+                    continue
+                matched_m, var = parts
+            if models_filter and matched_m not in models_filter:
                 continue
-            m_name, var = parts
-            if models_filter and m_name not in models_filter:
-                continue
-            g[m_name][var] = f
+            g[matched_m][var] = f
         return g
 
     for method in methods:
@@ -373,14 +389,7 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                         model_data,
                         metric=metric,
                         add_title=False,
-                        custom_model_order=[
-                            "barlowtwins",
-                            "resnet152",
-                            "densenet161",
-                            "efficientnetb3",
-                            "vgg19",
-                            "vgg16",
-                        ],
+                        custom_model_order=MODEL_ORDER,
                     )
                     if fig_violin:
                         out_name = f"{method}_within_model_{metric}_violin"
@@ -549,7 +558,7 @@ def run_experiment_2(
             save_comparison_json,
         )
 
-    info(f"Done. Time: {time.time()-start:.2f}s")
+    info(f"Done. Time: {time.time() - start:.2f}s")
 
 
 if __name__ == "__main__":
@@ -562,6 +571,7 @@ if __name__ == "__main__":
             "efficientnetb3",
             "vgg16",
             "vgg19",
+            "clip_vit_b16",
         ],
         xai_methods="both",
         comparison_only=True,

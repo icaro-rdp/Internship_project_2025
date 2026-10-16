@@ -106,7 +106,7 @@ models:
     target_layer: null # Cannot be pruned with current method
     input_size: 299
   clip_vit_b16:
-    target_layer: "visual_projection"
+    target_layer: "vision_model.encoder.layers.11.layer_norm1"
     input_size: 224
 
 # =============================================================================
@@ -120,3 +120,4 @@ visualization:
     - "efficientnetb3"
     - "vgg16"
     - "vgg19"
+    - "clip_vit_b16"

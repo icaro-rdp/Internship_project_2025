@@ -500,7 +500,7 @@ def main():
         "--variants",
         type=str,
         default="all",
-        help="Variants to process: all, orig, base, greedy, negative (default: all)",
+        help="Variants to process: all, orig, base, unpruned, greedy, negative (default: all)",
     )
     exp2_parser.add_argument(
         "--save-maps",

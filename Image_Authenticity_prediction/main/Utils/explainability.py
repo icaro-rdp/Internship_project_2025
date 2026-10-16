@@ -2,7 +2,7 @@
 import importlib
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Literal, TypeVar
 
 import numpy as np
@@ -156,6 +156,7 @@ class GradCAM(ModelsExplainer):
         channels_last: bool = True,
         freeze_parameters: bool = True,
         gpu_normalize: bool = True,
+        reshape_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ):
         super().__init__(
             model, use_amp=use_amp, channels_last=channels_last, compile_model=False
@@ -167,6 +168,7 @@ class GradCAM(ModelsExplainer):
         self.hooks = []
         self.relu = bool(relu)
         self.gpu_normalize = bool(gpu_normalize)
+        self.reshape_transform = reshape_transform
 
         if freeze_parameters:
             self.model.requires_grad_(False)
@@ -268,6 +270,26 @@ class GradCAM(ModelsExplainer):
         with torch.no_grad():
             gradients = self.gradients.float()
             activations = self.activations.float()
+
+            if self.reshape_transform is not None:
+                gradients = self.reshape_transform(gradients)
+                activations = self.reshape_transform(activations)
+            elif gradients.dim() == 3:
+                # Default ViT token reshape if (B, N, C) where N-1 is a perfect square
+                # e.g. 197 tokens -> 1 CLS + 196 patch tokens = 14x14 grid
+                b, n, c = gradients.shape
+                grid_size = int((n - 1) ** 0.5)
+                if grid_size * grid_size == n - 1:
+                    gradients = (
+                        gradients[:, 1:, :]
+                        .reshape(b, grid_size, grid_size, c)
+                        .permute(0, 3, 1, 2)
+                    )
+                    activations = (
+                        activations[:, 1:, :]
+                        .reshape(b, grid_size, grid_size, c)
+                        .permute(0, 3, 1, 2)
+                    )
 
             # (B, C, 1, 1)
             weights = gradients.mean(dim=(2, 3), keepdim=True)

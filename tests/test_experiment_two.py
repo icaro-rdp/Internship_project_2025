@@ -92,6 +92,38 @@ class TestExperimentTwoDirectoryAndWeightDiscovery:
             for wpath in model_weights:
                 assert "greedy" not in str(wpath) and "negative" not in str(wpath)
 
+        unpruned_weights = get_weight_files(
+            models_filter=None, variants_filter="unpruned"
+        )
+        for model_weights in unpruned_weights.values():
+            for wpath in model_weights:
+                assert "greedy" not in str(wpath) and "negative" not in str(wpath)
+
+    def test_clip_vit_registered_in_experiment_two(self) -> None:
+        """Verify clip_vit_b16 is registered in experiment_two MODEL_REGISTRY."""
+        assert "clip_vit_b16" in experiment_two.MODEL_REGISTRY
+        entry = experiment_two.MODEL_REGISTRY["clip_vit_b16"]
+        assert entry["class"].__name__ == "CLIPViTAuthenticityPredictor"
+        assert entry["target_layer"] == "vision_model.encoder.layers.11.layer_norm1"
+
+    def test_get_weight_files_clip_vit_unpruned(
+        self,
+        mock_experiment_dirs: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify get_weight_files properly finds clip_vit_b16 weights."""
+        clip_weights_dir = mock_experiment_dirs["root"] / "ClipWeights"
+        clip_weights_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(1, 4):
+            (clip_weights_dir / f"clip_vit_b16_exp1a_variant{i}_best.pth").touch()
+        monkeypatch.setitem(experiment_two.DIRS, "weights", clip_weights_dir)
+
+        weights = get_weight_files(
+            models_filter=["clip_vit_b16"], variants_filter="unpruned"
+        )
+        assert "clip_vit_b16" in weights
+        assert len(weights["clip_vit_b16"]) == 3
+
 
 class TestExperimentTwoMapProcessing:
     """Tests for heatmap deserialization, resizing, and serialization encoders."""

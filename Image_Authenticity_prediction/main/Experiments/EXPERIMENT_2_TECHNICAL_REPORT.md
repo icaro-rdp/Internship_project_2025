@@ -43,13 +43,19 @@ The code has been enhanced with a novel **prototype-based comparison** approach 
 - DenseNet161
 - EfficientNetB3
 - BarlowTwins
+- **CLIP ViT-B/16 (Vision Transformer)** ✨ NEW
+  - Backbone: `openai/clip-vit-base-patch16` with frozen weights and trained regression head
+  - Target Layer for Grad-CAM: `vision_model.encoder.layers.11.layer_norm1`
+  - Spatial Reshaping: Drops `[CLS]` token (index 0) from 197 tokens -> reshapes 196 patch tokens to (14, 14) grid -> permutes to (B, 768, 14, 14) -> interpolates to target resolution (224, 224)
+  - Attribution Flow: Backpropagated directly from scalar continuous prediction $\hat{y}$
+  - MPM Support: Model-agnostic perturbation evaluation on (predictions, features) contract
 
 **Variant Support:**
 Each model can have multiple variants:
 - `orig`: Original unpruned model
-- `exp1a_variantN`: Base variants from Experiment 1A
-- `exp1b_variantN_greedy_pruned`: Greedy-pruned variants
-- `exp1b_variantN_negative_pruned`: Negative-pruned variants
+- `exp1a_variantN`: Unpruned Monte Carlo baseline variants from Experiment 1A (variants 1-10)
+- `exp1b_variantN_greedy_pruned`: Greedy-pruned variants from Experiment 1B
+- `exp1b_variantN_negative_pruned`: Negative-impact pruned variants from Experiment 1B
 
 #### 2. **Explainability Map Comparison (Experiment 2B)**
 
@@ -72,20 +78,22 @@ Compare all model prototypes pairwise using correlation metric
 ```
 
 **Example:**
-- Input: 10 variants of BarlowTwins, 10 variants of VGG16, etc.
-- Output: BarlowTwins-prototype vs VGG16-prototype comparison
+- Input: 10 variants of BarlowTwins, 10 variants of CLIP ViT-B/16, etc.
+- Output: BarlowTwins-prototype vs CLIP-prototype comparison
 
 **Advantages:**
 - Reduces noise from variant-specific artifacts
 - Provides model-level behavior comparison
-- Reveals architectural differences in attention patterns
+- Reveals architectural differences in attention patterns (e.g. CNN local receptive fields vs. ViT global self-attention)
 
 ##### B. **Intra-Model Comparison (Variant Analysis)**
-Compares different variants of the **same model** to understand pruning effects.
+Compares different variants of the **same model** to evaluate:
+1. **Unpruned Variant Attribution Stability:** Pairwise comparison across the 10 Monte Carlo baseline variants (`exp1a_variant1` ... `exp1a_variant10`) to assess how random head initialization and training dynamics alter visual explanations.
+2. **Pruning Effects:** Comparing unpruned vs. greedy-pruned vs. negative-pruned models to reveal how unit removal alters visual saliency.
 
 **Example:**
-- Compare VGG16-orig vs VGG16-greedy vs VGG16-negative
-- Reveals how pruning changes attention patterns
+- Compare `clip_vit_b16_exp1a_variant1` through `clip_vit_b16_exp1a_variant10`
+- Generates pairwise correlation matrix and violin distribution of intra-model agreement
 
 ---
 
@@ -210,19 +218,77 @@ Plot scatter of (agreement, controversy) for 138 images
 
 ## Workflow Execution
 
-### Complete Pipeline
+### Complete Pipeline (Python API)
 
 ```python
 run_experiment_2(
-    models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161', 'barlowtwins'],
-    variants='greedy',
-    xai_methods='both',  # Run both GradCAM and MPM
-    comparison_only=False,  # False: generate maps, True: skip generation
-    comparison_kinds=["inter_model", "intra_model_variants"],
-    comparison_metrics=["correlation"],
+    models=['clip_vit_b16'],  # Or full set of models
+    variants='unpruned',      # Target 10 Monte Carlo unpruned variants (exp1a_variant1...10)
+    xai_methods='both',       # Run both GradCAM and MPM
+    comparison_only=False,    # False: generate maps, True: skip generation
+    run_comparison=True,      # Run comparison immediately after map generation
+    comparison_kinds=["within_model_variants"], # Intra-model variant stability analysis
+    comparison_metrics=["correlation", "top_percent_iou_5", "top_percent_iou_15", "top_percent_iou_25"],
     show_comparison_plots=True,
     save_comparison_json=True,
 )
+```
+
+### Command Line Interface (CLI)
+
+The experiment can be launched directly through the package CLI runner:
+
+```bash
+uv run python -m Image_Authenticity_prediction experiment-two \
+    --models clip_vit_b16 \
+    --variants unpruned \
+    --xai-methods both \
+    --run-comparison \
+    --comparison-kinds within_model_variants \
+    --comparison-metrics correlation top_percent_iou_5 top_percent_iou_15 top_percent_iou_25
+```
+
+### SSH-Resilient Background Execution (`tmux` / `nohup`)
+
+Because generating high-resolution Multiscale Pixel Masking maps across 138 test images per variant is computationally demanding, long sessions over SSH can be dropped if network connections drop. To ensure uninterrupted execution:
+
+#### Recommended: Detached `tmux` Session
+```bash
+# 1. Start a persistent tmux session named "exp2"
+tmux new -s exp2
+
+# 2. Inside the tmux session, execute the experiment command:
+uv run python -m Image_Authenticity_prediction experiment-two \
+    --models clip_vit_b16 \
+    --variants unpruned \
+    --xai-methods both \
+    --run-comparison \
+    --comparison-kinds within_model_variants
+
+# 3. Detach safely from the session:
+#    Press: Ctrl + b, then release and press: d
+```
+
+When reconnecting to the server over SSH:
+```bash
+# Reattach to check progress
+tmux attach -t exp2
+
+# If needed, kill the session when fully complete:
+tmux kill-session -t exp2
+```
+
+#### Alternative: Background with `nohup`
+```bash
+nohup uv run python -m Image_Authenticity_prediction experiment-two \
+    --models clip_vit_b16 \
+    --variants unpruned \
+    --xai-methods both \
+    --run-comparison \
+    --comparison-kinds within_model_variants > experiment_2.log 2>&1 &
+
+# Follow progress live
+tail -f experiment_2.log
 ```
 
 ### Execution Flow
