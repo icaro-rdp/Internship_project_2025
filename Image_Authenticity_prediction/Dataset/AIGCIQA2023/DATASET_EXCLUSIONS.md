@@ -167,7 +167,7 @@ All files associated with this filtering protocol are located in `Image_Authenti
 4. **`removed_images_summary.csv`**:
    Aggregated breakdown of the 1,032 excluded images by challenge and category.
 5. **`removed_images.txt`**:
-   Plain-text list of file paths for the 1,032 excluded images (used by `noise_ceiling_analysis.ipynb` to filter single scores).
+   Plain-text list of file paths for the 1,032 excluded images (used by `analysis_noise_ceiling.py` to filter single scores).
 
 ---
 

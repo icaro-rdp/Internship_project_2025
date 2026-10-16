@@ -199,7 +199,8 @@ Image_Authenticity_prediction/
 │       ├── experiment_two.py     # XAI methods and comparisons
 │       ├── experiment_three.py   # Ensemble strategies (WIP)
 │       ├── analysis_consistency_vs_accuracy.py
-│       ├── noise_ceiling_analysis.ipynb
+│       ├── analysis_noise_ceiling.py
+│       ├── analysis_quality_vs_authenticity.py
 │       ├── EXPERIMENT_1_TECHNICAL_REPORT.md
 │       ├── EXPERIMENT_2_TECHNICAL_REPORT.md
 │       └── test/                 # Unit tests for experiments

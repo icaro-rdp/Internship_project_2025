@@ -70,7 +70,8 @@ Image_Authenticity_prediction/
         ├── experiment_two.py    # ✅ XAI methods and comparisons
         ├── experiment_three.py  # ✅ Ensemble strategies
         ├── analysis_consistency_vs_accuracy.py
-        ├── noise_ceiling_analysis.ipynb
+        ├── analysis_noise_ceiling.py
+        ├── analysis_quality_vs_authenticity.py
         ├── EXPERIMENT_1_TECHNICAL_REPORT.md
         ├── EXPERIMENT_2_TECHNICAL_REPORT.md
         ├── EXPERIMENT_3_TECHNICAL_REPORT.md
@@ -308,7 +309,8 @@ Exports: `GradCAM`, `MultiscalePixelMasking`, `FeatureMapsPruner`
 #### Other Files
 
 - **`analysis_consistency_vs_accuracy.py`**: Analysis script comparing consistency and accuracy
-- **`noise_ceiling_analysis.ipynb`**: Jupyter notebook for noise ceiling analysis
+- **`analysis_noise_ceiling.py`**: Inter-rater reliability and noise ceiling analysis script
+- **`analysis_quality_vs_authenticity.py`**: Quality vs Authenticity descriptive analysis pipeline
 - **`EXPERIMENT_1_TECHNICAL_REPORT.md`**: Detailed report on Experiment 1 results
 - **`EXPERIMENT_2_TECHNICAL_REPORT.md`**: Detailed report on Experiment 2 results
 - **`EXPERIMENT_3_TECHNICAL_REPORT.md`**: Detailed report on Experiment 3 results (ensemble methods)

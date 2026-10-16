@@ -339,6 +339,50 @@ def descriptive_qa_command(args: argparse.Namespace) -> None:
     print("=" * 80)
 
 
+def noise_ceiling_command(args: argparse.Namespace) -> None:
+    """Execute noise ceiling and split-half reliability analysis command."""
+    from Image_Authenticity_prediction.main.Experiments.analysis_noise_ceiling import (
+        run_noise_ceiling_analysis,
+    )
+
+    print("=" * 80)
+    print("STARTING NOISE CEILING & SPLIT-HALF RELIABILITY ANALYSIS")
+    print("=" * 80)
+    scores_label = (
+        args.scores_dir if args.scores_dir else "Default (Dataset/Single_scores)"
+    )
+    out_label = (
+        args.output_dir
+        if args.output_dir
+        else "Default (Outputs/Noise_ceiling_analysis)"
+    )
+    print(f"  - Scores Dir: {scores_label}")
+    print(f"  - Output Dir: {out_label}")
+    print(f"  - Splits: {args.n_splits}")
+    print(f"  - Bins: {args.bins}")
+    print(f"  - Strict Complete Case: {args.strict_complete_case}")
+    print("=" * 80)
+
+    scores_path = Path(args.scores_dir) if args.scores_dir else None
+    dataset_path = Path(args.dataset_dir) if args.dataset_dir else None
+    output_path = Path(args.output_dir) if args.output_dir else None
+
+    run_noise_ceiling_analysis(
+        scores_dir=scores_path,
+        dataset_dir=dataset_path,
+        output_dir=output_path,
+        n_splits=args.n_splits,
+        bins=args.bins,
+        seed=args.seed,
+        use_strict_complete_case=args.strict_complete_case,
+        generate_plots=not args.no_plots,
+    )
+
+    print("=" * 80)
+    print("NOISE CEILING ANALYSIS COMPLETE")
+    print("=" * 80)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -617,6 +661,58 @@ def main():
         help="Binning strategy: 'quantile' (equal-frequency), 'equal_width' (equal-interval), or 'both' (default: both)",
     )
 
+    # Noise Ceiling parser
+    nc_parser = subparsers.add_parser(
+        "noise-ceiling",
+        help="Run noise ceiling and split-half reliability analysis",
+    )
+    nc_parser.add_argument(
+        "--scores-dir",
+        type=str,
+        default=None,
+        help="Path to Single_scores directory (default: canonical location)",
+    )
+    nc_parser.add_argument(
+        "--dataset-dir",
+        type=str,
+        default=None,
+        help="Path to AIGCIQA2023 dataset directory (default: canonical location)",
+    )
+    nc_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: Outputs/Noise_ceiling_analysis)",
+    )
+    nc_parser.add_argument(
+        "--n-splits",
+        type=int,
+        default=20,
+        help="Number of random split-half permutations (default: 20)",
+    )
+    nc_parser.add_argument(
+        "--bins",
+        type=int,
+        default=20,
+        help="Number of bins for rating distribution analysis (default: 20)",
+    )
+    nc_parser.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Random seed for split permutation sampling (default: 12345)",
+    )
+    nc_parser.add_argument(
+        "--strict-complete-case",
+        action="store_true",
+        help="Drop images not evaluated by all participants (complete cases)",
+    )
+    nc_parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip figure generation",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -632,6 +728,8 @@ def main():
         experiment_three_command(args)
     elif args.command == "descriptive-qa":
         descriptive_qa_command(args)
+    elif args.command == "noise-ceiling":
+        noise_ceiling_command(args)
     else:
         parser.print_help()
 
