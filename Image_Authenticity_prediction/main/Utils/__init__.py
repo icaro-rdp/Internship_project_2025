@@ -6,15 +6,17 @@ PyTorch dependencies. Each utility is pulled in only when accessed.
 """
 
 from importlib import import_module
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-_EXPORT_MAP: Dict[str, Tuple[str, str]] = {
+_EXPORT_MAP: dict[str, tuple[str, str]] = {
     "GradCAM": ("explainability", "GradCAM"),
     "MultiscalePixelMasking": ("explainability", "MultiscalePixelMasking"),
     "FeatureMapsPruner": ("pruning", "FeatureMapsPruner"),
     "clear_gpu_memory": ("cleanup", "clear_gpu_memory"),
     "cleanup_model_and_data": ("cleanup", "cleanup_model_and_data"),
     "visualize_and_save_saliency": ("visualization", "visualize_and_save_saliency"),
+    "denormalize_image": ("visualization", "denormalize_image"),
+    "render_overlay_rgb": ("visualization", "render_overlay_rgb"),
     "load_config": ("config", "load_config"),
     "get_device": ("config", "get_device"),
     "get_training_config": ("config", "get_training_config"),
@@ -25,7 +27,24 @@ _EXPORT_MAP: Dict[str, Tuple[str, str]] = {
     "get_paths_config": ("config", "get_paths_config"),
 }
 
-__all__ = sorted(_EXPORT_MAP.keys())
+__all__ = [
+    "FeatureMapsPruner",
+    "GradCAM",
+    "MultiscalePixelMasking",
+    "cleanup_model_and_data",
+    "clear_gpu_memory",
+    "denormalize_image",
+    "get_data_config",
+    "get_device",
+    "get_ensemble_config",
+    "get_paths_config",
+    "get_pruning_config",
+    "get_training_config",
+    "get_xai_config",
+    "load_config",
+    "render_overlay_rgb",
+    "visualize_and_save_saliency",
+]
 
 
 def __getattr__(name: str) -> Any:
@@ -42,5 +61,5 @@ def __getattr__(name: str) -> Any:
     return attr
 
 
-def __dir__() -> List[str]:
+def __dir__() -> list[str]:
     return sorted(set(__all__) | set(globals().keys()))

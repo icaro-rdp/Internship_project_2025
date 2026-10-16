@@ -32,7 +32,10 @@ from Image_Authenticity_prediction.main.data import (
 )
 from Image_Authenticity_prediction.main.Utils.config import get_model_order
 from Image_Authenticity_prediction.main.Utils.logger import error, info, warn
-from Image_Authenticity_prediction.main.Utils.visualization import denormalize_image
+from Image_Authenticity_prediction.main.Utils.visualization import (
+    denormalize_image,
+    render_overlay_rgb,
+)
 
 
 def load_or_create_manifest(maps_dir: Path) -> list[dict[str, Any]]:
@@ -221,57 +224,6 @@ def select_sample_indices(
                 break
 
     return chosen_indices
-
-
-def render_overlay_rgb(
-    img_rgb: np.ndarray,
-    saliency_2d: np.ndarray,
-    cmap_name: str = "bwr",
-    alpha: float = 0.5,
-) -> np.ndarray:
-    """Create a colored heatmap overlay on a desaturated grayscale base image.
-
-    Args:
-        img_rgb: Float RGB image array in range [0, 1] of shape (H, W, 3).
-        saliency_2d: Float 2D saliency heatmap of shape (H', W') in range [-1, 1] or [0, 1].
-        cmap_name: Matplotlib colormap name (e.g. 'bwr', 'coolwarm').
-        alpha: Blending opacity between 0.0 (image only) and 1.0 (heatmap only).
-
-    Returns:
-        Blended RGB uint8 image of shape (H, W, 3).
-    """
-    h, w = img_rgb.shape[:2]
-
-    # Resize saliency map if needed
-    if saliency_2d.shape[:2] != (h, w):
-        saliency_resized = cv2.resize(
-            saliency_2d.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR
-        )
-    else:
-        saliency_resized = saliency_2d.astype(np.float32)
-
-    # Normalize saliency to [0, 1] for colormap lookup
-    s_min, s_max = float(saliency_resized.min()), float(saliency_resized.max())
-    denom = s_max - s_min
-    if denom > 1e-8:
-        norm_saliency = (saliency_resized - s_min) / denom
-    else:
-        norm_saliency = np.full_like(saliency_resized, 0.5)
-
-    try:
-        cmap = plt.get_cmap(cmap_name)
-    except (ValueError, KeyError):
-        cmap = plt.get_cmap("coolwarm")
-
-    heatmap_rgba = cmap(norm_saliency)
-    heatmap_rgb = heatmap_rgba[:, :, :3]  # (H, W, 3) float [0, 1]
-
-    # Convert base image to desaturated grayscale RGB for clear saliency contrast
-    gray = cv2.cvtColor((img_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-    gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32) / 255.0
-
-    blended = (1.0 - alpha) * gray_rgb + alpha * heatmap_rgb
-    return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
 
 
 def get_image_tensor_and_score(

@@ -155,4 +155,41 @@ def test_generate_comparison_grid_clean_strip_and_annotated(tmp_path: Path) -> N
     assert (sample_dir / "original.png").exists()
     assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_overlay.png").exists()
     assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_heatmap.png").exists()
-    assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_heatmap.png").exists()
+
+
+def test_denormalize_image_clamping_and_stats() -> None:
+    """Verify denormalize_image scales standardized tensors back to [0, 1]."""
+    from Image_Authenticity_prediction.main.Utils.visualization import denormalize_image
+
+    dummy_tensor = torch.zeros((3, 16, 16), dtype=torch.float32)
+    # With mean=(0.485, 0.456, 0.406), zeros * std + mean = mean
+    denorm = denormalize_image(dummy_tensor)
+    assert denorm.shape == (3, 16, 16)
+    assert abs(float(denorm[0, 0, 0]) - 0.485) < 1e-4
+    assert abs(float(denorm[1, 0, 0]) - 0.456) < 1e-4
+    assert abs(float(denorm[2, 0, 0]) - 0.406) < 1e-4
+
+
+def test_visualize_and_save_saliency_creates_expected_artifacts(tmp_path: Path) -> None:
+    """Verify visualize_and_save_saliency saves npy, original, heatmap, and overlay."""
+    from Image_Authenticity_prediction.main.Utils.visualization import (
+        visualize_and_save_saliency,
+    )
+
+    image_tensor = torch.zeros((3, 32, 32), dtype=torch.float32)
+    saliency_map = np.random.uniform(0.0, 1.0, (32, 32)).astype(np.float32)
+    prefix = "test_img_001"
+
+    visualize_and_save_saliency(
+        image_tensor=image_tensor,
+        saliency_map=saliency_map,
+        output_dir=str(tmp_path),
+        filename_prefix=prefix,
+        cmap_name="bwr",
+    )
+
+    sample_dir = tmp_path / prefix
+    assert (sample_dir / f"{prefix}_original.png").exists()
+    assert (sample_dir / f"{prefix}_heatmap_bwr.png").exists()
+    assert (sample_dir / f"{prefix}_overlay_bwr.png").exists()
+    assert (tmp_path / "numpy_saliency_maps" / f"{prefix}_saliency_map.npy").exists()

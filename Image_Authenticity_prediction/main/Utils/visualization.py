@@ -1,22 +1,21 @@
-"""
-### Utility functions for plotting data and images.
-"""
+"""Utility functions for plotting data and images."""
+
+from __future__ import annotations
 
 import os
-from typing import Any, Mapping, Optional, Sequence, Tuple, Union, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
-import cv2  # OpenCV for image processing
+import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-
-import matplotlib.pyplot as plt
+from matplotlib import colors
 from matplotlib.figure import Figure
-from matplotlib import cm
-import matplotlib.colors as colors
 
-from .logger import warn, error, debug
+from Image_Authenticity_prediction.main.Utils.logger import debug, error, warn
 
 
 def visualize_similarity_matrix(
@@ -24,8 +23,8 @@ def visualize_similarity_matrix(
     model_names: Sequence[str],
     metric: str = "correlation",
     stat: str = "mean",
-    figsize: Tuple[int, int] = (10, 8),
-    cmap: Union[str, colors.Colormap] = "coolwarm",
+    figsize: tuple[int, int] = (10, 8),
+    cmap: str | colors.Colormap = "coolwarm",
     annotate: bool = True,
     plot_only_lower_triangle: bool = True,
     keep_diagonal: bool = False,
@@ -81,7 +80,6 @@ def visualize_similarity_matrix(
     # --- Plotting Configuration ---
 
     with sns.plotting_context("paper", font_scale=font_scale):
-
         fig = plt.figure(figsize=figsize, dpi=dpi)
 
         current_cmap = cmap
@@ -109,7 +107,7 @@ def visualize_similarity_matrix(
         else:
             cbar_label = f"{metric.capitalize()} {stat.capitalize()}"
 
-        mask: Optional[np.ndarray] = None
+        mask: np.ndarray | None = None
         if plot_only_lower_triangle:
             mask = np.triu(np.ones_like(similarity_matrix, dtype=bool), k=1)
         if not keep_diagonal:
@@ -189,7 +187,7 @@ def visualize_similarity_matrix(
                         edgecolors[i] = (0, 0, 0, 0)  # Transparent for masked cells
 
                 mesh.set_edgecolors(edgecolors)
-        except Exception as e:
+        except (AttributeError, ValueError, RuntimeError) as e:
             warn(f"Could not apply custom edge colors: {e}")
 
         title_metric_name = (
@@ -209,14 +207,12 @@ def visualize_similarity_matrix(
 def visualize_similarity_distribution(
     results: Mapping[str, Any],
     metric: str = "correlation",
-    figsize: Tuple[float, float] = (10, 6),
-    bins: Union[int, str] = "auto",
+    figsize: tuple[float, float] = (10, 6),
+    bins: int | str = "auto",
     color: str = "steelblue",
     add_title: bool = True,
 ) -> Figure:
-    """
-    Plot histogram of inter-variant agreement distribution.
-    """
+    """Plot histogram of inter-variant agreement distribution."""
     # Validate and explain bins
     if isinstance(bins, int):
         if bins <= 0:
@@ -262,7 +258,7 @@ def visualize_similarity_distribution(
     fig, ax = plt.subplots(figsize=figsize)
 
     # Plot histogram
-    counts, bins_edges, patches = ax.hist(
+    counts, _, _ = ax.hist(
         agreement_means, bins=bins, alpha=0.7, edgecolor="black", color=color
     )
 
@@ -340,25 +336,29 @@ def visualize_similarity_distribution(
 def visualize_violin_distribution(
     data: Mapping[str, Sequence[float]],
     metric: str,
-    figsize: Tuple[float, float] = (16, 5),  # Wide for side-by-side
+    figsize: tuple[float, float] = (16, 5),  # Wide for side-by-side
     palette: str = "muted",
-    custom_model_order: Optional[Sequence[str]] = None,
+    custom_model_order: Sequence[str] | None = None,
     dpi: int = 600,
     font_scale: float = 1.2,
     add_title: bool = True,
 ) -> Figure:
-    """
-    Creates faceted violin plots with independent scales, containing
-    a narrow boxplot inside each violin.
+    """Creates faceted violin plots with independent scales.
 
-    Parameters:
-    - data: mapping from model name to sequence of metric values.
-    - metric: name of the metric (used for labels/titles).
-    - figsize: overall figure size in inches (width, height).
-    - palette: seaborn palette name.
-    - custom_model_order: optional explicit ordering of models.
-    - dpi: figure DPI for high-resolution output.
-    - font_scale: seaborn font scale applied within plotting context.
+    Contains a narrow boxplot inside each violin.
+
+    Args:
+        data: Mapping from model name to sequence of metric values.
+        metric: Name of the metric (used for labels/titles).
+        figsize: Overall figure size in inches (width, height).
+        palette: Seaborn palette name.
+        custom_model_order: Optional explicit ordering of models.
+        dpi: Figure DPI for high-resolution output.
+        font_scale: Seaborn font scale applied within plotting context.
+        add_title: Whether to add a title.
+
+    Returns:
+        The matplotlib Figure object.
     """
     # 1. Flatten Data
     records = []
@@ -454,7 +454,7 @@ def visualize_violin_distribution(
         try:
             g.fig.set_size_inches(figsize)
             g.fig.set_dpi(dpi)
-        except Exception:
+        except (AttributeError, ValueError, RuntimeError):
             # Fallback: create a new figure wrapper if setting fails
             warn(
                 "Could not apply figsize/dpi to FacetGrid figure. Continuing with defaults."
@@ -470,7 +470,19 @@ def denormalize_image(
     mean: Sequence[float] = (0.485, 0.456, 0.406),
     std: Sequence[float] = (0.229, 0.224, 0.225),
 ) -> torch.Tensor:
-    """Denormalizes an image tensor."""
+    """Denormalizes an image tensor from standardized values back to [0, 1].
+
+    Args:
+        tensor: Normalized image tensor of shape (C, H, W).
+        mean: Sequence of per-channel means used during normalization.
+        std: Sequence of per-channel standard deviations used during normalization.
+
+    Returns:
+        Denormalized tensor clamped to [0.0, 1.0].
+
+    Raises:
+        ValueError: If tensor does not have 3 dimensions or channel counts mismatch.
+    """
     if tensor.dim() != 3:
         raise ValueError(
             f"Input tensor must have 3 dimensions (C, H, W), but got {tensor.dim()}"
@@ -503,6 +515,58 @@ def denormalize_image(
     return torch.clamp(denormalized_tensor, 0.0, 1.0)
 
 
+def render_overlay_rgb(
+    img_rgb: np.ndarray,
+    saliency_2d: np.ndarray,
+    cmap_name: str = "bwr",
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Create a colored heatmap overlay on a desaturated grayscale base image.
+
+    Args:
+        img_rgb: Float RGB image array in range [0, 1] of shape (H, W, 3).
+        saliency_2d: Float 2D saliency heatmap of shape (H', W').
+        cmap_name: Matplotlib colormap name (e.g. 'bwr', 'coolwarm').
+        alpha: Blending opacity between 0.0 (image only) and 1.0 (heatmap only).
+
+    Returns:
+        Blended RGB uint8 image array of shape (H, W, 3).
+    """
+    h, w = img_rgb.shape[:2]
+
+    # Resize saliency map if needed
+    if saliency_2d.shape[:2] != (h, w):
+        saliency_resized = cv2.resize(
+            saliency_2d.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR
+        )
+    else:
+        saliency_resized = saliency_2d.astype(np.float32)
+
+    # Normalize saliency to [0, 1] for colormap lookup
+    s_min, s_max = float(saliency_resized.min()), float(saliency_resized.max())
+    denom = s_max - s_min
+    if denom > 1e-8:
+        norm_saliency = (saliency_resized - s_min) / denom
+    else:
+        norm_saliency = np.full_like(saliency_resized, 0.5)
+
+    try:
+        cmap = plt.get_cmap(cmap_name)
+    except (ValueError, KeyError):
+        warn(f"Colormap '{cmap_name}' not found. Using default 'coolwarm'.")
+        cmap = plt.get_cmap("coolwarm")
+
+    heatmap_rgba = cmap(norm_saliency)
+    heatmap_rgb = heatmap_rgba[:, :, :3]  # (H, W, 3) float [0, 1]
+
+    # Convert base image to desaturated grayscale RGB for clear saliency contrast
+    gray = cv2.cvtColor((img_rgb * 255.0).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32) / 255.0
+
+    blended = (1.0 - alpha) * gray_rgb + alpha * heatmap_rgb
+    return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+
+
 def visualize_and_save_saliency(
     image_tensor: torch.Tensor,
     saliency_map: np.ndarray,
@@ -513,8 +577,17 @@ def visualize_and_save_saliency(
     overlay_alpha: float = 0.5,
     cmap_name: str = "bwr",
 ) -> None:
-    """
-    Visualizes saliency map, creates a colored overlay on a grayscale original, and saves plain images.
+    """Visualizes saliency map, creates a colored overlay, and saves plain images.
+
+    Args:
+        image_tensor: Normalized image tensor of shape (C, H, W).
+        saliency_map: 2D saliency heatmap array.
+        output_dir: Output directory where images and numpy maps are saved.
+        filename_prefix: Base filename prefix for saved artifacts.
+        mean: Normalization mean sequence.
+        std: Normalization std sequence.
+        overlay_alpha: Opacity factor for the overlay heatmap.
+        cmap_name: Colormap name for the heatmap.
     """
     if image_tensor.is_cuda:
         debug(
@@ -535,69 +608,66 @@ def visualize_and_save_saliency(
 
     saliency_map = np.clip(saliency_map, 0.0, 1.0)
 
-    NUMPY_DIR = os.path.join(
-        output_dir, "numpy_saliency_maps"
-    )  # Centralized numpy maps
-    os.makedirs(NUMPY_DIR, exist_ok=True)
+    numpy_dir = os.path.join(output_dir, "numpy_saliency_maps")
+    os.makedirs(numpy_dir, exist_ok=True)
     np.save(
-        os.path.join(NUMPY_DIR, f"{filename_prefix}_saliency_map.npy"), saliency_map
+        os.path.join(numpy_dir, f"{filename_prefix}_saliency_map.npy"), saliency_map
     )
 
     try:
         img_denorm_tensor = denormalize_image(image_tensor, mean, std)
     except ValueError as e:
         error(
-            f"Error during denormalization for {filename_prefix}: {e}. Skipping visualization."
+            "Error during denormalization for %s: %s. Skipping visualization.",
+            filename_prefix,
+            e,
         )
         return
 
-    # Convert tensor to uint8 image array
+    # Convert tensor to float RGB image array [0, 1]
     img_np = img_denorm_tensor.numpy().transpose(1, 2, 0)
     img_np = np.clip(img_np, 0.0, 1.0)
-    img_uint8 = (img_np * 255).astype(np.uint8)
 
-    # Ensure base image is in BGR format for OpenCV saving
-    if img_uint8.shape[2] == 1:
-        img_bgr = cv2.cvtColor(img_uint8, cv2.COLOR_GRAY2BGR)
-    elif img_uint8.shape[2] == 3:
-        img_bgr = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2BGR)
+    if img_np.shape[2] == 1:
+        img_rgb = np.repeat(img_np, 3, axis=2)
+    elif img_np.shape[2] == 3:
+        img_rgb = img_np
     else:
         error(
-            "Unexpected number of channels (%s) for %s. Skipping visualization.",
-            img_uint8.shape[2],
+            "Unexpected number of channels (%d) for %s. Skipping visualization.",
+            img_np.shape[2],
             filename_prefix,
         )
         return
 
     # 1. Save Original Image (Plain, without text/borders)
+    orig_bgr = cv2.cvtColor((img_rgb * 255.0).astype(np.uint8), cv2.COLOR_RGB2BGR)
     orig_save_path = os.path.join(
         image_specific_output_dir, f"{filename_prefix}_original.png"
     )
-    cv2.imwrite(orig_save_path, img_bgr)
+    cv2.imwrite(orig_save_path, orig_bgr)
 
     # 2. Generate and Save Heatmap Image (Plain)
     try:
-        cmap = cm.get_cmap(cmap_name)
-    except ValueError:
-        warn(f"Colormap '{cmap_name}' not found. Using default 'viridis'.")
-        cmap = cm.get_cmap("viridis")
+        cmap = plt.get_cmap(cmap_name)
+    except (ValueError, KeyError):
+        warn(f"Colormap '{cmap_name}' not found. Using default 'coolwarm'.")
+        cmap = plt.get_cmap("coolwarm")
 
-    # Apply colormap directly to the normalized array (returns RGBA floats [0, 1])
     heatmap_rgba = cmap(saliency_map)
-    heatmap_rgb = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
+    heatmap_rgb = (heatmap_rgba[:, :, :3] * 255.0).astype(np.uint8)
     heatmap_bgr = cv2.cvtColor(heatmap_rgb, cv2.COLOR_RGB2BGR)
 
-    # Resize heatmap to match original image dimensions if necessary
-    if heatmap_bgr.shape[:2] != img_bgr.shape[:2]:
+    if heatmap_bgr.shape[:2] != orig_bgr.shape[:2]:
         debug(
             "Resizing heatmap from %s to %s for %s",
             heatmap_bgr.shape[:2],
-            img_bgr.shape[:2],
+            orig_bgr.shape[:2],
             filename_prefix,
         )
         heatmap_bgr = cv2.resize(
             heatmap_bgr,
-            (img_bgr.shape[1], img_bgr.shape[0]),
+            (orig_bgr.shape[1], orig_bgr.shape[0]),
             interpolation=cv2.INTER_LINEAR,
         )
 
@@ -606,15 +676,12 @@ def visualize_and_save_saliency(
     )
     cv2.imwrite(heatmap_save_path, heatmap_bgr)
 
-    # 3. Save Grayscale Original + Colored Overlay
-    # Convert the original color image to grayscale, then back to BGR so it has 3 channels for blending
-    gray_img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray_base_bgr = cv2.cvtColor(gray_img, cv2.COLOR_GRAY2BGR)
-
-    overlay = cv2.addWeighted(
-        gray_base_bgr, 1.0 - overlay_alpha, heatmap_bgr, overlay_alpha, 0.0
+    # 3. Save Grayscale Original + Colored Overlay using render_overlay_rgb
+    overlay_rgb = render_overlay_rgb(
+        img_rgb, saliency_map, cmap_name=cmap_name, alpha=overlay_alpha
     )
+    overlay_bgr = cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
     overlay_save_path = os.path.join(
         image_specific_output_dir, f"{filename_prefix}_overlay_{cmap_name}.png"
     )
-    cv2.imwrite(overlay_save_path, overlay)
+    cv2.imwrite(overlay_save_path, overlay_bgr)
