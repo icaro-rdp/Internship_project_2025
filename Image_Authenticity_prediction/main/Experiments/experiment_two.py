@@ -296,7 +296,15 @@ def save_plots_for_result(comp_res, labels, method, scope_name, metrics):
             warn(f"Could not save plots for {method} {scope_name} ({metric}): {e}")
 
 
-def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_json):
+def run_comparisons(
+    methods,
+    kinds,
+    metrics,
+    target_res,
+    models_filter,
+    save_json,
+    save_plots: bool = False,
+):
     results = {}
 
     def get_file_map(method):
@@ -371,9 +379,10 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
                         ]
                         within_model_stats[metric][m_name].extend(values)
 
-                save_plots_for_result(
-                    comp_res, var_names, method, f"within_{m_name}", metrics
-                )
+                if save_plots:
+                    save_plots_for_result(
+                        comp_res, var_names, method, f"within_{m_name}", metrics
+                    )
 
             # B. Prototype
             if "between_model_architectures" in kinds:
@@ -386,7 +395,7 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
             gc.collect()
 
         # Generate Violin Plots for Intra-Model Analysis
-        if within_model_stats:
+        if save_plots and within_model_stats:
             for metric, model_data in within_model_stats.items():
                 try:
                     fig_violin = visualize_violin_distribution(
@@ -431,13 +440,14 @@ def run_comparisons(methods, kinds, metrics, target_res, models_filter, save_jso
             comp_res["models"] = valid_protos_sorted
             results[f"{method}_between_model_architectures"] = comp_res
 
-            save_plots_for_result(
-                comp_res,
-                valid_protos_sorted,
-                method,
-                "between_model_architectures",
-                metrics,
-            )
+            if save_plots:
+                save_plots_for_result(
+                    comp_res,
+                    valid_protos_sorted,
+                    method,
+                    "between_model_architectures",
+                    metrics,
+                )
 
             del prototypes, proto_list
             gc.collect()
@@ -504,6 +514,7 @@ def run_experiment_2(
     comparison_metrics=("correlation",),
     comparison_target_resolution=(224, 224),
     save_comparison_json=True,
+    save_plots=False,
 ):
     start = time.time()
     setup_directories()
@@ -560,6 +571,7 @@ def run_experiment_2(
             comparison_target_resolution,
             models,
             save_comparison_json,
+            save_plots=save_plots,
         )
 
     info(f"Done. Time: {time.time() - start:.2f}s")
