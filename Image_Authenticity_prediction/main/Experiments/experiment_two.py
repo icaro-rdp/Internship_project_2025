@@ -227,7 +227,11 @@ def run_generation_loop(
         GradCAM(model, MODEL_REGISTRY[model_name]["target_layer"], False)
         if is_gc
         else MultiscalePixelMasking(
-            model, XAI_PARAMS["sigma"], XAI_PARAMS["px_batch"], 0
+            model,
+            XAI_PARAMS["sigma"],
+            XAI_PARAMS["px_batch"],
+            XAI_PARAMS.get("mask_val", 0),
+            stride=XAI_PARAMS.get("stride", 1),
         )
     )
 

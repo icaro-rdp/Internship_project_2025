@@ -70,8 +70,8 @@ class ModelsExplainer(ABC):
 
         self.is_cuda = self.device.type == "cuda"
         if self.is_cuda:
-            torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.benchmark = False
 
         self.model.eval()
@@ -323,6 +323,8 @@ class MultiscalePixelMasking(ModelsExplainer):
         use_tqdm: bool = False,
         gpu_normalize: bool = False,
         batch_cooldown_sec: float = 0.002,
+        cooldown_ratio: float = 0.45,
+        stride: int | Sequence[int] | None = None,
     ) -> None:
         """Initialize the MPM explainer.
 
@@ -334,15 +336,34 @@ class MultiscalePixelMasking(ModelsExplainer):
             use_tqdm: Whether to display progress bars when ``tqdm`` is available.
             gpu_normalize: If True, normalize on device; defaults to False (CPU
                 ``normalize_data`` for exact parity with the reference pipeline).
-            batch_cooldown_sec: Brief pause (in seconds) after each CUDA batch to
-                prevent continuous 100%-duty-cycle GPU power draw.
+            batch_cooldown_sec: Minimum pause (in seconds) after each CUDA batch.
+            cooldown_ratio: Fraction of each CUDA batch's compute time to sleep
+                between batches (~0.45 caps GPU duty cycle at ~69% and keeps RTX
+                4090 power draw below ~300W).
+            stride: Optional spatial step size(s) for occluder centers. May be
+                ``None`` (defaults to 1 for all scales), a positive ``int``, or
+                a sequence of positive ints matching ``sigma_list`` (e.g.
+                ``[4, 8, 16]``). Scales with ``stride > 1`` are bilinearly
+                upsampled to ``(H, W)`` before summing.
         """
         super().__init__(model)
         self.sigma_list = list(sigma_list)
+        if stride is None:
+            self.strides = [1] * len(self.sigma_list)
+        elif isinstance(stride, int):
+            self.strides = [max(1, int(stride))] * len(self.sigma_list)
+        else:
+            self.strides = [max(1, int(s)) for s in stride]
+            if len(self.strides) != len(self.sigma_list):
+                raise ValueError(
+                    f"stride length ({len(self.strides)}) must match sigma_list "
+                    f"length ({len(self.sigma_list)})"
+                )
         self.pixel_batch_size = int(pixel_batch_size)
         self.mask_value = float(mask_value)
         self.gpu_normalize = bool(gpu_normalize)
         self.batch_cooldown_sec = float(batch_cooldown_sec)
+        self.cooldown_ratio = float(cooldown_ratio)
         self.use_tqdm = bool(use_tqdm and _tqdm is not None)
         if use_tqdm and _tqdm is None:
             warn(
@@ -389,7 +410,7 @@ class MultiscalePixelMasking(ModelsExplainer):
         normalize: bool = True,
         log_debug_stats: bool = False,
     ) -> np.ndarray:
-        """Compute the exact multiscale occlusion saliency map ``(H, W)`` for one image."""
+        """Compute the multiscale occlusion saliency map ``(H, W)`` for one image."""
         start_time = time.perf_counter()
 
         if image_tensor.dim() == 3:
@@ -408,10 +429,13 @@ class MultiscalePixelMasking(ModelsExplainer):
         with torch.no_grad():
             rows = torch.arange(height, device=self.device)
             cols = torch.arange(width, device=self.device)
-            all_pixel_indices = torch.arange(total_pixels, device=self.device)
-            all_center_rows = (all_pixel_indices // width).unsqueeze(1)
-            all_center_cols = (all_pixel_indices % width).unsqueeze(1)
-            del all_pixel_indices
+            all_center_rows: torch.Tensor | None = None
+            all_center_cols: torch.Tensor | None = None
+            if 1 in self.strides:
+                all_pixel_indices = torch.arange(total_pixels, device=self.device)
+                all_center_rows = (all_pixel_indices // width).unsqueeze(1)
+                all_center_cols = (all_pixel_indices % width).unsqueeze(1)
+                del all_pixel_indices
 
             buffer_batch_size = min(self.pixel_batch_size, total_pixels)
             batch_buffer = torch.empty(
@@ -424,17 +448,35 @@ class MultiscalePixelMasking(ModelsExplainer):
             original_output, _ = self.model(image)
             original_score = float(original_output[0, target_index].item())
 
-            for sigma in self._progress(self.sigma_list, desc="MPM sigma levels"):
-                batch_starts = range(0, total_pixels, self.pixel_batch_size)
+            scale_pairs = list(zip(self.sigma_list, self.strides, strict=True))
+            for sigma, step in self._progress(scale_pairs, desc="MPM sigma levels"):
+                if step == 1:
+                    assert all_center_rows is not None and all_center_cols is not None
+                    center_rows = all_center_rows
+                    center_cols = all_center_cols
+                    num_centers = total_pixels
+                    scale_scores = saliency_map_cpu
+                else:
+                    grid_r = torch.arange(0, height, step, device=self.device)
+                    grid_c = torch.arange(0, width, step, device=self.device)
+                    grid_h, grid_w = int(grid_r.numel()), int(grid_c.numel())
+                    num_centers = grid_h * grid_w
+                    mesh_r, mesh_c = torch.meshgrid(grid_r, grid_c, indexing="ij")
+                    center_rows = mesh_r.reshape(-1, 1)
+                    center_cols = mesh_c.reshape(-1, 1)
+                    scale_scores = np.zeros(num_centers, dtype=np.float32)
+
+                batch_starts = range(0, num_centers, self.pixel_batch_size)
                 for batch_start in self._progress(batch_starts, f"MPM sigma {sigma}"):
-                    batch_end = min(total_pixels, batch_start + self.pixel_batch_size)
+                    t_batch_start = time.perf_counter()
+                    batch_end = min(num_centers, batch_start + self.pixel_batch_size)
                     actual_batch_size = batch_end - batch_start
 
                     occluded = self._occlusion_masks_from_coords(
                         rows,
                         cols,
-                        all_center_rows[batch_start:batch_end],
-                        all_center_cols[batch_start:batch_end],
+                        center_rows[batch_start:batch_end],
+                        center_cols[batch_start:batch_end],
                         sigma,
                     )
                     masked_images = batch_buffer[:actual_batch_size]
@@ -447,13 +489,25 @@ class MultiscalePixelMasking(ModelsExplainer):
                         .to(device="cpu", dtype=torch.float32)
                         .numpy()
                     )
-                    saliency_map_cpu[batch_start:batch_end] += (
-                        original_score - batch_scores
-                    )
+                    scale_scores[batch_start:batch_end] += original_score - batch_scores
 
                     del occluded, output_batch
-                    if self.is_cuda and self.batch_cooldown_sec > 0.0:
-                        time.sleep(self.batch_cooldown_sec)
+                    if self.is_cuda:
+                        t_batch = time.perf_counter() - t_batch_start
+                        sleep_dur = max(
+                            self.batch_cooldown_sec, t_batch * self.cooldown_ratio
+                        )
+                        if sleep_dur > 0.0:
+                            time.sleep(sleep_dur)
+
+                if step > 1:
+                    upsampled = F.interpolate(
+                        torch.from_numpy(scale_scores).view(1, 1, grid_h, grid_w),
+                        size=(height, width),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    saliency_map_cpu += upsampled.view(-1).numpy()
 
             del batch_buffer, mask_val_tensor
 

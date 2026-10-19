@@ -59,6 +59,7 @@ pruning:
 xai:
   # Multiscale Pixel Masking parameters
   sigma: [3, 17, 65]
+  stride: [2, 4, 16]
   mask_val: 0
   pixel_batch: 128
   # Checkpoint intervals for memory management

@@ -102,6 +102,7 @@ def get_xai_config() -> Dict[str, Any]:
     config = load_config()
     return {
         "sigma": config["xai"]["sigma"],
+        "stride": config["xai"].get("stride", 1),
         "mask_val": config["xai"]["mask_val"],
         "px_batch": config["xai"]["pixel_batch"],
         "gc_interval": config["xai"]["gradcam_interval"],

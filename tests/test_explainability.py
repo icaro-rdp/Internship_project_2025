@@ -138,3 +138,17 @@ def test_gradcam_preserves_parameter_requires_grad(
     assert all(p.requires_grad for p in model.parameters())
     grad_cam.cleanup()
     assert grad_cam.hooks == []
+
+
+def test_per_scale_stride_upsamples_to_full_resolution(
+    model: TinyRegressor, image: torch.Tensor
+) -> None:
+    """Per-scale strides evaluate a coarse grid and upsample back to (H, W)."""
+    explainer = MultiscalePixelMasking(
+        model, SIGMAS, pixel_batch_size=16, mask_value=MASK_VALUE, stride=[1, 2, 3, 4]
+    )
+    assert explainer.strides == [1, 2, 3, 4]
+    saliency = explainer.generate_map(image)
+    assert saliency.shape == IMAGE_SHAPE[1:]
+    assert saliency.min() == pytest.approx(-1.0)
+    assert saliency.max() == pytest.approx(1.0)
