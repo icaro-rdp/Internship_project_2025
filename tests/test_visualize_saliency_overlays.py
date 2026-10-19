@@ -153,8 +153,12 @@ def test_generate_comparison_grid_clean_strip_and_annotated(tmp_path: Path) -> N
         sample_dir=sample_dir,
     )
     assert (sample_dir / "original.png").exists()
-    assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_overlay.png").exists()
-    assert (sample_dir / "clip_vit_b16_exp1a_variant1_gradcam_heatmap.png").exists()
+    assert (
+        sample_dir / "GradCAM" / "overlays" / "clip_vit_b16_exp1a_variant1_overlay.png"
+    ).exists()
+    assert (
+        sample_dir / "GradCAM" / "heatmaps" / "clip_vit_b16_exp1a_variant1_heatmap.png"
+    ).exists()
 
 
 def test_denormalize_image_clamping_and_stats() -> None:
@@ -193,3 +197,25 @@ def test_visualize_and_save_saliency_creates_expected_artifacts(tmp_path: Path) 
     assert (sample_dir / f"{prefix}_heatmap_bwr.png").exists()
     assert (sample_dir / f"{prefix}_overlay_bwr.png").exists()
     assert (tmp_path / "numpy_saliency_maps" / f"{prefix}_saliency_map.npy").exists()
+
+
+def test_resolve_maps_dir(tmp_path: Path) -> None:
+    """Verify resolve_maps_dir locates nested GradCAM/MPM directories."""
+    from scripts.visualize_saliency_overlays import resolve_maps_dir
+
+    nested_dir = tmp_path / "Experiment_2_variants" / "XAI_Maps" / "Test_Set"
+    (nested_dir / "GradCAM").mkdir(parents=True)
+    resolved = resolve_maps_dir(tmp_path)
+    assert resolved == nested_dir
+
+
+def test_select_sample_indices_manifest() -> None:
+    """Verify select_sample_indices works directly on manifest dicts."""
+    manifest = [
+        {"test_idx": 0, "authenticity_score": 10.0},
+        {"test_idx": 1, "authenticity_score": 50.0},
+        {"test_idx": 2, "authenticity_score": 90.0},
+    ]
+    indices = select_sample_indices(manifest, num_samples=3)
+    assert len(indices) == 3
+    assert set(indices) == {0, 1, 2}

@@ -29,6 +29,9 @@ from Image_Authenticity_prediction.main.data import (
     CLIP_DATASET,
     DENSENET_DATASET,
     IMAGENET_DATASET,
+    clip_dataset,
+    denseNet_dataset,
+    imageNet_dataset,
 )
 from Image_Authenticity_prediction.main.Utils.config import get_model_order
 from Image_Authenticity_prediction.main.Utils.logger import error, info, warn
@@ -38,9 +41,29 @@ from Image_Authenticity_prediction.main.Utils.visualization import (
 )
 
 
+def resolve_maps_dir(maps_dir: Path) -> Path:
+    """Resolve the specific directory containing GradCAM and Multiscale_Pixel_Masking.
+
+    Allows callers to point to a root results directory (e.g. Outputs/old_results)
+    or directly to the XAI_Maps folder.
+    """
+    candidate_subdirs = [
+        maps_dir,
+        maps_dir / "XAI_Maps" / "Test_Set",
+        maps_dir / "Experiment_2_variants" / "XAI_Maps" / "Test_Set",
+        maps_dir / "XAI_Maps",
+        maps_dir / "Test_Set",
+    ]
+    for cand in candidate_subdirs:
+        if (cand / "GradCAM").is_dir() or (cand / "Multiscale_Pixel_Masking").is_dir():
+            return cand
+    return maps_dir
+
+
 def load_or_create_manifest(maps_dir: Path) -> list[dict[str, Any]]:
     """Load or dynamically construct the test samples manifest ensuring 100% indexing integrity."""
-    manifest_path = maps_dir / "test_samples_manifest.json"
+    resolved_dir = resolve_maps_dir(maps_dir)
+    manifest_path = resolved_dir / "test_samples_manifest.json"
     if manifest_path.exists():
         try:
             with open(manifest_path) as f:
@@ -51,11 +74,43 @@ def load_or_create_manifest(maps_dir: Path) -> list[dict[str, Any]]:
                 manifest_path,
             )
 
-    test_ds = CLIP_DATASET["test"]
+    # Inspect precomputed map arrays to detect dataset split size (legacy vs current)
+    num_samples_in_maps: int | None = None
+    for npy_file in resolved_dir.glob("**/*_maps.npy"):
+        try:
+            arr_shape = np.load(npy_file, mmap_mode="r").shape
+            if arr_shape:
+                num_samples_in_maps = int(arr_shape[0])
+                break
+        except (OSError, ValueError):
+            continue
+
+    total_size = len(clip_dataset)
+
+    if num_samples_in_maps == 138:
+        # Legacy test split (0.8 train / 0.1 val / 0.1 test with seed 42)
+        gen = torch.Generator().manual_seed(42)
+        perm = torch.randperm(total_size, generator=gen).tolist()
+        tr = int(0.8 * total_size)
+        va = int(0.1 * total_size)
+        target_indices = perm[tr + va :]
+    elif num_samples_in_maps == 1094:
+        # Legacy train split
+        gen = torch.Generator().manual_seed(42)
+        perm = torch.randperm(total_size, generator=gen).tolist()
+        tr = int(0.8 * total_size)
+        target_indices = perm[:tr]
+    elif num_samples_in_maps == 273 or num_samples_in_maps is None:
+        # Current test split
+        test_ds = CLIP_DATASET["test"]
+        target_indices = [int(idx) for idx in test_ds.indices]
+    else:
+        test_ds = CLIP_DATASET["test"]
+        target_indices = [int(idx) for idx in test_ds.indices][:num_samples_in_maps]
+
     manifest = []
-    for test_idx in range(len(test_ds)):
-        global_idx = int(test_ds.indices[test_idx])
-        row = test_ds.dataset.data.iloc[global_idx]
+    for test_idx, global_idx in enumerate(target_indices):
+        row = clip_dataset.data.iloc[global_idx]
         img_raw = str(row.iloc[3])
         manifest.append(
             {
@@ -66,6 +121,18 @@ def load_or_create_manifest(maps_dir: Path) -> list[dict[str, Any]]:
                 "authenticity_score": float(row.iloc[1]),
             }
         )
+
+    try:
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        info(
+            "Saved dynamically derived manifest to %s (%d items)",
+            manifest_path,
+            len(manifest),
+        )
+    except (OSError, PermissionError):
+        pass
+
     return manifest
 
 
@@ -86,6 +153,7 @@ def discover_heatmap_files(
     Returns:
         Nested mapping: {method: {model_name: {variant_tag: filepath}}}.
     """
+    resolved_dir = resolve_maps_dir(maps_dir)
     discovered: dict[str, dict[str, dict[str, Path]]] = defaultdict(
         lambda: defaultdict(dict)
     )
@@ -93,8 +161,8 @@ def discover_heatmap_files(
     known_models = sorted(model_order, key=len, reverse=True)
 
     method_dirs = {
-        "gradcam": maps_dir / "GradCAM",
-        "mpm": maps_dir / "Multiscale_Pixel_Masking",
+        "gradcam": resolved_dir / "GradCAM",
+        "mpm": resolved_dir / "Multiscale_Pixel_Masking",
     }
 
     for method in methods:
@@ -163,11 +231,19 @@ def _select_best_variant(variant_names: list[str]) -> str:
     for v in variant_names:
         if "exp1a" in v:
             return v
-    # 3. Greedy pruned
+    # 3. Greedy pruned variant 1 (avoid variant10 matching variant1)
+    for v in variant_names:
+        if "greedy" in v and (
+            "variant1_" in v
+            or v.endswith("variant1")
+            or ("variant1" in v and "variant10" not in v)
+        ):
+            return v
+    # 4. Any greedy pruned
     for v in variant_names:
         if "greedy" in v:
             return v
-    # 4. Fallback to first available
+    # 5. Fallback to first available
     return variant_names[0]
 
 
@@ -180,7 +256,7 @@ def select_sample_indices(
     """Select test dataset indices to render overlays for.
 
     Args:
-        dataset: PyTorch dataset with (image, label/score) items.
+        dataset: PyTorch dataset with (image, label/score) items OR manifest list of dicts.
         indices_arg: Optional comma-separated string of explicit indices.
         num_samples: Number of quantile-spaced sample images if indices_arg is None.
         all_samples: Whether to select all indices in the dataset.
@@ -199,8 +275,12 @@ def select_sample_indices(
     # Authenticity quantile selection
     scores: list[float] = []
     for idx in range(total_len):
-        _, target = dataset[idx]
-        val = target.item() if isinstance(target, torch.Tensor) else float(target)
+        item = dataset[idx]
+        if isinstance(item, dict) and "authenticity_score" in item:
+            val = float(item["authenticity_score"])
+        else:
+            _, target = item
+            val = target.item() if isinstance(target, torch.Tensor) else float(target)
         scores.append(val)
 
     scores_arr = np.array(scores)
@@ -227,17 +307,27 @@ def select_sample_indices(
 
 
 def get_image_tensor_and_score(
-    sample_idx: int, model_name: str
+    sample_idx: int,
+    model_name: str,
+    meta_item: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Retrieve test image tensor and authenticity score appropriate for the model."""
     if "clip" in model_name.lower():
-        ds = CLIP_DATASET["test"]
+        full_ds = clip_dataset
+        subset_ds = CLIP_DATASET["test"]
     elif "densenet" in model_name.lower():
-        ds = DENSENET_DATASET["test"]
+        full_ds = denseNet_dataset
+        subset_ds = DENSENET_DATASET["test"]
     else:
-        ds = IMAGENET_DATASET["test"]
+        full_ds = imageNet_dataset
+        subset_ds = IMAGENET_DATASET["test"]
 
-    img_tensor, target = ds[sample_idx]
+    if meta_item and "global_csv_idx" in meta_item:
+        img_tensor, target = full_ds[int(meta_item["global_csv_idx"])]
+        score = float(target.item() if isinstance(target, torch.Tensor) else target)
+        return img_tensor, score
+
+    img_tensor, target = subset_ds[sample_idx]
     score = float(target.item() if isinstance(target, torch.Tensor) else target)
     return img_tensor, score
 
@@ -309,7 +399,17 @@ def save_individual_overlays(
     cmap_name: str = "bwr",
     alpha: float = 0.5,
 ) -> None:
-    """Save individual original, heatmap, and overlay images in a dedicated folder."""
+    """Save individual original, heatmap, and overlay images in structured subfolders.
+
+    Folder layout:
+        sample_dir/
+            original.png
+            <Method>/
+                overlays/
+                    <model>_<variant>_overlay.png
+                heatmaps/
+                    <model>_<variant>_heatmap.png
+    """
     sample_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Save original image
@@ -318,11 +418,18 @@ def save_individual_overlays(
         str(sample_dir / "original.png"), cv2.cvtColor(orig_uint8, cv2.COLOR_RGB2BGR)
     )
 
-    # 2. Save individual heatmaps and overlays
+    # 2. Save individual heatmaps and overlays grouped by method then type
     try:
         cmap = plt.get_cmap(cmap_name)
     except (ValueError, KeyError):
         cmap = plt.get_cmap("coolwarm")
+
+    method_display_names = {
+        "gradcam": "GradCAM",
+        "mpm": "Multiscale_Pixel_Masking",
+    }
+
+    h, w = orig_rgb.shape[:2]
 
     for m_info in models_data:
         m_name = m_info["model_name"]
@@ -330,15 +437,20 @@ def save_individual_overlays(
         var = m_info["variant"]
         saliency = m_info["saliency"]
 
+        method_folder = method_display_names.get(meth.lower(), meth.capitalize())
+        overlays_dir = sample_dir / method_folder / "overlays"
+        heatmaps_dir = sample_dir / method_folder / "heatmaps"
+        overlays_dir.mkdir(parents=True, exist_ok=True)
+        heatmaps_dir.mkdir(parents=True, exist_ok=True)
+
         # Overlay
         overlay_rgb = render_overlay_rgb(
             orig_rgb, saliency, cmap_name=cmap_name, alpha=alpha
         )
-        overlay_path = sample_dir / f"{m_name}_{var}_{meth}_overlay.png"
+        overlay_path = overlays_dir / f"{m_name}_{var}_overlay.png"
         cv2.imwrite(str(overlay_path), cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR))
 
         # Raw Heatmap
-        h, w = orig_rgb.shape[:2]
         s_resized = (
             cv2.resize(
                 saliency.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR
@@ -354,7 +466,7 @@ def save_individual_overlays(
             else np.full_like(s_resized, 0.5)
         )
         heat_rgb = (cmap(norm_s)[:, :, :3] * 255).astype(np.uint8)
-        heat_path = sample_dir / f"{m_name}_{var}_{meth}_heatmap.png"
+        heat_path = heatmaps_dir / f"{m_name}_{var}_heatmap.png"
         cv2.imwrite(str(heat_path), cv2.cvtColor(heat_rgb, cv2.COLOR_RGB2BGR))
 
 
@@ -398,10 +510,10 @@ def run_visualization(
     ordered_models = [m for m in get_model_order() if m in active_models]
     info("Found %d models for visualization: %s", len(ordered_models), ordered_models)
 
-    # Determine reference dataset for sample selection
-    ref_dataset = CLIP_DATASET["test"]
+    maps_dir = resolve_maps_dir(maps_dir)
+    manifest = load_or_create_manifest(maps_dir)
     sample_indices = select_sample_indices(
-        dataset=ref_dataset,
+        dataset=manifest,
         indices_arg=indices_arg,
         num_samples=num_samples,
         all_samples=all_samples,
@@ -431,17 +543,32 @@ def run_visualization(
     grids_dir = output_dir / "Comparison_Grids"
     individual_dir = output_dir / "Individual_Overlays"
 
-    manifest = load_or_create_manifest(maps_dir)
-
     for sample_idx in sample_indices:
         meta_item = manifest[sample_idx] if sample_idx < len(manifest) else {}
         img_name = meta_item.get("image_name", f"{sample_idx:04d}.png")
         img_stem = Path(img_name).stem
 
-        # Retrieve original image from dataset
-        img_tensor, auth_score = get_image_tensor_and_score(sample_idx, "clip_vit_b16")
+        # Retrieve original image from dataset appropriate for the active models
+        ref_model = (
+            "clip_vit_b16" if "clip_vit_b16" in ordered_models else ordered_models[0]
+        )
+        img_tensor, auth_score = get_image_tensor_and_score(
+            sample_idx, ref_model, meta_item=meta_item
+        )
         auth_score = meta_item.get("authenticity_score", auth_score)
-        denorm = denormalize_image(img_tensor)
+
+        if "clip" in ref_model.lower():
+            denorm = denormalize_image(
+                img_tensor,
+                mean=(0.48145466, 0.4578275, 0.40821073),
+                std=(0.26862954, 0.26130258, 0.27577711),
+            )
+        else:
+            denorm = denormalize_image(
+                img_tensor,
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
         orig_rgb = denorm.permute(1, 2, 0).cpu().numpy()
 
         # Collect models' saliency maps for this sample
@@ -468,24 +595,37 @@ def run_visualization(
             )
             continue
 
-        # 1. Comparison Strip / Grid (clean borderless by default)
-        prefix = "grid_labeled" if annotate else "strip_clean"
-        grid_file = grids_dir / f"{prefix}_sample_{sample_idx:04d}_{img_stem}.png"
+        # 1. Comparison Strip / Grid
+        clean_strip_file = grids_dir / f"strip_clean_{img_stem}.png"
         generate_comparison_grid(
             sample_idx=sample_idx,
             orig_rgb=orig_rgb,
             auth_score=auth_score,
             models_data=sample_models_data,
-            output_path=grid_file,
+            output_path=clean_strip_file,
             cmap_name=cmap_name,
             alpha=alpha,
-            annotate=annotate,
-            dpi=dpi,
+            annotate=False,
         )
-        info("Saved comparison figure: %s", grid_file)
+        info("Saved comparison strip: %s", clean_strip_file)
 
-        # 2. Individual Overlays (plain images, no annotations or borders)
-        sample_folder = individual_dir / f"sample_{sample_idx:04d}_{img_stem}"
+        if annotate:
+            labeled_grid_file = grids_dir / f"grid_labeled_{img_stem}.png"
+            generate_comparison_grid(
+                sample_idx=sample_idx,
+                orig_rgb=orig_rgb,
+                auth_score=auth_score,
+                models_data=sample_models_data,
+                output_path=labeled_grid_file,
+                cmap_name=cmap_name,
+                alpha=alpha,
+                annotate=True,
+                dpi=dpi,
+            )
+            info("Saved labeled comparison figure: %s", labeled_grid_file)
+
+        # 2. Individual Overlays (organized by method and type)
+        sample_folder = individual_dir / img_stem
         save_individual_overlays(
             sample_idx=sample_idx,
             orig_rgb=orig_rgb,

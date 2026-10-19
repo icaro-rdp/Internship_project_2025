@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from Image_Authenticity_prediction.main.Utils.explainability import (
+    GradCAM,
     MultiscalePixelMasking,
 )
 
@@ -115,14 +116,25 @@ def test_normalized_map_spans_unit_range(
     assert saliency.max() == pytest.approx(1.0)
 
 
-def test_cleanup_releases_cached_buffer(
+def test_stability_defaults_and_cleanup(
     model: TinyRegressor, image: torch.Tensor
 ) -> None:
-    """Calling cleanup frees the preallocated batch buffer."""
+    """MPM uses safe fp32 defaults, batch_size=128, cooldown=0.002, and clean cleanup."""
     explainer = MultiscalePixelMasking(model, SIGMAS, mask_value=MASK_VALUE)
     assert explainer.pixel_batch_size == 128
-    assert explainer.channels_last is False
+    assert explainer.batch_cooldown_sec == pytest.approx(0.002)
+    assert not hasattr(explainer, "use_amp")
     explainer.generate_map(image)
-    assert explainer._cached_buffer is not None
     explainer.cleanup()
-    assert explainer._cached_buffer is None
+
+
+def test_gradcam_preserves_parameter_requires_grad(
+    model: TinyRegressor, image: torch.Tensor
+) -> None:
+    """GradCAM computes heatmaps via autograd.grad without mutating parameter flags."""
+    grad_cam = GradCAM(model, "features.0", relu=False)
+    heatmap = grad_cam.generate_map(image.unsqueeze(0), 0)
+    assert heatmap.shape == IMAGE_SHAPE[1:]
+    assert all(p.requires_grad for p in model.parameters())
+    grad_cam.cleanup()
+    assert grad_cam.hooks == []

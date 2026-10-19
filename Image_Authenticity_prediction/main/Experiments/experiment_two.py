@@ -245,6 +245,10 @@ def run_generation_loop(
                 np.save(temp_dir / f"part_{chunk_idx:04d}.npy", np.array(batch_maps))
                 batch_maps = []
                 chunk_idx += 1
+                info(
+                    f"  [{method}] {stem}: saved checkpoint {chunk_idx} "
+                    f"({_i + 1}/{len(loader)} images)"
+                )
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -579,7 +583,7 @@ def run_experiment_2(
                     ds,
                     batch_size=SINGLE_BATCH_SIZE,
                     shuffle=False,
-                    num_workers=NUM_WORKERS,
+                    num_workers=min(NUM_WORKERS, 4),
                 )
 
                 for meth in methods:
@@ -587,7 +591,7 @@ def run_experiment_2(
                         model, loader, device, m_name, tag, meth, save_maps
                     )
 
-                cleanup_model_and_data(model)
+                cleanup_model_and_data(model, loader)
 
     # --- Part B: Comparison ---
     # Run comparison if comparison_only=True OR if run_comparison=True (generation + comparison)
