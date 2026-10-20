@@ -187,7 +187,8 @@ def get_weight_files(models_filter, variants_filter):
 
         keep = include_all
         if not keep and (
-            ("greedy" in req_vars and "greedy" in tag)
+            (tag.lower() in req_vars)
+            or ("greedy" in req_vars and "greedy" in tag)
             or ("negative" in req_vars and "negative" in tag)
             or ("orig" in req_vars and "orig" in tag)
             or (
@@ -202,6 +203,12 @@ def get_weight_files(models_filter, variants_filter):
     return grouped
 
 
+def _map_output_path(model_name: str, variant_tag: str, method: str) -> Path:
+    """Return the final .npy output path for a (model, variant, method) tuple."""
+    out_dir = DIRS["gradcam"] if method == "gradcam" else DIRS["mpm"]
+    return out_dir / f"{model_name}_{variant_tag}_maps.npy"
+
+
 def run_generation_loop(
     model, loader, device, model_name, variant_tag, method, save_maps
 ):
@@ -210,7 +217,7 @@ def run_generation_loop(
     is_gc = method == "gradcam"
     out_dir = DIRS["gradcam"] if is_gc else DIRS["mpm"]
     stem = f"{model_name}_{variant_tag}"
-    final_path = out_dir / f"{stem}_maps.npy"
+    final_path = _map_output_path(model_name, variant_tag, method)
 
     if final_path.exists():
         info(f"Map {final_path} exists. Skipping.")
@@ -219,9 +226,20 @@ def run_generation_loop(
     temp_dir = out_dir / f"temp_{stem}"
     temp_dir.mkdir(exist_ok=True)
 
+    existing_parts = sorted(temp_dir.glob("part_*.npy"))
+    completed_images = 0
+    for part_path in existing_parts:
+        completed_images += int(np.load(part_path, mmap_mode="r").shape[0])
+
     batch_maps = []
-    chunk_idx = 0
+    chunk_idx = len(existing_parts)
     flush_int = XAI_PARAMS["gc_interval"] if is_gc else XAI_PARAMS["mpm_interval"]
+
+    if completed_images > 0:
+        info(
+            f"  [{method}] {stem}: resuming from checkpoint {chunk_idx} "
+            f"({completed_images}/{len(loader)} images already saved)"
+        )
 
     explainer = (
         GradCAM(model, MODEL_REGISTRY[model_name]["target_layer"], False)
@@ -238,6 +256,8 @@ def run_generation_loop(
     try:
         info(f"Generating {method} for {stem}...")
         for _i, (img, _) in enumerate(loader):
+            if _i < completed_images:
+                continue
             img = img.to(device)
             res = explainer.generate_map(img, 0)
 
@@ -575,6 +595,12 @@ def run_experiment_2(
                 )
                 tag = tag_match.group(0) if tag_match else "orig"
 
+                if save_maps and all(
+                    _map_output_path(m_name, tag, meth).exists() for meth in methods
+                ):
+                    info(f"All requested maps exist for {m_name}_{tag}. Skipping.")
+                    continue
+
                 model = m_cls(freeze_backbone=False)
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 model.load_state_dict(
@@ -587,7 +613,7 @@ def run_experiment_2(
                     ds,
                     batch_size=SINGLE_BATCH_SIZE,
                     shuffle=False,
-                    num_workers=min(NUM_WORKERS, 4),
+                    num_workers=0,
                 )
 
                 for meth in methods:
@@ -595,7 +621,9 @@ def run_experiment_2(
                         model, loader, device, m_name, tag, meth, save_maps
                     )
 
-                cleanup_model_and_data(model, loader)
+                model.cpu()
+                del model, loader
+                cleanup_model_and_data(None)
 
     # --- Part B: Comparison ---
     # Run comparison if comparison_only=True OR if run_comparison=True (generation + comparison)

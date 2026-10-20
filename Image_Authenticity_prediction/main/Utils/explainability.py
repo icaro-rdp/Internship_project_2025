@@ -318,12 +318,12 @@ class MultiscalePixelMasking(ModelsExplainer):
         self,
         model: nn.Module,
         sigma_list: Sequence[int],
-        pixel_batch_size: int = 128,
+        pixel_batch_size: int = 32,
         mask_value: float = 0.0,
         use_tqdm: bool = False,
         gpu_normalize: bool = False,
         batch_cooldown_sec: float = 0.002,
-        cooldown_ratio: float = 0.45,
+        cooldown_ratio: float = 0.20,
         stride: int | Sequence[int] | None = None,
     ) -> None:
         """Initialize the MPM explainer.

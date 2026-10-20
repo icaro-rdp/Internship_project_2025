@@ -119,10 +119,11 @@ def test_normalized_map_spans_unit_range(
 def test_stability_defaults_and_cleanup(
     model: TinyRegressor, image: torch.Tensor
 ) -> None:
-    """MPM uses safe fp32 defaults, batch_size=128, cooldown=0.002, and clean cleanup."""
+    """MPM uses safe fp32 defaults, batch_size=32, cooldown=0.002, and clean cleanup."""
     explainer = MultiscalePixelMasking(model, SIGMAS, mask_value=MASK_VALUE)
-    assert explainer.pixel_batch_size == 128
+    assert explainer.pixel_batch_size == 32
     assert explainer.batch_cooldown_sec == pytest.approx(0.002)
+    assert explainer.cooldown_ratio == pytest.approx(0.20)
     assert not hasattr(explainer, "use_amp")
     explainer.generate_map(image)
     explainer.cleanup()

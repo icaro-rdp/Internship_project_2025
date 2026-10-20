@@ -61,7 +61,7 @@ xai:
   sigma: [3, 17, 65]
   stride: [2, 4, 16]
   mask_val: 0
-  pixel_batch: 128
+  pixel_batch: 32
   # Checkpoint intervals for memory management
   gradcam_interval: 50
   mpm_interval: 10
