@@ -420,14 +420,246 @@ def write_crash_diagnostic_snapshot(
     return snapshot_path
 
 
+def _parse_float(val: str | None) -> float | None:
+    """Parse a float from an nvidia-smi or sysfs output string safely.
+
+    Args:
+        val: Raw string (e.g. '52.84', '36', 'N/A').
+
+    Returns:
+        Parsed float or None if parsing fails.
+    """
+    if val is None or val in ("N/A", "[N/A]", "None", ""):
+        return None
+    try:
+        cleaned = val.split()[0].replace(",", "")
+        return float(cleaned)
+    except (ValueError, IndexError):
+        return None
+
+
+@dataclass
+class VariantMetricsSummary:
+    """Aggregated telemetry statistics for an active variant or execution phase."""
+
+    variant: str
+    sample_count: int = 0
+    start_time_iso: str = ""
+    end_time_iso: str = ""
+    duration_sec: float = 0.0
+    temp_min: float = float("inf")
+    temp_max: float = float("-inf")
+    temp_sum: float = 0.0
+    power_min: float = float("inf")
+    power_max: float = float("-inf")
+    power_sum: float = 0.0
+    vram_peak_mb: float = 0.0
+    util_sum: float = 0.0
+    util_max: float = 0.0
+    anomaly_count: int = 0
+    aer_fatal_count: int = 0
+
+    @property
+    def temp_avg(self) -> float:
+        """Average GPU temperature across all recorded samples."""
+        return self.temp_sum / self.sample_count if self.sample_count > 0 else 0.0
+
+    @property
+    def power_avg(self) -> float:
+        """Average power draw across all recorded samples."""
+        return self.power_sum / self.sample_count if self.sample_count > 0 else 0.0
+
+    @property
+    def util_avg(self) -> float:
+        """Average GPU utilization across all recorded samples."""
+        return self.util_sum / self.sample_count if self.sample_count > 0 else 0.0
+
+    def update(self, sample: TelemetrySample) -> None:
+        """Ingest a new telemetry sample into the aggregated statistics.
+
+        Args:
+            sample: Latest point-in-time snapshot.
+        """
+        self.sample_count += 1
+        if not self.start_time_iso:
+            self.start_time_iso = sample.host_utc_iso
+        self.end_time_iso = sample.host_utc_iso
+
+        temp = _parse_float(sample.nvidia_smi_values.get("temperature.gpu"))
+        if temp is not None:
+            self.temp_min = min(self.temp_min, temp)
+            self.temp_max = max(self.temp_max, temp)
+            self.temp_sum += temp
+
+        power = _parse_float(sample.nvidia_smi_values.get("power.draw.instant"))
+        if power is not None:
+            self.power_min = min(self.power_min, power)
+            self.power_max = max(self.power_max, power)
+            self.power_sum += power
+
+        vram = _parse_float(sample.nvidia_smi_values.get("memory.used"))
+        if vram is not None:
+            self.vram_peak_mb = max(self.vram_peak_mb, vram)
+
+        util = _parse_float(sample.nvidia_smi_values.get("utilization.gpu"))
+        if util is not None:
+            self.util_max = max(self.util_max, util)
+            self.util_sum += util
+
+        if not sample.gpu_healthy or sample.anomaly_reason not in ("none", ""):
+            self.anomaly_count += 1
+        if sample.aer_fatal_total > 0:
+            self.aer_fatal_count += sample.aer_fatal_total
+
+    def to_dict(self) -> dict[str, str | int | float]:
+        """Convert metrics summary into a JSON-serializable dictionary.
+
+        Returns:
+            Dictionary of metrics summary fields.
+        """
+        return {
+            "variant": self.variant,
+            "sample_count": self.sample_count,
+            "start_time_iso": self.start_time_iso,
+            "end_time_iso": self.end_time_iso,
+            "duration_sec": round(self.duration_sec, 1),
+            "temp_min": (
+                round(self.temp_min, 1) if self.temp_min != float("inf") else 0.0
+            ),
+            "temp_max": (
+                round(self.temp_max, 1) if self.temp_max != float("-inf") else 0.0
+            ),
+            "temp_avg": round(self.temp_avg, 1),
+            "power_min": (
+                round(self.power_min, 1) if self.power_min != float("inf") else 0.0
+            ),
+            "power_max": (
+                round(self.power_max, 1) if self.power_max != float("-inf") else 0.0
+            ),
+            "power_avg": round(self.power_avg, 1),
+            "vram_peak_mb": round(self.vram_peak_mb, 1),
+            "util_avg": round(self.util_avg, 1),
+            "util_max": round(self.util_max, 1),
+            "anomaly_count": self.anomaly_count,
+            "aer_fatal_count": self.aer_fatal_count,
+        }
+
+
+def format_summary_markdown(summaries: list[VariantMetricsSummary]) -> str:
+    """Format variant metric summaries into a clean Markdown table.
+
+    Args:
+        summaries: Ordered list of variant telemetry summaries.
+
+    Returns:
+        Markdown-formatted string report.
+    """
+    lines = [
+        "# GPU Telemetry Summary",
+        "",
+        f"Generated at: {datetime.now(tz=UTC).isoformat()}",
+        "",
+        (
+            "| Variant | Duration | Samples | Avg Power | Peak Power | "
+            "Avg Temp | Max Temp | Peak VRAM | Avg Util | Anomalies | Status |"
+        ),
+        (
+            "| :--- | :--- | :--- | :--- | :--- | "
+            ":--- | :--- | :--- | :--- | :--- | :--- |"
+        ),
+    ]
+    for s in summaries:
+        if s.sample_count == 0:
+            continue
+        dur_str = (
+            f"{s.duration_sec / 60.0:.1f}m"
+            if s.duration_sec > 0
+            else f"{s.sample_count * 2.0 / 60.0:.1f}m"
+        )
+        t_avg = f"{s.temp_avg:.1f} °C" if s.temp_min != float("inf") else "N/A"
+        t_max = f"{s.temp_max:.1f} °C" if s.temp_max != float("-inf") else "N/A"
+        p_avg = f"{s.power_avg:.1f} W" if s.power_min != float("inf") else "N/A"
+        p_max = f"{s.power_max:.1f} W" if s.power_max != float("-inf") else "N/A"
+        v_peak = f"{s.vram_peak_mb:.0f} MiB" if s.vram_peak_mb > 0 else "N/A"
+        u_avg = f"{s.util_avg:.1f} %"
+        status = "OK" if s.anomaly_count == 0 and s.aer_fatal_count == 0 else "ANOMALY"
+
+        lines.append(
+            f"| {s.variant} | {dur_str} | {s.sample_count} | {p_avg} | {p_max} | "
+            f"{t_avg} | {t_max} | {v_peak} | {u_avg} | {s.anomaly_count} | {status} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def generate_summary_from_csv(csv_path: Path) -> list[VariantMetricsSummary]:
+    """Parse an existing telemetry CSV file and aggregate per-variant statistics.
+
+    Args:
+        csv_path: Path to the ``gpu_telemetry.csv`` file.
+
+    Returns:
+        List of aggregated ``VariantMetricsSummary`` objects.
+    """
+    if not csv_path.exists():
+        return []
+
+    summaries: dict[str, VariantMetricsSummary] = {}
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            variant = row.get("active_variant", "unknown")
+            if variant not in summaries:
+                summaries[variant] = VariantMetricsSummary(variant=variant)
+            summary = summaries[variant]
+            summary.sample_count += 1
+            if not summary.start_time_iso:
+                summary.start_time_iso = row.get("host_utc_iso", "")
+            summary.end_time_iso = row.get("host_utc_iso", "")
+
+            temp = _parse_float(row.get("temperature.gpu"))
+            if temp is not None:
+                summary.temp_min = min(summary.temp_min, temp)
+                summary.temp_max = max(summary.temp_max, temp)
+                summary.temp_sum += temp
+
+            power = _parse_float(row.get("power.draw.instant"))
+            if power is not None:
+                summary.power_min = min(summary.power_min, power)
+                summary.power_max = max(summary.power_max, power)
+                summary.power_sum += power
+
+            vram = _parse_float(row.get("memory.used"))
+            if vram is not None:
+                summary.vram_peak_mb = max(summary.vram_peak_mb, vram)
+
+            util = _parse_float(row.get("utilization.gpu"))
+            if util is not None:
+                summary.util_max = max(summary.util_max, util)
+                summary.util_sum += util
+
+            healthy = row.get("gpu_healthy", "True") == "True"
+            anomaly = row.get("anomaly_reason", "none")
+            if not healthy or anomaly not in ("none", ""):
+                summary.anomaly_count += 1
+
+            aer_fatal = int(_parse_float(row.get("aer_fatal_total")) or 0)
+            if aer_fatal > 0:
+                summary.aer_fatal_count += aer_fatal
+
+    return list(summaries.values())
+
+
 class BackgroundTelemetryMonitor:
-    """Thread-based GPU telemetry collector that flushes every sample to CSV."""
+    """Thread-based GPU telemetry collector with throttled CSV flushing and summaries."""
 
     def __init__(
         self,
         telemetry_dir: Path,
         output_dir: Path = DEFAULT_OUTPUT_DIR,
         interval_sec: float = 2.0,
+        csv_interval_sec: float = 10.0,
+        console_interval_sec: float = 30.0,
         history_size: int = 30,
     ) -> None:
         """Initialize the background telemetry monitor.
@@ -435,29 +667,65 @@ class BackgroundTelemetryMonitor:
         Args:
             telemetry_dir: Directory for CSV logs and crash snapshots.
             output_dir: Experiment 2 output directory to watch for progress.
-            interval_sec: Polling interval in seconds.
+            interval_sec: Polling interval in seconds for health & crash detection.
+            csv_interval_sec: Throttle interval in seconds between writing rows to
+                the CSV file.
+            console_interval_sec: Interval in seconds for emitting a readable live
+                console status line (0 to disable).
             history_size: Number of recent samples retained in memory for
                 crash snapshots.
         """
         self.telemetry_dir = telemetry_dir
         self.output_dir = output_dir
         self.interval_sec = interval_sec
+        self.csv_interval_sec = max(interval_sec, csv_interval_sec)
+        self.console_interval_sec = console_interval_sec
         self.csv_path = telemetry_dir / "gpu_telemetry.csv"
+        self.summary_md_path = telemetry_dir / "gpu_telemetry_summary.md"
+        self.summary_json_path = telemetry_dir / "gpu_telemetry_summary.json"
         self.recent_samples: deque[TelemetrySample] = deque(maxlen=history_size)
+        self.variant_summaries: dict[str, VariantMetricsSummary] = {}
         self._active_variant = "idle"
+        self._variant_start_time = time.monotonic()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._snapshot_written_for_unhealthy = False
 
     def set_active_variant(self, variant_name: str) -> None:
-        """Update the label of the currently executing variant.
+        """Update active variant, finalize previous variant duration, and write summary.
 
         Args:
             variant_name: Variant identifier (e.g. ``"exp1a_variant5"``).
         """
         with self._lock:
+            prev_variant = self._active_variant
+            now_mono = time.monotonic()
+            elapsed = now_mono - self._variant_start_time
+            if prev_variant in self.variant_summaries:
+                summary = self.variant_summaries[prev_variant]
+                summary.duration_sec += elapsed
+                if summary.sample_count > 0:
+                    peak_pwr = (
+                        summary.power_max if summary.power_max != float("-inf") else 0.0
+                    )
+                    max_temp = (
+                        summary.temp_max if summary.temp_max != float("-inf") else 0.0
+                    )
+                    logger.info(
+                        "Variant %s telemetry summary: duration=%.1fm, "
+                        "avg_power=%.1fW (peak=%.1fW), avg_temp=%.1f°C (max=%.1f°C), anomalies=%d",
+                        prev_variant,
+                        summary.duration_sec / 60.0,
+                        summary.power_avg,
+                        peak_pwr,
+                        summary.temp_avg,
+                        max_temp,
+                        summary.anomaly_count,
+                    )
             self._active_variant = variant_name
+            self._variant_start_time = now_mono
+            self._save_summaries_locked()
 
     def get_active_variant(self) -> str:
         """Return the currently tracked variant label.
@@ -468,10 +736,24 @@ class BackgroundTelemetryMonitor:
         with self._lock:
             return self._active_variant
 
+    def _save_summaries_locked(self) -> None:
+        """Persist markdown and JSON summaries to disk while holding lock."""
+        summaries = list(self.variant_summaries.values())
+        if not summaries:
+            return
+        self.telemetry_dir.mkdir(parents=True, exist_ok=True)
+        md_text = format_summary_markdown(summaries)
+        self.summary_md_path.write_text(md_text, encoding="utf-8")
+
+        json_data = [s.to_dict() for s in summaries]
+        with self.summary_json_path.open("w", encoding="utf-8") as handle:
+            json.dump(json_data, handle, indent=2)
+
     def start(self) -> None:
         """Start the background telemetry polling thread."""
         self.telemetry_dir.mkdir(parents=True, exist_ok=True)
         self._stop_event.clear()
+        self._variant_start_time = time.monotonic()
         self._thread = threading.Thread(
             target=self._run_loop,
             name="gpu-telemetry-monitor",
@@ -479,20 +761,30 @@ class BackgroundTelemetryMonitor:
         )
         self._thread.start()
         logger.info(
-            "Started GPU telemetry monitor (interval=%.1fs, csv=%s)",
+            "Started GPU telemetry monitor (poll=%.1fs, csv_flush=%.1fs, csv=%s)",
             self.interval_sec,
+            self.csv_interval_sec,
             self.csv_path,
         )
 
     def stop(self) -> None:
-        """Signal the background polling thread to stop and wait for exit."""
+        """Signal the background polling thread to stop and flush summaries."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=self.interval_sec + 5.0)
-        logger.info("Stopped GPU telemetry monitor.")
+        with self._lock:
+            now_mono = time.monotonic()
+            elapsed = now_mono - self._variant_start_time
+            if self._active_variant in self.variant_summaries:
+                self.variant_summaries[self._active_variant].duration_sec += elapsed
+            self._save_summaries_locked()
+        logger.info(
+            "Stopped GPU telemetry monitor. Summary written to %s",
+            self.summary_md_path,
+        )
 
     def _run_loop(self) -> None:
-        """Poll telemetry continuously and fsync every row to disk."""
+        """Poll telemetry at high frequency, throttle CSV writes, and log status."""
         file_exists = self.csv_path.exists() and self.csv_path.stat().st_size > 0
         with self.csv_path.open("a", encoding="utf-8", newline="") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=csv_fieldnames())
@@ -501,15 +793,76 @@ class BackgroundTelemetryMonitor:
                 csv_file.flush()
                 os.fsync(csv_file.fileno())
 
+            last_csv_write_time = 0.0
+            last_console_log_time = 0.0
+            last_recorded_variant = ""
+
             while not self._stop_event.is_set():
+                now_mono = time.monotonic()
+                active_v = self.get_active_variant()
                 sample = collect_telemetry_sample(
-                    active_variant=self.get_active_variant(),
+                    active_variant=active_v,
                     output_dir=self.output_dir,
                 )
                 self.recent_samples.append(sample)
-                writer.writerow(sample.to_csv_row())
-                csv_file.flush()
-                os.fsync(csv_file.fileno())
+
+                with self._lock:
+                    if active_v not in self.variant_summaries:
+                        self.variant_summaries[active_v] = VariantMetricsSummary(
+                            variant=active_v
+                        )
+                    self.variant_summaries[active_v].update(sample)
+
+                is_anomaly = not sample.gpu_healthy or sample.anomaly_reason not in (
+                    "none",
+                    "",
+                )
+                variant_changed = active_v != last_recorded_variant
+                interval_elapsed = (
+                    now_mono - last_csv_write_time
+                ) >= self.csv_interval_sec
+
+                if is_anomaly or variant_changed or interval_elapsed:
+                    writer.writerow(sample.to_csv_row())
+                    csv_file.flush()
+                    os.fsync(csv_file.fileno())
+                    last_csv_write_time = now_mono
+                    last_recorded_variant = active_v
+
+                if (
+                    self.console_interval_sec > 0
+                    and (now_mono - last_console_log_time) >= self.console_interval_sec
+                ):
+                    pwr = (
+                        _parse_float(sample.nvidia_smi_values.get("power.draw.instant"))
+                        or 0.0
+                    )
+                    temp = (
+                        _parse_float(sample.nvidia_smi_values.get("temperature.gpu"))
+                        or 0.0
+                    )
+                    vram = (
+                        _parse_float(sample.nvidia_smi_values.get("memory.used")) or 0.0
+                    )
+                    util = (
+                        _parse_float(sample.nvidia_smi_values.get("utilization.gpu"))
+                        or 0.0
+                    )
+                    status_str = (
+                        "OK"
+                        if sample.gpu_healthy
+                        else f"ANOMALY ({sample.anomaly_reason})"
+                    )
+                    logger.info(
+                        "[TELEMETRY] [%s] Temp: %.0f°C | Power: %.1fW | VRAM: %.0f MiB | Util: %.0f%% | Status: %s",
+                        active_v,
+                        temp,
+                        pwr,
+                        vram,
+                        util,
+                        status_str,
+                    )
+                    last_console_log_time = now_mono
 
                 if not sample.gpu_healthy and not self._snapshot_written_for_unhealthy:
                     self._snapshot_written_for_unhealthy = True
@@ -540,6 +893,8 @@ def run_isolated_experiment2_variants(
     output_dir: Path,
     telemetry_dir: Path,
     interval_sec: float = 2.0,
+    csv_interval_sec: float = 10.0,
+    console_interval_sec: float = 30.0,
     variant_cooldown_sec: float = 15.0,
 ) -> int:
     """Run remaining Experiment 2 MPM variants in isolated subprocesses.
@@ -553,7 +908,9 @@ def run_isolated_experiment2_variants(
         variants: Ordered list of variant names to ensure are completed.
         output_dir: Experiment 2 output directory.
         telemetry_dir: Directory for telemetry CSV and crash snapshots.
-        interval_sec: Telemetry sampling interval in seconds.
+        interval_sec: Fast telemetry polling interval in seconds.
+        csv_interval_sec: Throttle interval in seconds for CSV disk writes.
+        console_interval_sec: Interval in seconds for live console status.
         variant_cooldown_sec: Pause between isolated variant subprocesses.
 
     Returns:
@@ -580,6 +937,8 @@ def run_isolated_experiment2_variants(
         telemetry_dir=telemetry_dir,
         output_dir=output_dir,
         interval_sec=interval_sec,
+        csv_interval_sec=csv_interval_sec,
+        console_interval_sec=console_interval_sec,
     )
     monitor.start()
 
@@ -597,13 +956,14 @@ def run_isolated_experiment2_variants(
                 "run",
                 "python",
                 "-m",
-                "Image_Authenticity_prediction.main.Experiments.experiment_two",
+                "Image_Authenticity_prediction",
+                "experiment-two",
+                "--models",
+                "clip_vit_b16",
+                "--xai-methods",
+                "mpm",
                 "--variants",
                 variant,
-                "--methods",
-                "Multiscale_Pixel_Masking",
-                "--output_dir",
-                str(output_dir),
             ]
             logger.info(
                 "Launching isolated subprocess for %s: %s",
@@ -656,14 +1016,22 @@ def run_isolated_experiment2_variants(
             "run",
             "python",
             "-m",
-            "Image_Authenticity_prediction.main.Experiments.experiment_two",
-            "--variants",
-            "exp1a",
-            "--methods",
-            "GradCAM",
-            "Multiscale_Pixel_Masking",
-            "--output_dir",
-            str(output_dir),
+            "Image_Authenticity_prediction",
+            "experiment-two",
+            "--models",
+            "clip_vit_b16",
+            "--xai-methods",
+            "both",
+            "--comparison-only",
+            "--comparison-kinds",
+            "within_model_variants",
+            "between_model_architectures",
+            "cross_methods",
+            "--comparison-metrics",
+            "correlation",
+            "top_percent_iou_5",
+            "top_percent_iou_15",
+            "top_percent_iou_25",
         ]
         logger.info(
             "All variant maps present. Running final comparisons: %s",
@@ -698,13 +1066,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--telemetry-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR / "Telemetry",
-        help="Directory where gpu_telemetry.csv and crash snapshots are saved.",
+        help="Directory where telemetry logs and crash snapshots are saved.",
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=2.0,
-        help="Polling interval in seconds (default: 2.0).",
+        help="Polling interval in seconds for health & crash detection (default: 2.0).",
+    )
+    parser.add_argument(
+        "--csv-interval",
+        type=float,
+        default=10.0,
+        help=(
+            "Interval in seconds between writing rows to gpu_telemetry.csv "
+            "(default: 10.0). Always writes immediately on anomalies or variant "
+            "transitions."
+        ),
+    )
+    parser.add_argument(
+        "--console-interval",
+        type=float,
+        default=30.0,
+        help=(
+            "Interval in seconds for live console status one-liners "
+            "(default: 30.0, set 0 to disable)."
+        ),
     )
     parser.add_argument(
         "--run-exp2",
@@ -731,6 +1118,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Capture a single diagnostic snapshot immediately and exit.",
     )
+    parser.add_argument(
+        "--show-summary",
+        action="store_true",
+        help="Display human-readable telemetry summary table from existing logs and exit.",
+    )
     return parser
 
 
@@ -745,6 +1137,23 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
     args = build_arg_parser().parse_args()
+
+    if args.show_summary:
+        summary_md = args.telemetry_dir / "gpu_telemetry_summary.md"
+        if summary_md.exists():
+            import sys
+
+            sys.stdout.write(summary_md.read_text(encoding="utf-8") + "\n")
+            return 0
+        csv_file = args.telemetry_dir / "gpu_telemetry.csv"
+        if csv_file.exists():
+            import sys
+
+            summaries = generate_summary_from_csv(csv_file)
+            sys.stdout.write(format_summary_markdown(summaries) + "\n")
+            return 0
+        logger.warning("No telemetry summary or CSV found in %s", args.telemetry_dir)
+        return 1
 
     if args.snapshot_now:
         sample = collect_telemetry_sample(
@@ -764,6 +1173,8 @@ def main() -> int:
             output_dir=args.output_dir,
             telemetry_dir=args.telemetry_dir,
             interval_sec=args.interval,
+            csv_interval_sec=args.csv_interval,
+            console_interval_sec=args.console_interval,
             variant_cooldown_sec=args.cooldown_sec,
         )
 
@@ -771,6 +1182,8 @@ def main() -> int:
         telemetry_dir=args.telemetry_dir,
         output_dir=args.output_dir,
         interval_sec=args.interval,
+        csv_interval_sec=args.csv_interval,
+        console_interval_sec=args.console_interval,
     )
     monitor.start()
     try:
