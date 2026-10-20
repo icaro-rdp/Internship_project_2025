@@ -336,7 +336,7 @@ class MultiscalePixelMasking(ModelsExplainer):
         self,
         model: nn.Module,
         sigma_list: Sequence[int],
-        pixel_batch_size: int = 32,
+        pixel_batch_size: int = 64,
         mask_value: float = 0.0,
         use_tqdm: bool = False,
         gpu_normalize: bool = False,
