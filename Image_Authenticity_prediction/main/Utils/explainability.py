@@ -1,9 +1,10 @@
 """Explainability methods (Grad-CAM and Multiscale Pixel Masking) for saliency maps."""
 
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import contextmanager
 import importlib
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Sequence
 from typing import TypeVar
 
 import numpy as np
@@ -21,6 +22,29 @@ try:
     _tqdm = getattr(_tqdm_module, "tqdm", None)
 except (ImportError, AttributeError):
     _tqdm = None
+
+
+@contextmanager
+def _strict_fp32_context(is_cuda: bool) -> Generator[None, None, None]:
+    """Enforce strict IEEE 754 fp32 on CUDA without permanently mutating global flags."""
+    if not is_cuda:
+        yield
+        return
+
+    prev_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    prev_cudnn_tf32 = torch.backends.cudnn.allow_tf32
+    prev_cudnn_bench = torch.backends.cudnn.benchmark
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    try:
+        with torch.cuda.amp.autocast(enabled=False):
+            yield
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = prev_matmul_tf32
+        torch.backends.cudnn.allow_tf32 = prev_cudnn_tf32
+        torch.backends.cudnn.benchmark = prev_cudnn_bench
 
 
 def _gpu_normalize(
@@ -48,10 +72,8 @@ def _gpu_normalize(
 class ModelsExplainer(ABC):
     """Abstract base class for saliency map generation methods.
 
-    Runs strictly in standard fp32 without mutating global CUDA/cuDNN backend
-    flags (no TF32, AMP autocast, ``channels_last``, or ``torch.compile``),
-    preventing sustained tensor-core power spikes on GPU servers and preserving
-    floating-point precision for small occlusion score differences.
+    Runs strictly in IEEE 754 fp32 using a scoped context manager that disables
+    TF32 and AMP autocast without permanently mutating global CUDA/cuDNN flags.
     """
 
     def __init__(self, model: nn.Module) -> None:
@@ -69,17 +91,12 @@ class ModelsExplainer(ABC):
             self.device = torch.device("cpu")
 
         self.is_cuda = self.device.type == "cuda"
-        if self.is_cuda:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = False
-
         self.model.eval()
-        self.model.to(self.device)
+        self.model.to(device=self.device, dtype=torch.float32)
 
     def _prepare_input(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Move input tensor to the model's device in standard fp32."""
-        return tensor.to(self.device)
+        """Move input tensor to the model's device and cast to standard fp32."""
+        return tensor.to(device=self.device, dtype=torch.float32)
 
     @abstractmethod
     def generate_map(
@@ -99,13 +116,11 @@ class ModelsExplainer(ABC):
 
 
 class GradCAM(ModelsExplainer):
-    """Gradient-weighted Class Activation Mapping (Grad-CAM) in fp32.
+    """Gradient-weighted Class Activation Mapping (Grad-CAM) in strict fp32.
 
-    Supports both single images ``(1, C, H, W)`` -> ``(H, W)`` and batches
-    ``(B, C, H, W)`` -> ``(B, H, W)``, as well as 3D Vision Transformer token
-    activations ``(B, 1 + H'*W', C)``. Uses ``torch.autograd.grad`` with respect
-    to the target layer activation so backpropagation stops at ``target_layer``
-    without mutating model parameter ``requires_grad`` flags.
+    Supports single images ``(1, C, H, W)`` -> ``(H, W)``, batches
+    ``(B, C, H, W)`` -> ``(B, H, W)``, and 3D Vision Transformer token
+    activations ``(B, 1 + H'*W', C)``.
     """
 
     def __init__(
@@ -116,17 +131,6 @@ class GradCAM(ModelsExplainer):
         gpu_normalize: bool = True,
         reshape_transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
-        """Initialize Grad-CAM and register the forward activation hook.
-
-        Args:
-            model: Network returning ``(predictions, features)``.
-            target_layer: Target ``nn.Module`` or dotted attribute path.
-            relu: If True, apply ReLU to the raw CAM and normalize to ``[0, 1]``;
-                otherwise normalize to ``[-1, 1]``.
-            gpu_normalize: Whether to run min-max normalization on the device.
-            reshape_transform: Optional transform mapping 3D token tensors to
-                4D spatial tensors ``(B, C, H', W')``.
-        """
         super().__init__(model)
 
         self.target_layer = self._resolve_target_layer(target_layer)
@@ -136,6 +140,7 @@ class GradCAM(ModelsExplainer):
         self.relu = bool(relu)
         self.gpu_normalize = bool(gpu_normalize)
         self.reshape_transform = reshape_transform
+        self._is_capturing = False
 
         self.register_hooks()
 
@@ -176,17 +181,20 @@ class GradCAM(ModelsExplainer):
         return module
 
     def register_hooks(self) -> None:
-        """Attach a forward hook that clones target activations for autograd."""
+        """Attach a gated forward hook that isolates target layer activations."""
 
         def forward_hook(
             module: nn.Module,
             inputs: tuple[torch.Tensor, ...],
             output: torch.Tensor,
         ) -> torch.Tensor:
-            if not torch.is_grad_enabled():
+            if not self._is_capturing or not torch.is_grad_enabled():
                 return output
-            self.activations = output.clone().requires_grad_(True)
-            return self.activations
+            # Detach from prior layers to free early activation memory,
+            # and return a clone so downstream inplace ops (e.g. ReLU(inplace=True))
+            # cannot mutate or crash the leaf tensor stored in self.activations.
+            self.activations = output.detach().requires_grad_(True)
+            return self.activations.clone()
 
         self.hooks.append(self.target_layer.register_forward_hook(forward_hook))
 
@@ -207,91 +215,102 @@ class GradCAM(ModelsExplainer):
         self.gradients = None
         self.activations = None
 
-        with torch.enable_grad():
-            model_output, _ = self.model(input_image)
-            if isinstance(target_index, int):
-                scores = model_output[:, target_index]
-            else:
-                idx = torch.as_tensor(target_index, device=self.device)
-                scores = model_output[torch.arange(batch_size, device=self.device), idx]
+        with _strict_fp32_context(self.is_cuda):
+            self._is_capturing = True
+            try:
+                with torch.enable_grad():
+                    model_output, _ = self.model(input_image)
+                    if isinstance(target_index, int):
+                        scores = model_output[:, target_index]
+                    else:
+                        idx = torch.as_tensor(
+                            target_index, dtype=torch.long, device=self.device
+                        )
+                        scores = model_output[
+                            torch.arange(batch_size, device=self.device), idx
+                        ]
 
-            loss_scalar = scores.sum()
+                    loss_scalar = scores.sum()
 
-            if self.activations is None:
-                msg = "Activations not captured. Check hook registration and target layer."
-                warn(msg)
-                raise RuntimeError(msg)
+                    if self.activations is None:
+                        msg = "Activations not captured. Check hook registration and target layer."
+                        warn(msg)
+                        raise RuntimeError(msg)
 
-            self.gradients = torch.autograd.grad(
-                outputs=loss_scalar,
-                inputs=self.activations,
-                retain_graph=False,
-            )[0].detach()
-            self.activations = self.activations.detach()
+                    self.gradients = torch.autograd.grad(
+                        outputs=loss_scalar,
+                        inputs=self.activations,
+                        retain_graph=False,
+                    )[0].detach()
+                    self.activations = self.activations.detach()
+            finally:
+                self._is_capturing = False
 
-        with torch.no_grad():
-            gradients = self.gradients.float()
-            activations = self.activations.float()
+            with torch.no_grad():
+                gradients = self.gradients.float()
+                activations = self.activations.float()
 
-            if self.reshape_transform is not None:
-                gradients = self.reshape_transform(gradients)
-                activations = self.reshape_transform(activations)
-            elif gradients.dim() == 3:
-                # ViT token reshape: (B, 1 + grid*grid, C) -> (B, C, grid, grid)
-                b, n, c = gradients.shape
-                grid_size = int((n - 1) ** 0.5)
-                if grid_size * grid_size == n - 1:
-                    gradients = (
-                        gradients[:, 1:, :]
-                        .reshape(b, grid_size, grid_size, c)
-                        .permute(0, 3, 1, 2)
+                if self.reshape_transform is not None:
+                    gradients = self.reshape_transform(gradients)
+                    activations = self.reshape_transform(activations)
+                elif gradients.dim() == 3:
+                    b, n, c = gradients.shape
+                    grid_size = int((n - 1) ** 0.5)
+                    if grid_size * grid_size == n - 1:
+                        gradients = (
+                            gradients[:, 1:, :]
+                            .reshape(b, grid_size, grid_size, c)
+                            .permute(0, 3, 1, 2)
+                        )
+                        activations = (
+                            activations[:, 1:, :]
+                            .reshape(b, grid_size, grid_size, c)
+                            .permute(0, 3, 1, 2)
+                        )
+
+                weights = gradients.mean(dim=(2, 3), keepdim=True)
+                cam_tensor = (weights * activations).sum(dim=1, keepdim=True)
+
+                if self.relu:
+                    cam_tensor = F.relu(cam_tensor)
+
+                target_size = (input_image.shape[2], input_image.shape[3])
+                cam_resized = F.interpolate(
+                    cam_tensor,
+                    size=target_size,
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(1)
+
+                min_r = 0.0 if self.relu else -1.0
+                if self.gpu_normalize:
+                    cam_resized = _gpu_normalize(
+                        cam_resized, min_range=min_r, max_range=1.0
                     )
-                    activations = (
-                        activations[:, 1:, :]
-                        .reshape(b, grid_size, grid_size, c)
-                        .permute(0, 3, 1, 2)
+                    cam = (
+                        cam_resized.squeeze(0).cpu().numpy()
+                        if batch_size == 1
+                        else cam_resized.cpu().numpy()
                     )
-
-            weights = gradients.mean(dim=(2, 3), keepdim=True)
-            cam_tensor = (weights * activations).sum(dim=1, keepdim=True)
-
-            if self.relu:
-                cam_tensor = F.relu(cam_tensor)
-
-            target_size = (input_image.shape[2], input_image.shape[3])
-            cam_resized = F.interpolate(
-                cam_tensor,
-                size=target_size,
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(1)
-
-            min_r = 0.0 if self.relu else -1.0
-            if self.gpu_normalize:
-                cam_resized = _gpu_normalize(
-                    cam_resized, min_range=min_r, max_range=1.0
-                )
-                cam = (
-                    cam_resized.squeeze(0).cpu().numpy()
-                    if batch_size == 1
-                    else cam_resized.cpu().numpy()
-                )
-            else:
-                cam = (
-                    cam_resized.squeeze(0).cpu().numpy()
-                    if batch_size == 1
-                    else cam_resized.cpu().numpy()
-                )
-                if batch_size == 1:
-                    cam = normalize_data(cam, min_range=min_r, max_range=1.0)
                 else:
-                    cam = np.stack(
-                        [
-                            normalize_data(c, min_range=min_r, max_range=1.0)
-                            for c in cam
-                        ],
-                        axis=0,
+                    cam = (
+                        cam_resized.squeeze(0).cpu().numpy()
+                        if batch_size == 1
+                        else cam_resized.cpu().numpy()
                     )
+                    if batch_size == 1:
+                        cam = normalize_data(cam, min_range=min_r, max_range=1.0)
+                    else:
+                        cam = np.stack(
+                            [
+                                normalize_data(c, min_range=min_r, max_range=1.0)
+                                for c in cam
+                            ],
+                            axis=0,
+                        )
+
+            self.gradients = None
+            self.activations = None
 
         return cam
 
@@ -306,12 +325,11 @@ class GradCAM(ModelsExplainer):
 
 
 class MultiscalePixelMasking(ModelsExplainer):
-    """Exact per-pixel Multiscale Pixel Masking (MPM) with GPU stability guardrails.
+    """Multiscale Pixel Masking (MPM) with smooth, non-oscillating GPU load profile.
 
-    Runs in pure fp32 under ``torch.no_grad()``, transfers batch score drops to
-    host memory after each batch (naturally synchronizing the CUDA stream like
-    the original implementation), and applies a small configurable cooldown pause
-    on CUDA so long runs cannot saturate the GPU power limit continuously.
+    Executes strictly in IEEE 754 fp32 under ``torch.no_grad()`` and accumulates
+    scores on the target device across batches to avoid high-frequency
+    host-device synchronizations and current transients (dI/dt).
     """
 
     def __init__(
@@ -322,8 +340,7 @@ class MultiscalePixelMasking(ModelsExplainer):
         mask_value: float = 0.0,
         use_tqdm: bool = False,
         gpu_normalize: bool = False,
-        batch_cooldown_sec: float = 0.002,
-        cooldown_ratio: float = 0.20,
+        scale_cooldown_sec: float = 0.0,
         stride: int | Sequence[int] | None = None,
     ) -> None:
         """Initialize the MPM explainer.
@@ -336,15 +353,9 @@ class MultiscalePixelMasking(ModelsExplainer):
             use_tqdm: Whether to display progress bars when ``tqdm`` is available.
             gpu_normalize: If True, normalize on device; defaults to False (CPU
                 ``normalize_data`` for exact parity with the reference pipeline).
-            batch_cooldown_sec: Minimum pause (in seconds) after each CUDA batch.
-            cooldown_ratio: Fraction of each CUDA batch's compute time to sleep
-                between batches (~0.45 caps GPU duty cycle at ~69% and keeps RTX
-                4090 power draw below ~300W).
-            stride: Optional spatial step size(s) for occluder centers. May be
-                ``None`` (defaults to 1 for all scales), a positive ``int``, or
-                a sequence of positive ints matching ``sigma_list`` (e.g.
-                ``[4, 8, 16]``). Scales with ``stride > 1`` are bilinearly
-                upsampled to ``(H, W)`` before summing.
+            scale_cooldown_sec: Optional pause (in seconds) applied only between
+                complete sigma scales (never between micro-batches).
+            stride: Optional spatial step size(s) for occluder centers.
         """
         super().__init__(model)
         self.sigma_list = list(sigma_list)
@@ -362,8 +373,7 @@ class MultiscalePixelMasking(ModelsExplainer):
         self.pixel_batch_size = int(pixel_batch_size)
         self.mask_value = float(mask_value)
         self.gpu_normalize = bool(gpu_normalize)
-        self.batch_cooldown_sec = float(batch_cooldown_sec)
-        self.cooldown_ratio = float(cooldown_ratio)
+        self.scale_cooldown_sec = max(0.0, float(scale_cooldown_sec))
         self.use_tqdm = bool(use_tqdm and _tqdm is not None)
         if use_tqdm and _tqdm is None:
             warn(
@@ -424,11 +434,14 @@ class MultiscalePixelMasking(ModelsExplainer):
 
         _, channels, height, width = image.shape
         total_pixels = height * width
-        saliency_map_cpu = np.zeros(total_pixels, dtype=np.float32)
 
-        with torch.no_grad():
+        with _strict_fp32_context(self.is_cuda), torch.no_grad():
+            saliency_map_gpu = torch.zeros(
+                total_pixels, dtype=torch.float32, device=self.device
+            )
             rows = torch.arange(height, device=self.device)
             cols = torch.arange(width, device=self.device)
+
             all_center_rows: torch.Tensor | None = None
             all_center_cols: torch.Tensor | None = None
             if 1 in self.strides:
@@ -446,16 +459,18 @@ class MultiscalePixelMasking(ModelsExplainer):
             mask_val_tensor = image.new_tensor(self.mask_value)
 
             original_output, _ = self.model(image)
-            original_score = float(original_output[0, target_index].item())
+            original_score = original_output[0, target_index].detach().to(torch.float32)
 
             scale_pairs = list(zip(self.sigma_list, self.strides, strict=True))
-            for sigma, step in self._progress(scale_pairs, desc="MPM sigma levels"):
+            for scale_idx, (sigma, step) in enumerate(
+                self._progress(scale_pairs, desc="MPM sigma levels")
+            ):
                 if step == 1:
                     assert all_center_rows is not None and all_center_cols is not None
                     center_rows = all_center_rows
                     center_cols = all_center_cols
                     num_centers = total_pixels
-                    scale_scores = saliency_map_cpu
+                    scale_scores_gpu = saliency_map_gpu
                 else:
                     grid_r = torch.arange(0, height, step, device=self.device)
                     grid_c = torch.arange(0, width, step, device=self.device)
@@ -464,11 +479,12 @@ class MultiscalePixelMasking(ModelsExplainer):
                     mesh_r, mesh_c = torch.meshgrid(grid_r, grid_c, indexing="ij")
                     center_rows = mesh_r.reshape(-1, 1)
                     center_cols = mesh_c.reshape(-1, 1)
-                    scale_scores = np.zeros(num_centers, dtype=np.float32)
+                    scale_scores_gpu = torch.zeros(
+                        num_centers, dtype=torch.float32, device=self.device
+                    )
 
                 batch_starts = range(0, num_centers, self.pixel_batch_size)
                 for batch_start in self._progress(batch_starts, f"MPM sigma {sigma}"):
-                    t_batch_start = time.perf_counter()
                     batch_end = min(num_centers, batch_start + self.pixel_batch_size)
                     actual_batch_size = batch_end - batch_start
 
@@ -483,51 +499,41 @@ class MultiscalePixelMasking(ModelsExplainer):
                     torch.where(occluded, mask_val_tensor, image, out=masked_images)
                     output_batch, _ = self.model(masked_images)
 
-                    batch_scores = (
-                        output_batch[:, target_index]
-                        .detach()
-                        .to(device="cpu", dtype=torch.float32)
-                        .numpy()
+                    batch_scores = output_batch[:, target_index].to(torch.float32)
+                    scale_scores_gpu[batch_start:batch_end] += (
+                        original_score - batch_scores
                     )
-                    scale_scores[batch_start:batch_end] += original_score - batch_scores
-
-                    del occluded, output_batch
-                    if self.is_cuda:
-                        t_batch = time.perf_counter() - t_batch_start
-                        sleep_dur = max(
-                            self.batch_cooldown_sec, t_batch * self.cooldown_ratio
-                        )
-                        if sleep_dur > 0.0:
-                            time.sleep(sleep_dur)
 
                 if step > 1:
                     upsampled = F.interpolate(
-                        torch.from_numpy(scale_scores).view(1, 1, grid_h, grid_w),
+                        scale_scores_gpu.view(1, 1, grid_h, grid_w),
                         size=(height, width),
                         mode="bilinear",
                         align_corners=False,
                     )
-                    saliency_map_cpu += upsampled.view(-1).numpy()
+                    saliency_map_gpu += upsampled.view(-1)
 
-            del batch_buffer, mask_val_tensor
+                if (
+                    self.is_cuda
+                    and self.scale_cooldown_sec > 0.0
+                    and scale_idx < len(scale_pairs) - 1
+                ):
+                    torch.cuda.synchronize(self.device)
+                    time.sleep(self.scale_cooldown_sec)
 
-        saliency_map_numpy = saliency_map_cpu.reshape(height, width)
+            saliency_map_2d = saliency_map_gpu.view(height, width)
 
-        if normalize:
-            if self.gpu_normalize:
-                saliency_map_numpy = (
-                    _gpu_normalize(
-                        torch.from_numpy(saliency_map_numpy),
-                        min_range=-1.0,
-                        max_range=1.0,
-                    )
-                    .cpu()
-                    .numpy()
+            if normalize and self.gpu_normalize:
+                saliency_map_2d = _gpu_normalize(
+                    saliency_map_2d, min_range=-1.0, max_range=1.0
                 )
-            else:
-                saliency_map_numpy = normalize_data(
-                    saliency_map_numpy, min_range=-1.0, max_range=1.0
-                )
+
+            saliency_map_numpy = saliency_map_2d.cpu().numpy()
+
+        if normalize and not self.gpu_normalize:
+            saliency_map_numpy = normalize_data(
+                saliency_map_numpy, min_range=-1.0, max_range=1.0
+            )
 
         if log_debug_stats:
             debug(
