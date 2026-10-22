@@ -678,7 +678,7 @@ class BackgroundTelemetryMonitor:
         self,
         telemetry_dir: Path,
         output_dir: Path = DEFAULT_OUTPUT_DIR,
-        interval_sec: float = 2.0,
+        interval_sec: float = 10.0,
         csv_interval_sec: float = 10.0,
         console_interval_sec: float = 30.0,
         history_size: int = 30,
@@ -1083,7 +1083,7 @@ def run_isolated_experiment2_variants(
     telemetry_dir: Path,
     models: list[str] | None = None,
     xai_methods: str = "both",
-    interval_sec: float = 2.0,
+    interval_sec: float = 10.0,
     csv_interval_sec: float = 10.0,
     console_interval_sec: float = 30.0,
     variant_cooldown_sec: float = 15.0,
@@ -1335,8 +1335,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interval",
         type=float,
-        default=2.0,
-        help="Polling interval in seconds for health & crash detection (default: 2.0).",
+        default=10.0,
+        help="Polling interval in seconds for health & crash detection (default: 10.0).",
     )
     parser.add_argument(
         "--csv-interval",

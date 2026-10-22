@@ -48,11 +48,6 @@ class ModelsExplainer(ABC):
             self.device = torch.device("cpu")
 
         self.is_cuda = self.device.type == "cuda"
-        if self.is_cuda:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.benchmark = False
-
         self.model.eval()
         self.model.to(device=self.device, dtype=torch.float32)
 
@@ -300,7 +295,7 @@ class MultiscalePixelMasking(ModelsExplainer):
         self,
         model: nn.Module,
         sigma_list: Sequence[int],
-        pixel_batch_size: int = 32,
+        pixel_batch_size: int = 64,
         mask_value: float = 0.0,
         use_tqdm: bool = False,
         batch_cooldown_sec: float = 0.002,
@@ -397,7 +392,7 @@ class MultiscalePixelMasking(ModelsExplainer):
                 f"Input image tensor has unexpected dimensions: {image_tensor.shape}"
             )
 
-        _, _, height, width = image.shape
+        _, channels, height, width = image.shape
         total_pixels = height * width
         saliency_map_cpu = np.zeros(total_pixels, dtype=np.float32)
 
@@ -413,8 +408,18 @@ class MultiscalePixelMasking(ModelsExplainer):
                 all_center_cols = (all_pixel_indices % width).unsqueeze(1)
                 del all_pixel_indices
 
+            buffer_batch_size = min(self.pixel_batch_size, total_pixels)
+            batch_buffer = torch.empty(
+                (buffer_batch_size, channels, height, width),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            mask_val_tensor = torch.tensor(
+                self.mask_value, dtype=torch.float32, device=self.device
+            )
+
             original_output, _ = self.model(image)
-            original_score = float(original_output[0, target_index].item())
+            original_score_t = original_output[0, target_index].detach()
 
             scale_pairs = list(zip(self.sigma_list, self.strides, strict=True))
             for sigma, step in self._progress(scale_pairs, desc="MPM sigma levels"):
@@ -423,7 +428,7 @@ class MultiscalePixelMasking(ModelsExplainer):
                     center_rows = all_center_rows
                     center_cols = all_center_cols
                     num_centers = total_pixels
-                    scale_scores = saliency_map_cpu
+                    grid_h, grid_w = height, width
                 else:
                     grid_r = torch.arange(0, height, step, device=self.device)
                     grid_c = torch.arange(0, width, step, device=self.device)
@@ -432,12 +437,17 @@ class MultiscalePixelMasking(ModelsExplainer):
                     mesh_r, mesh_c = torch.meshgrid(grid_r, grid_c, indexing="ij")
                     center_rows = mesh_r.reshape(-1, 1)
                     center_cols = mesh_c.reshape(-1, 1)
-                    scale_scores = np.zeros(num_centers, dtype=np.float32)
+
+                scale_scores_gpu = torch.zeros(
+                    num_centers, dtype=torch.float32, device=self.device
+                )
 
                 batch_starts = range(0, num_centers, self.pixel_batch_size)
-                for batch_start in self._progress(batch_starts, f"MPM sigma {sigma}"):
-                    t_batch_start = time.perf_counter()
+                for batch_idx, batch_start in enumerate(
+                    self._progress(batch_starts, f"MPM sigma {sigma}")
+                ):
                     batch_end = min(num_centers, batch_start + self.pixel_batch_size)
+                    actual_batch_size = batch_end - batch_start
 
                     occluded = self._occlusion_masks_from_coords(
                         rows,
@@ -446,34 +456,34 @@ class MultiscalePixelMasking(ModelsExplainer):
                         center_cols[batch_start:batch_end],
                         sigma,
                     )
-                    masked_images = torch.where(occluded, self.mask_value, image)
+                    masked_images = batch_buffer[:actual_batch_size]
+                    torch.where(occluded, mask_val_tensor, image, out=masked_images)
                     output_batch, _ = self.model(masked_images)
 
-                    batch_scores = (
-                        output_batch[:, target_index]
-                        .detach()
-                        .to(device="cpu", dtype=torch.float32)
-                        .numpy()
+                    scale_scores_gpu[batch_start:batch_end] = (
+                        original_score_t - output_batch[:, target_index].detach()
                     )
-                    scale_scores[batch_start:batch_end] += original_score - batch_scores
 
-                    del occluded, masked_images, output_batch
-                    if self.is_cuda:
-                        t_batch = time.perf_counter() - t_batch_start
-                        sleep_dur = max(
-                            self.batch_cooldown_sec, t_batch * self.cooldown_ratio
-                        )
-                        if sleep_dur > 0.0:
-                            time.sleep(sleep_dur)
+                    del occluded, output_batch
+                    if self.is_cuda and (batch_idx + 1) % 64 == 0:
+                        torch.cuda.synchronize(self.device)
 
-                if step > 1:
+                if step == 1:
+                    saliency_map_cpu += scale_scores_gpu.cpu().numpy()
+                else:
                     upsampled = F.interpolate(
-                        torch.from_numpy(scale_scores).view(1, 1, grid_h, grid_w),
+                        scale_scores_gpu.view(1, 1, grid_h, grid_w),
                         size=(height, width),
                         mode="bilinear",
                         align_corners=False,
                     )
-                    saliency_map_cpu += upsampled.view(-1).numpy()
+                    saliency_map_cpu += upsampled.view(-1).cpu().numpy()
+
+                del scale_scores_gpu
+                if self.is_cuda and self.batch_cooldown_sec > 0.0:
+                    time.sleep(self.batch_cooldown_sec)
+
+            del batch_buffer, mask_val_tensor
 
         saliency_map_numpy = saliency_map_cpu.reshape(height, width)
 

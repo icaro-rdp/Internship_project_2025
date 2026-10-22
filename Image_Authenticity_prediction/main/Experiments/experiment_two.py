@@ -1,11 +1,11 @@
 import gc
 import json
-from pathlib import Path
 import re
 import shutil
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -274,8 +274,6 @@ def run_generation_loop(
                     f"({_i + 1}/{len(loader)} images)"
                 )
                 gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
         if batch_maps:
             np.save(temp_dir / f"part_{chunk_idx:04d}.npy", np.array(batch_maps))
@@ -601,12 +599,13 @@ def run_experiment_2(
                     info(f"All requested maps exist for {m_name}_{tag}. Skipping.")
                     continue
 
-                model = m_cls(freeze_backbone=False)
+                model = m_cls(freeze_backbone=True)
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 model.load_state_dict(
                     torch.load(w_path, map_location=device, weights_only=True)
                 )
                 model.to(device).eval()
+                model.requires_grad_(False)
 
                 ds = MODEL_REGISTRY[m_name]["dataset"]["test"]
                 loader = DataLoader(
