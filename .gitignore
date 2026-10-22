@@ -37,8 +37,10 @@ ENV/
 *.swo
 
 #Output directories
+Outputs
 Outputs/
-**/Outputs/
+**/Outputs
+Outputs/
 */main/Experiments/Outputs/*
 Image_Authenticity_prediction/main/Experiments/Outputs
 Outputs/benchmark*.json
