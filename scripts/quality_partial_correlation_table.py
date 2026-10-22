@@ -32,11 +32,13 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from Image_Authenticity_prediction.main.data import (
     BATCH_SIZE,
+    CLIP_DATASET,
     DENSENET_DATASET,
     IMAGENET_DATASET,
 )
 from Image_Authenticity_prediction.main.Models import (
     BarlowTwinsAuthenticityPredictor,
+    CLIPViTAuthenticityPredictor,
     DenseNet161AuthenticityPredictor,
     EfficientNetB3AuthenticityPredictor,
     ResNet152AuthenticityPredictor,
@@ -54,6 +56,11 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "Outputs" / "Quality_partial_correlation"
 
 # Table row order: weight-file prefix -> (display name, model class, dataset splits)
 ARCHITECTURES: dict[str, tuple[str, type[nn.Module], dict[str, Dataset]]] = {
+    "clip_vit_b16": (
+        "CLIP ViT-B/16",
+        CLIPViTAuthenticityPredictor,
+        CLIP_DATASET,
+    ),
     "barlowtwins": (
         "Barlow Twins",
         BarlowTwinsAuthenticityPredictor,
@@ -375,6 +382,37 @@ def main() -> None:
     if predictions_path.exists() and not args.recompute:
         logger.info("Loading cached predictions from %s", predictions_path)
         predictions = pd.read_csv(predictions_path)
+        cached_archs = set(predictions["architecture"].unique())
+        missing_keys = [
+            key
+            for key, (name, _, _) in ARCHITECTURES.items()
+            if name not in cached_archs
+        ]
+        if missing_keys:
+            logger.info(
+                "Computing predictions for missing architectures: %s", missing_keys
+            )
+            device = torch.device(args.device)
+            new_frames = [
+                predict_architecture(
+                    key,
+                    args.weights_dir,
+                    device,
+                    args.batch_size,
+                    args.num_workers,
+                )
+                for key in missing_keys
+            ]
+            predictions = pd.concat([predictions, *new_frames], ignore_index=True)
+            arch_order = {
+                name: i for i, (name, _, _) in enumerate(ARCHITECTURES.values())
+            }
+            predictions["sort_key"] = predictions["architecture"].map(arch_order)
+            predictions = predictions.sort_values(
+                ["sort_key", "variant", "image_index"]
+            ).drop(columns=["sort_key"])
+            predictions.to_csv(predictions_path, index=False)
+            logger.info("Updated cached predictions at %s", predictions_path)
     else:
         predictions = collect_predictions(
             args.weights_dir,
