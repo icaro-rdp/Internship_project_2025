@@ -221,6 +221,7 @@ def experiment_two_command(args):
         print(f"  - Comparison kinds: {args.comparison_kinds}")
         print(f"  - Comparison metrics: {args.comparison_metrics}")
         print(f"  - Target resolution: {args.target_resolution}")
+        print(f"  - Save plots: {args.save_plots}")
     print("=" * 80)
 
     # Parse comparison kinds
@@ -256,6 +257,7 @@ def experiment_two_command(args):
         comparison_metrics=metrics,
         comparison_target_resolution=target_res,
         save_comparison_json=True,
+        save_plots=args.save_plots,
     )
 
     print("=" * 80)
@@ -555,6 +557,18 @@ def main():
         type=str,
         default="224,224",
         help="Target resolution for comparison as width,height (default: 224,224)",
+    )
+    exp2_parser.add_argument(
+        "--save-plots",
+        action="store_true",
+        default=True,
+        help="Save summary comparison plots to Plots/ directory (default: True)",
+    )
+    exp2_parser.add_argument(
+        "--no-save-plots",
+        dest="save_plots",
+        action="store_false",
+        help="Do not save summary comparison plots",
     )
 
     # Experiment Three command

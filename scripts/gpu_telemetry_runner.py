@@ -56,6 +56,15 @@ NVIDIA_SMI_FIELDS: tuple[str, ...] = (
 )
 
 ALL_EXP1A_VARIANTS: tuple[str, ...] = tuple(f"exp1a_variant{i}" for i in range(1, 11))
+ALL_EXP2_MODELS: tuple[str, ...] = (
+    "barlowtwins",
+    "resnet152",
+    "densenet161",
+    "efficientnetb3",
+    "vgg16",
+    "vgg19",
+    "clip_vit_b16",
+)
 
 
 @dataclass(frozen=True)
@@ -198,30 +207,42 @@ def inspect_experiment_progress(
 
     Args:
         output_dir: Base output directory for Experiment 2 variants.
-        active_variant: Name of the currently executing variant.
+        active_variant: Name of the currently executing variant or model_variant.
 
     Returns:
         Tuple of ``(completed_mpm_variants, active_temp_parts)``.
     """
     mpm_dir = output_dir / "XAI_Maps" / "Multiscale_Pixel_Masking"
-    if not mpm_dir.exists():
+    gradcam_dir = output_dir / "XAI_Maps" / "GradCAM"
+    if not mpm_dir.exists() and not gradcam_dir.exists():
         return 0, 0
 
-    completed = sum(
-        1
-        for variant in ALL_EXP1A_VARIANTS
-        if (mpm_dir / f"clip_vit_b16_{variant}_maps.npy").exists()
+    completed = (
+        sum(
+            1
+            for model_name in ALL_EXP2_MODELS
+            for variant in ALL_EXP1A_VARIANTS
+            if (mpm_dir / f"{model_name}_{variant}_maps.npy").exists()
+        )
+        if mpm_dir.exists()
+        else 0
     )
 
     temp_parts = 0
-    if active_variant in ALL_EXP1A_VARIANTS:
-        temp_dir = mpm_dir / f"temp_clip_vit_b16_{active_variant}"
-        if temp_dir.exists():
-            temp_parts = len(list(temp_dir.glob("part_*.npy")))
-    else:
-        for temp_dir in mpm_dir.glob("temp_clip_vit_b16_*"):
-            if temp_dir.is_dir():
-                temp_parts += len(list(temp_dir.glob("part_*.npy")))
+    for method_dir in (gradcam_dir, mpm_dir):
+        if not method_dir.exists():
+            continue
+        specific_temp = method_dir / f"temp_{active_variant}"
+        if specific_temp.is_dir():
+            temp_parts += len(list(specific_temp.glob("part_*.npy")))
+        elif active_variant in ALL_EXP1A_VARIANTS:
+            clip_temp = method_dir / f"temp_clip_vit_b16_{active_variant}"
+            if clip_temp.is_dir():
+                temp_parts += len(list(clip_temp.glob("part_*.npy")))
+        else:
+            for temp_dir in method_dir.glob("temp_*"):
+                if temp_dir.is_dir():
+                    temp_parts += len(list(temp_dir.glob("part_*.npy")))
 
     return completed, temp_parts
 
@@ -888,26 +909,59 @@ class BackgroundTelemetryMonitor:
                 self._stop_event.wait(self.interval_sec)
 
 
+def _variant_maps_complete(
+    output_dir: Path,
+    model_name: str,
+    variant: str,
+    xai_methods: str,
+) -> bool:
+    """Check whether all requested XAI map files exist for a (model, variant) pair.
+
+    Args:
+        output_dir: Experiment 2 base output directory.
+        model_name: Architecture identifier.
+        variant: Variant tag (e.g. ``"exp1a_variant1"``).
+        xai_methods: Requested XAI methods (``"gradcam"``, ``"mpm"``, or ``"both"``).
+
+    Returns:
+        True if all requested final ``.npy`` files exist on disk.
+    """
+    maps_dir = output_dir / "XAI_Maps"
+    stem = f"{model_name}_{variant}_maps.npy"
+    needs_gc = xai_methods in ("gradcam", "both")
+    needs_mpm = xai_methods in ("mpm", "both")
+    gc_ok = (maps_dir / "GradCAM" / stem).exists() if needs_gc else True
+    mpm_ok = (
+        (maps_dir / "Multiscale_Pixel_Masking" / stem).exists() if needs_mpm else True
+    )
+    return gc_ok and mpm_ok
+
+
 def run_isolated_experiment2_variants(
     variants: list[str],
     output_dir: Path,
     telemetry_dir: Path,
+    models: list[str] | None = None,
+    xai_methods: str = "both",
     interval_sec: float = 2.0,
     csv_interval_sec: float = 10.0,
     console_interval_sec: float = 30.0,
     variant_cooldown_sec: float = 15.0,
 ) -> int:
-    """Run remaining Experiment 2 MPM variants in isolated subprocesses.
+    """Run remaining Experiment 2 variants in isolated subprocesses across models.
 
     Starts the background telemetry monitor, verifies that the GPU is healthy,
-    runs one fresh ``uv run python -m ...`` subprocess per incomplete variant
-    so the CUDA context is completely destroyed between variants, and finally
-    runs the cross-variant/cross-method comparison pass.
+    runs one fresh ``uv run python -m ...`` subprocess per incomplete
+    ``(model, variant)`` pair so the CUDA context is completely destroyed
+    between runs, and finally runs the cross-variant/cross-model/cross-method
+    comparison pass with summary plot generation.
 
     Args:
         variants: Ordered list of variant names to ensure are completed.
         output_dir: Experiment 2 output directory.
         telemetry_dir: Directory for telemetry CSV and crash snapshots.
+        models: Ordered list of model names to process (defaults to all 7 models).
+        xai_methods: XAI methods to generate (``"gradcam"``, ``"mpm"``, or ``"both"``).
         interval_sec: Fast telemetry polling interval in seconds.
         csv_interval_sec: Throttle interval in seconds for CSV disk writes.
         console_interval_sec: Interval in seconds for live console status.
@@ -916,6 +970,7 @@ def run_isolated_experiment2_variants(
     Returns:
         Exit code (``0`` on full success, non-zero on GPU or subprocess error).
     """
+    target_models = models if models is not None else list(ALL_EXP2_MODELS)
     initial_sample = collect_telemetry_sample(
         active_variant="preflight_check",
         output_dir=output_dir,
@@ -943,72 +998,81 @@ def run_isolated_experiment2_variants(
     monitor.start()
 
     try:
-        mpm_dir = output_dir / "XAI_Maps" / "Multiscale_Pixel_Masking"
-        for variant in variants:
-            target_file = mpm_dir / f"clip_vit_b16_{variant}_maps.npy"
-            if target_file.exists():
-                logger.info("Skipping %s (already exists at %s)", variant, target_file)
-                continue
+        for model_name in target_models:
+            for variant in variants:
+                run_label = f"{model_name}_{variant}"
+                if _variant_maps_complete(output_dir, model_name, variant, xai_methods):
+                    logger.info(
+                        "Skipping %s (all requested %s maps already exist)",
+                        run_label,
+                        xai_methods,
+                    )
+                    continue
 
-            monitor.set_active_variant(variant)
-            cmd = [
-                "uv",
-                "run",
-                "python",
-                "-m",
-                "Image_Authenticity_prediction",
-                "experiment-two",
-                "--models",
-                "clip_vit_b16",
-                "--xai-methods",
-                "mpm",
-                "--variants",
-                variant,
-            ]
-            logger.info(
-                "Launching isolated subprocess for %s: %s",
-                variant,
-                " ".join(cmd),
-            )
-            start_t = time.monotonic()
-            proc = subprocess.run(cmd, check=False)
-            elapsed_min = (time.monotonic() - start_t) / 60.0
-
-            post_sample = collect_telemetry_sample(
-                active_variant=variant,
-                output_dir=output_dir,
-            )
-            if proc.returncode != 0 or not post_sample.gpu_healthy:
-                reason = (
-                    f"subprocess_failed(rc={proc.returncode},"
-                    f"anomaly={post_sample.anomaly_reason})"
-                )
-                logger.error(
-                    "Variant %s failed after %.1f min: %s",
+                monitor.set_active_variant(run_label)
+                cmd = [
+                    "uv",
+                    "run",
+                    "python",
+                    "-m",
+                    "Image_Authenticity_prediction",
+                    "experiment-two",
+                    "--models",
+                    model_name,
+                    "--xai-methods",
+                    xai_methods,
+                    "--variants",
                     variant,
-                    elapsed_min,
-                    reason,
+                ]
+                logger.info(
+                    "Launching isolated subprocess for %s: %s",
+                    run_label,
+                    " ".join(cmd),
                 )
-                write_crash_diagnostic_snapshot(
-                    telemetry_dir=telemetry_dir,
-                    trigger_reason=reason,
-                    recent_samples=list(monitor.recent_samples),
-                    extra_context={
-                        "failed_variant": variant,
-                        "return_code": proc.returncode,
-                        "elapsed_minutes": round(elapsed_min, 2),
-                    },
-                )
-                return proc.returncode or 1
+                start_t = time.monotonic()
+                proc = subprocess.run(cmd, check=False)
+                elapsed_min = (time.monotonic() - start_t) / 60.0
 
-            logger.info(
-                "Completed %s in %.1f min. Cooling down for %.0f s...",
-                variant,
-                elapsed_min,
-                variant_cooldown_sec,
-            )
-            monitor.set_active_variant("cooldown")
-            time.sleep(variant_cooldown_sec)
+                post_sample = collect_telemetry_sample(
+                    active_variant=run_label,
+                    output_dir=output_dir,
+                )
+                maps_ok = _variant_maps_complete(
+                    output_dir, model_name, variant, xai_methods
+                )
+                if proc.returncode != 0 or not post_sample.gpu_healthy or not maps_ok:
+                    reason = (
+                        f"subprocess_failed(rc={proc.returncode},"
+                        f"maps_ok={maps_ok},"
+                        f"anomaly={post_sample.anomaly_reason})"
+                    )
+                    logger.error(
+                        "Variant %s failed after %.1f min: %s",
+                        run_label,
+                        elapsed_min,
+                        reason,
+                    )
+                    write_crash_diagnostic_snapshot(
+                        telemetry_dir=telemetry_dir,
+                        trigger_reason=reason,
+                        recent_samples=list(monitor.recent_samples),
+                        extra_context={
+                            "failed_variant": run_label,
+                            "return_code": proc.returncode,
+                            "maps_ok": int(maps_ok),
+                            "elapsed_minutes": round(elapsed_min, 2),
+                        },
+                    )
+                    return proc.returncode or 1
+
+                logger.info(
+                    "Completed %s in %.1f min. Cooling down for %.0f s...",
+                    run_label,
+                    elapsed_min,
+                    variant_cooldown_sec,
+                )
+                monitor.set_active_variant("cooldown")
+                time.sleep(variant_cooldown_sec)
 
         monitor.set_active_variant("final_comparisons")
         compare_cmd = [
@@ -1019,10 +1083,11 @@ def run_isolated_experiment2_variants(
             "Image_Authenticity_prediction",
             "experiment-two",
             "--models",
-            "clip_vit_b16",
+            *target_models,
             "--xai-methods",
-            "both",
+            xai_methods,
             "--comparison-only",
+            "--save-plots",
             "--comparison-kinds",
             "within_model_variants",
             "between_model_architectures",
@@ -1097,9 +1162,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--run-exp2",
         action="store_true",
         help=(
-            "Run remaining Experiment 2 MPM variants in isolated subprocesses "
+            "Run remaining Experiment 2 variants in isolated subprocesses "
             "while recording telemetry in the background."
         ),
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=list(ALL_EXP2_MODELS),
+        choices=list(ALL_EXP2_MODELS),
+        help="Model architectures to process when --run-exp2 is enabled.",
+    )
+    parser.add_argument(
+        "--xai-methods",
+        type=str,
+        default="both",
+        choices=["gradcam", "mpm", "both"],
+        help="XAI methods to generate when --run-exp2 is enabled (default: both).",
     )
     parser.add_argument(
         "--variants",
@@ -1172,6 +1251,8 @@ def main() -> int:
             variants=args.variants,
             output_dir=args.output_dir,
             telemetry_dir=args.telemetry_dir,
+            models=args.models,
+            xai_methods=args.xai_methods,
             interval_sec=args.interval,
             csv_interval_sec=args.csv_interval,
             console_interval_sec=args.console_interval,
