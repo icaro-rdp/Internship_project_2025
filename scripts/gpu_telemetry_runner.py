@@ -707,6 +707,7 @@ class BackgroundTelemetryMonitor:
         self.recent_samples: deque[TelemetrySample] = deque(maxlen=history_size)
         self.variant_summaries: dict[str, VariantMetricsSummary] = {}
         self._active_variant = "idle"
+        self._progress_status = ""
         self._variant_start_time = time.monotonic()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -747,6 +748,24 @@ class BackgroundTelemetryMonitor:
             self._active_variant = variant_name
             self._variant_start_time = now_mono
             self._save_summaries_locked()
+
+    def set_progress_status(self, progress_status: str) -> None:
+        """Update the overall progress label displayed in periodic telemetry logs.
+
+        Args:
+            progress_status: Short string (e.g. ``"12/70 (17%) | ETA: ~88h"``).
+        """
+        with self._lock:
+            self._progress_status = progress_status
+
+    def get_progress_status(self) -> str:
+        """Return the current progress status string.
+
+        Returns:
+            Current progress status string.
+        """
+        with self._lock:
+            return self._progress_status
 
     def get_active_variant(self) -> str:
         """Return the currently tracked variant label.
@@ -874,9 +893,12 @@ class BackgroundTelemetryMonitor:
                         if sample.gpu_healthy
                         else f"ANOMALY ({sample.anomaly_reason})"
                     )
+                    prog_info = self.get_progress_status()
+                    prog_prefix = f" [{prog_info}]" if prog_info else ""
                     logger.info(
-                        "[TELEMETRY] [%s] Temp: %.0f°C | Power: %.1fW | VRAM: %.0f MiB | Util: %.0f%% | Status: %s",
+                        "[TELEMETRY] [%s]%s Temp: %.0f°C | Power: %.1fW | VRAM: %.0f MiB | Util: %.0f%% | Status: %s",
                         active_v,
+                        prog_prefix,
                         temp,
                         pwr,
                         vram,
@@ -935,6 +957,124 @@ def _variant_maps_complete(
         (maps_dir / "Multiscale_Pixel_Masking" / stem).exists() if needs_mpm else True
     )
     return gc_ok and mpm_ok
+
+
+def generate_progress_dashboard(
+    output_dir: Path,
+    target_models: list[str],
+    variants: list[str],
+    active_task: str,
+    session_start_time: float,
+    completed_durations_sec: list[float],
+    xai_methods: str = "both",
+) -> tuple[int, int, str]:
+    """Build and save an auto-updating progress dashboard for long-running experiments.
+
+    Args:
+        output_dir: Experiment 2 base output directory.
+        target_models: List of model architectures.
+        variants: List of variant tags.
+        active_task: Identifier of currently executing task (e.g. ``"vgg16_exp1a_variant3"``).
+        session_start_time: Session start monotonic timestamp.
+        completed_durations_sec: List of completed variant runtimes in seconds.
+        xai_methods: Requested XAI methods.
+
+    Returns:
+        Tuple of ``(completed_count, total_count, short_status_string)``.
+    """
+    total_count = len(target_models) * len(variants)
+    model_counts: dict[str, int] = {}
+    model_status: dict[str, str] = {}
+
+    for m in target_models:
+        done_m = sum(
+            1 for v in variants if _variant_maps_complete(output_dir, m, v, xai_methods)
+        )
+        model_counts[m] = done_m
+        if done_m == len(variants):
+            model_status[m] = "COMPLETED"
+        elif any(f"{m}_{v}" == active_task for v in variants):
+            model_status[m] = "IN_PROGRESS"
+        elif done_m > 0:
+            model_status[m] = "PARTIAL"
+        else:
+            model_status[m] = "PENDING"
+
+    completed_count = sum(model_counts.values())
+    pct = (completed_count / total_count * 100.0) if total_count > 0 else 100.0
+
+    elapsed_sec = time.monotonic() - session_start_time
+    elapsed_hr = elapsed_sec / 3600.0
+
+    remaining_tasks = total_count - completed_count
+    if completed_durations_sec:
+        avg_sec = sum(completed_durations_sec) / len(completed_durations_sec)
+        rem_sec = remaining_tasks * avg_sec
+        rem_hr_str = f"~{rem_sec / 3600.0:.1f}h"
+    else:
+        rem_hr_str = "Estimating..."
+
+    bar_len = 24
+    filled_len = (
+        int(bar_len * (completed_count / total_count)) if total_count > 0 else bar_len
+    )
+    bar_str = "[" + "█" * filled_len + "░" * (bar_len - filled_len) + "]"
+
+    short_status = f"{completed_count}/{total_count} ({pct:.1f}%) | ETA: {rem_hr_str}"
+
+    lines = [
+        "# Experiment 2 Overall Execution Progress",
+        "",
+        f"- **Last Updated (UTC)**: {datetime.now(tz=UTC).strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **Current Task**: `{active_task}`",
+        f"- **Overall Progress**: **{completed_count} / {total_count} variants** ({pct:.1f}%)",
+        f"- **Progress Bar**: `{bar_str}`",
+        f"- **Session Elapsed**: `{elapsed_hr:.2f} hours`",
+        f"- **Estimated Time Remaining**: `{rem_hr_str}`",
+        "",
+        "## Architecture Status Breakdown",
+        "",
+        "| Architecture | Completed Variants | Total Variants | Status | Progress |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for m in target_models:
+        cnt = model_counts[m]
+        tot = len(variants)
+        m_pct = (cnt / tot) * 100.0 if tot > 0 else 0.0
+        m_filled = int(12 * (cnt / tot)) if tot > 0 else 12
+        m_bar = "[" + "█" * m_filled + "░" * (12 - m_filled) + "]"
+        lines.append(
+            f"| **{m}** | {cnt} | {tot} | `{model_status[m]}` | `{m_bar}` {m_pct:.0f}% |"
+        )
+
+    lines.append("")
+    progress_md_text = "\n".join(lines)
+    progress_file = output_dir / "experiment_progress.md"
+    progress_json = output_dir / "experiment_progress.json"
+    try:
+        progress_file.write_text(progress_md_text, encoding="utf-8")
+        payload = {
+            "last_updated_utc": datetime.now(tz=UTC).isoformat(),
+            "active_task": active_task,
+            "completed_variants": completed_count,
+            "total_variants": total_count,
+            "progress_percent": round(pct, 1),
+            "session_elapsed_hours": round(elapsed_hr, 2),
+            "estimated_remaining_hours": rem_hr_str,
+            "model_breakdown": {
+                m: {
+                    "completed": model_counts[m],
+                    "total": len(variants),
+                    "status": model_status[m],
+                }
+                for m in target_models
+            },
+        }
+        progress_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write progress dashboard: %s", exc)
+
+    return completed_count, total_count, short_status
 
 
 def run_isolated_experiment2_variants(
@@ -997,19 +1137,63 @@ def run_isolated_experiment2_variants(
     )
     monitor.start()
 
+    session_start_t = time.monotonic()
+    completed_durations_sec: list[float] = []
+
+    # Initialize dashboard
+    _completed_count, total_count, short_status = generate_progress_dashboard(
+        output_dir=output_dir,
+        target_models=target_models,
+        variants=variants,
+        active_task="starting",
+        session_start_time=session_start_t,
+        completed_durations_sec=completed_durations_sec,
+        xai_methods=xai_methods,
+    )
+    monitor.set_progress_status(short_status)
+    logger.info("Overall experiment status at launch: %s", short_status)
+
     try:
+        task_idx = 0
         for model_name in target_models:
             for variant in variants:
+                task_idx += 1
                 run_label = f"{model_name}_{variant}"
                 if _variant_maps_complete(output_dir, model_name, variant, xai_methods):
                     logger.info(
-                        "Skipping %s (all requested %s maps already exist)",
+                        "[%d/%d] Skipping %s (all requested %s maps already exist)",
+                        task_idx,
+                        total_count,
                         run_label,
                         xai_methods,
                     )
                     continue
 
+                _completed_count, _total_count, short_status = (
+                    generate_progress_dashboard(
+                        output_dir=output_dir,
+                        target_models=target_models,
+                        variants=variants,
+                        active_task=run_label,
+                        session_start_time=session_start_t,
+                        completed_durations_sec=completed_durations_sec,
+                        xai_methods=xai_methods,
+                    )
+                )
+                monitor.set_progress_status(short_status)
                 monitor.set_active_variant(run_label)
+
+                logger.info(
+                    "\n%s\n[PROGRESS %d/%d] Overall: %s | Starting %s\nSession Elapsed: %.1fh\n%s",
+                    "=" * 80,
+                    task_idx,
+                    total_count,
+                    short_status,
+                    run_label,
+                    (time.monotonic() - session_start_t) / 3600.0,
+                    "=" * 80,
+                )
+
                 cmd = [
                     "uv",
                     "run",
@@ -1024,14 +1208,11 @@ def run_isolated_experiment2_variants(
                     "--variants",
                     variant,
                 ]
-                logger.info(
-                    "Launching isolated subprocess for %s: %s",
-                    run_label,
-                    " ".join(cmd),
-                )
                 start_t = time.monotonic()
                 proc = subprocess.run(cmd, check=False)
-                elapsed_min = (time.monotonic() - start_t) / 60.0
+                elapsed_sec = time.monotonic() - start_t
+                elapsed_min = elapsed_sec / 60.0
+                completed_durations_sec.append(elapsed_sec)
 
                 post_sample = collect_telemetry_sample(
                     active_variant=run_label,
@@ -1065,11 +1246,29 @@ def run_isolated_experiment2_variants(
                     )
                     return proc.returncode or 1
 
+                _completed_count, _total_count, short_status = (
+                    generate_progress_dashboard(
+                        output_dir=output_dir,
+                        target_models=target_models,
+                        variants=variants,
+                        active_task=f"{run_label}_cooldown",
+                        session_start_time=session_start_t,
+                        completed_durations_sec=completed_durations_sec,
+                        xai_methods=xai_methods,
+                    )
+                )
+                monitor.set_progress_status(short_status)
+
                 logger.info(
-                    "Completed %s in %.1f min. Cooling down for %.0f s...",
+                    "\n%s\n[COMPLETED %d/%d] Finished %s in %.1f min (Overall: %s)\nCooling down for %.0fs...\n%s",
+                    "=" * 80,
+                    task_idx,
+                    total_count,
                     run_label,
                     elapsed_min,
+                    short_status,
                     variant_cooldown_sec,
+                    "=" * 80,
                 )
                 monitor.set_active_variant("cooldown")
                 time.sleep(variant_cooldown_sec)
@@ -1202,6 +1401,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Display human-readable telemetry summary table from existing logs and exit.",
     )
+    parser.add_argument(
+        "--show-progress",
+        action="store_true",
+        help="Display human-readable experiment progress dashboard and exit.",
+    )
     return parser
 
 
@@ -1232,6 +1436,16 @@ def main() -> int:
             sys.stdout.write(format_summary_markdown(summaries) + "\n")
             return 0
         logger.warning("No telemetry summary or CSV found in %s", args.telemetry_dir)
+        return 1
+
+    if args.show_progress:
+        progress_md = args.output_dir / "experiment_progress.md"
+        if progress_md.exists():
+            import sys
+
+            sys.stdout.write(progress_md.read_text(encoding="utf-8") + "\n")
+            return 0
+        logger.warning("No progress dashboard found in %s", args.output_dir)
         return 1
 
     if args.snapshot_now:
