@@ -2,9 +2,11 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import torch
 
 from Image_Authenticity_prediction.main.Experiments import experiment_two
 from Image_Authenticity_prediction.main.Experiments.experiment_two import (
@@ -13,6 +15,7 @@ from Image_Authenticity_prediction.main.Experiments.experiment_two import (
     load_and_resize_map,
     run_comparisons,
     run_experiment_2,
+    run_generation_loop,
     save_plots_for_result,
     setup_directories,
 )
@@ -314,3 +317,76 @@ class TestExperimentTwoExecution:
             run_comparison=False,
             save_maps=False,
         )
+
+    def test_run_generation_loop_enforces_batch_size_one(
+        self,
+        mock_experiment_dirs: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify run_generation_loop raises ValueError when loader batch size is not 1."""
+        monkeypatch.setitem(experiment_two.DIRS, "output", mock_experiment_dirs["root"])
+        monkeypatch.setitem(
+            experiment_two.DIRS, "gradcam", mock_experiment_dirs["exp2_gradcam"]
+        )
+
+        class DummyLoader:
+            batch_size = 4
+
+        with pytest.raises(
+            ValueError, match="run_generation_loop requires loader with batch_size=1"
+        ):
+            run_generation_loop(
+                model=None,
+                loader=DummyLoader(),
+                device="cpu",
+                model_name="vgg16",
+                variant_tag="orig",
+                method="gradcam",
+                save_maps=True,
+            )
+
+    def test_run_generation_loop_reraises_and_safely_cleans_up(
+        self,
+        mock_experiment_dirs: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify run_generation_loop re-raises generation exceptions and cleans up."""
+        monkeypatch.setitem(experiment_two.DIRS, "output", mock_experiment_dirs["root"])
+        monkeypatch.setitem(
+            experiment_two.DIRS, "gradcam", mock_experiment_dirs["exp2_gradcam"]
+        )
+
+        mock_cleanup = MagicMock()
+
+        class MockExplainer:
+            def generate_map(self, img, target_index):
+                raise RuntimeError("Simulated GPU or forward pass fault")
+
+            def cleanup(self, failed: bool = False):
+                mock_cleanup(failed=failed)
+
+        monkeypatch.setattr(
+            experiment_two, "GradCAM", lambda *args, **kwargs: MockExplainer()
+        )
+
+        class DummyLoader:
+            batch_size = 1
+
+            def __iter__(self):
+                yield (torch.zeros((1, 3, 8, 8)), 0)
+
+            def __len__(self):
+                return 1
+
+        with pytest.raises(RuntimeError, match="Simulated GPU or forward pass fault"):
+            run_generation_loop(
+                model=object(),
+                loader=DummyLoader(),
+                device="cpu",
+                model_name="vgg16",
+                variant_tag="orig",
+                method="gradcam",
+                save_maps=True,
+            )
+
+        mock_cleanup.assert_called_once_with(failed=True)

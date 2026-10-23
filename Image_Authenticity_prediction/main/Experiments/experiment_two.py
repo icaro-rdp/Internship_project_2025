@@ -214,6 +214,13 @@ def run_generation_loop(
 ):
     if not save_maps:
         return
+
+    loader_batch_size = getattr(loader, "batch_size", None)
+    if loader_batch_size is not None and loader_batch_size != 1:
+        raise ValueError(
+            f"run_generation_loop requires loader with batch_size=1, got {loader_batch_size}"
+        )
+
     is_gc = method == "gradcam"
     out_dir = DIRS["gradcam"] if is_gc else DIRS["mpm"]
     stem = f"{model_name}_{variant_tag}"
@@ -253,11 +260,16 @@ def run_generation_loop(
         )
     )
 
+    failed = False
     try:
         info(f"Generating {method} for {stem}...")
         for _i, (img, _) in enumerate(loader):
             if _i < completed_images:
                 continue
+            if img.dim() == 4 and img.shape[0] != 1:
+                raise ValueError(
+                    f"run_generation_loop expects single-image batches (B=1), got shape {img.shape}"
+                )
             img = img.to(device)
             res = explainer.generate_map(img, 0)
 
@@ -286,9 +298,11 @@ def run_generation_loop(
             shutil.rmtree(temp_dir)
 
     except Exception as e:
+        failed = True
         error(f"Gen Error {stem}: {e}")
+        raise
     finally:
-        explainer.cleanup()
+        explainer.cleanup(failed=failed)
 
 
 # ============================================================================
@@ -580,6 +594,10 @@ def run_experiment_2(
 
     # --- Part A: Generation ---
     if not comparison_only:
+        if SINGLE_BATCH_SIZE != 1:
+            raise ValueError(
+                f"Experiment 2 requires single_batch_size=1, found {SINGLE_BATCH_SIZE} in data config"
+            )
         info(">>> STARTING GENERATION")
         queue = get_weight_files(models, variants)
         for m_name, paths in queue.items():

@@ -1,6 +1,7 @@
 """Explainability methods (Grad-CAM and Multiscale Pixel Masking) for saliency maps."""
 
 import importlib
+import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
@@ -28,9 +29,7 @@ class ModelsExplainer(ABC):
 
     Keeps execution simple and deterministic in standard fp32 without AMP
     autocast, ``channels_last`` conversions, ``torch.compile`` background
-    workers, or cuDNN autotuning benchmarks. On CUDA devices, enables TF32
-    matrix multiplications so Vision Transformer linear layers do not saturate
-    non-tensor FP32 ALU pipelines at maximum board power.
+    workers, or cuDNN autotuning benchmarks.
     """
 
     def __init__(self, model: nn.Module) -> None:
@@ -62,8 +61,14 @@ class ModelsExplainer(ABC):
         """Generate a saliency map for ``input_tensor``."""
         raise NotImplementedError
 
-    def cleanup(self) -> None:
-        """Release any resources or hooks held by the explainer."""
+    def cleanup(self, failed: bool = False) -> None:
+        """Release any resources or hooks held by the explainer.
+
+        Args:
+            failed: Whether cleanup is being invoked following a failure. Subclasses
+                can bypass hardware calls to avoid cascading exceptions on an unstable
+                or poisoned GPU context.
+        """
 
     def __call__(
         self, input_tensor: torch.Tensor, target_index: int | Sequence[int] = 0
@@ -168,7 +173,22 @@ class GradCAM(ModelsExplainer):
         target_index: int | Sequence[int] | torch.Tensor = 0,
         log_debug_stats: bool = False,
     ) -> np.ndarray:
-        """Generate Grad-CAM heatmap(s) for a 4D input tensor ``(B, C, H, W)``."""
+        """Generate Grad-CAM heatmap(s) for a 4D input tensor ``(B, C, H, W)``.
+
+        Args:
+            input_image: 4D image batch tensor of shape ``(B, C, H, W)``.
+            target_index: Target class index or sequence of indices for the batch.
+            log_debug_stats: Whether to log execution duration and output map range.
+
+        Returns:
+            Normalized Grad-CAM heatmap array of shape ``(H, W)`` for single images
+            or ``(B, H, W)`` for multi-image batches.
+
+        Raises:
+            ValueError: If ``input_image`` is not a 4D tensor.
+            RuntimeError: If target layer activations were not captured.
+        """
+        start_time = time.perf_counter()
         if input_image.dim() != 4:
             raise ValueError(
                 f"input_image must be a 4D tensor (B, C, H, W), got {input_image.shape}"
@@ -259,14 +279,28 @@ class GradCAM(ModelsExplainer):
 
         min_r = 0.0 if self.relu else -1.0
         if batch_size == 1:
-            return normalize_data(cam_np, min_range=min_r, max_range=1.0)
-        return np.stack(
-            [normalize_data(c, min_range=min_r, max_range=1.0) for c in cam_np],
-            axis=0,
-        )
+            cam_out = normalize_data(cam_np, min_range=min_r, max_range=1.0)
+        else:
+            cam_out = np.stack(
+                [normalize_data(c, min_range=min_r, max_range=1.0) for c in cam_np],
+                axis=0,
+            )
 
-    def cleanup(self) -> None:
-        """Remove registered hooks and clear stored tensors."""
+        if log_debug_stats:
+            debug(
+                "GradCAM: returned map -> range [%.4f, %.4f] in %.2f seconds",
+                float(cam_out.min()),
+                float(cam_out.max()),
+                time.perf_counter() - start_time,
+            )
+        return cam_out
+
+    def cleanup(self, failed: bool = False) -> None:
+        """Remove registered hooks and clear stored tensors.
+
+        Args:
+            failed: Whether cleanup is invoked after an error.
+        """
         info("Removing GradCAM hooks.")
         for hook in self.hooks:
             hook.remove()
@@ -278,17 +312,16 @@ class GradCAM(ModelsExplainer):
 class MultiscalePixelMasking(ModelsExplainer):
     """Safe, vectorized Multiscale Pixel Masking (MPM) with per-scale striding.
 
-    Retains only the two core algorithmic optimizations over the baseline:
+    Key algorithmic features:
     1. Vectorized 2D boolean mask construction on device (``row_hit & col_hit``)
-       combined with standard out-of-place ``torch.where``.
+       combined with pre-allocated buffer writing via ``torch.where(..., out=masked_images)``.
     2. Optional per-scale spatial ``stride`` (e.g. ``[2, 4, 16]``) with bilinear
        upsampling back to ``(H, W)``.
+    3. Batched GPU score accumulation across each scale level, transferring to host
+       CPU RAM per scale level.
 
-    Avoids ``torch.compile`` worker processes, AMP autocast, ``channels_last``,
-    pre-allocated in-place ``batch_buffer`` mutation, and unbounded asynchronous
-    GPU command-queue accumulation. Each batch synchronizes its 1D score vector
-    to host CPU RAM before launching the next batch so at most one batch is ever
-    in flight on the GPU.
+    Avoids ``torch.compile`` worker processes, AMP autocast, and ``channels_last``
+    memory conversions to ensure deterministic and predictable execution.
     """
 
     def __init__(
@@ -298,41 +331,56 @@ class MultiscalePixelMasking(ModelsExplainer):
         pixel_batch_size: int = 64,
         mask_value: float = 0.0,
         use_tqdm: bool = False,
-        batch_cooldown_sec: float = 0.002,
-        cooldown_ratio: float = 0.20,
         stride: int | Sequence[int] | None = None,
     ) -> None:
         """Initialize the MPM explainer.
 
         Args:
             model: Network returning ``(predictions, features)``.
-            sigma_list: Side lengths, in pixels, of the square occluders.
+            sigma_list: Side lengths, in pixels, of the square occluders. Must be positive.
             pixel_batch_size: Number of occluded copies evaluated per forward pass.
+                Must be positive.
             mask_value: Fill value written into occluded regions.
             use_tqdm: Whether to display progress bars when ``tqdm`` is available.
-            batch_cooldown_sec: Minimum pause in seconds after each synchronized
-                CUDA batch.
-            cooldown_ratio: Fractional pause relative to batch compute time
-                after each synchronized CUDA batch.
-            stride: Optional spatial step size(s) for occluder centers.
+            stride: Optional spatial step size(s) for occluder centers. Must be positive.
+
+        Raises:
+            ValueError: If ``pixel_batch_size`` or any occluder/stride size is non-positive,
+                or if ``sigma_list`` is empty.
         """
         super().__init__(model)
-        self.sigma_list = list(sigma_list)
+        if pixel_batch_size <= 0:
+            raise ValueError(
+                f"pixel_batch_size must be positive, got {pixel_batch_size}"
+            )
+        self.pixel_batch_size = int(pixel_batch_size)
+
+        if not sigma_list:
+            raise ValueError("sigma_list cannot be empty")
+        self.sigma_list = [int(s) for s in sigma_list]
+        if any(s <= 0 for s in self.sigma_list):
+            raise ValueError(
+                f"All occluder sizes in sigma_list must be positive, got {sigma_list}"
+            )
+
         if stride is None:
             self.strides = [1] * len(self.sigma_list)
         elif isinstance(stride, int):
-            self.strides = [max(1, int(stride))] * len(self.sigma_list)
+            if stride <= 0:
+                raise ValueError(f"stride must be positive, got {stride}")
+            self.strides = [int(stride)] * len(self.sigma_list)
         else:
-            self.strides = [max(1, int(s)) for s in stride]
-            if len(self.strides) != len(self.sigma_list):
+            stride_list = [int(s) for s in stride]
+            if len(stride_list) != len(self.sigma_list):
                 raise ValueError(
-                    f"stride length ({len(self.strides)}) must match sigma_list "
+                    f"stride length ({len(stride_list)}) must match sigma_list "
                     f"length ({len(self.sigma_list)})"
                 )
-        self.pixel_batch_size = int(pixel_batch_size)
+            if any(s <= 0 for s in stride_list):
+                raise ValueError(f"All stride values must be positive, got {stride}")
+            self.strides = stride_list
+
         self.mask_value = float(mask_value)
-        self.batch_cooldown_sec = max(0.0, float(batch_cooldown_sec))
-        self.cooldown_ratio = max(0.0, float(cooldown_ratio))
         self.use_tqdm = bool(use_tqdm and _tqdm is not None)
         if use_tqdm and _tqdm is None:
             warn(
@@ -368,10 +416,20 @@ class MultiscalePixelMasking(ModelsExplainer):
         col_hit = (cols >= center_cols - before) & (cols < center_cols + after)
         return (row_hit.unsqueeze(2) & col_hit.unsqueeze(1)).unsqueeze(1)
 
-    def cleanup(self) -> None:
-        """Release cached CUDA memory blocks if running on GPU."""
+    def cleanup(self, failed: bool = False) -> None:
+        """Release cached CUDA memory blocks if running on GPU.
+
+        Args:
+            failed: If True or an exception is in flight, avoids calling CUDA
+                APIs to prevent cascading secondary failures on an unstable context.
+        """
+        if failed or sys.exc_info()[0] is not None:
+            return
         if self.is_cuda and torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except (RuntimeError, torch.cuda.CudaError) as e:
+                warn("CUDA empty_cache failed during cleanup: %s", e)
 
     def generate_map(
         self,
@@ -380,7 +438,20 @@ class MultiscalePixelMasking(ModelsExplainer):
         normalize: bool = True,
         log_debug_stats: bool = False,
     ) -> np.ndarray:
-        """Compute the multiscale occlusion saliency map ``(H, W)`` for one image."""
+        """Compute the multiscale occlusion saliency map ``(H, W)`` for one image.
+
+        Args:
+            image_tensor: Single image tensor of shape ``(C, H, W)`` or ``(1, C, H, W)``.
+            target_index: Target regression or classification output index.
+            normalize: Whether to min-max normalize the saliency map to ``[-1.0, 1.0]``.
+            log_debug_stats: Whether to log execution duration and output map range.
+
+        Returns:
+            Occlusion saliency map array of shape ``(H, W)``.
+
+        Raises:
+            ValueError: If ``image_tensor`` has unexpected dimensions.
+        """
         start_time = time.perf_counter()
 
         if image_tensor.dim() == 3:
@@ -480,8 +551,6 @@ class MultiscalePixelMasking(ModelsExplainer):
                     saliency_map_cpu += upsampled.view(-1).cpu().numpy()
 
                 del scale_scores_gpu
-                if self.is_cuda and self.batch_cooldown_sec > 0.0:
-                    time.sleep(self.batch_cooldown_sec)
 
             del batch_buffer, mask_val_tensor
 

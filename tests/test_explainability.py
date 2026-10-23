@@ -119,14 +119,13 @@ def test_normalized_map_spans_unit_range(
 def test_stability_defaults_and_cleanup(
     model: TinyRegressor, image: torch.Tensor
 ) -> None:
-    """MPM uses safe fp32 defaults, batch_size=64, cooldown=0.002, and clean cleanup."""
+    """MPM uses safe fp32 defaults, batch_size=64, and clean cleanup."""
     explainer = MultiscalePixelMasking(model, SIGMAS, mask_value=MASK_VALUE)
     assert explainer.pixel_batch_size == 64
-    assert explainer.batch_cooldown_sec == pytest.approx(0.002)
-    assert explainer.cooldown_ratio == pytest.approx(0.20)
     assert not hasattr(explainer, "use_amp")
     explainer.generate_map(image)
-    explainer.cleanup()
+    explainer.cleanup(failed=True)
+    explainer.cleanup(failed=False)
 
 
 def test_gradcam_preserves_parameter_requires_grad(
@@ -153,3 +152,42 @@ def test_per_scale_stride_upsamples_to_full_resolution(
     assert saliency.shape == IMAGE_SHAPE[1:]
     assert saliency.min() == pytest.approx(-1.0)
     assert saliency.max() == pytest.approx(1.0)
+
+
+def test_mpm_input_validation(model: TinyRegressor) -> None:
+    """Validate that invalid parameters raise ValueError with informative messages."""
+    with pytest.raises(ValueError, match="pixel_batch_size must be positive"):
+        MultiscalePixelMasking(model, SIGMAS, pixel_batch_size=0)
+
+    with pytest.raises(ValueError, match="sigma_list cannot be empty"):
+        MultiscalePixelMasking(model, [])
+
+    with pytest.raises(ValueError, match="All occluder sizes.*must be positive"):
+        MultiscalePixelMasking(model, [1, -2, 3])
+
+    with pytest.raises(ValueError, match="stride must be positive"):
+        MultiscalePixelMasking(model, SIGMAS, stride=-1)
+
+    with pytest.raises(ValueError, match="All stride values must be positive"):
+        MultiscalePixelMasking(model, SIGMAS, stride=[1, 0, 1, 1])
+
+
+def test_mpm_log_debug_stats(model: TinyRegressor, image: torch.Tensor) -> None:
+    """MPM generates map and logs debug stats without error."""
+    explainer = MultiscalePixelMasking(
+        model,
+        SIGMAS,
+        pixel_batch_size=16,
+        mask_value=MASK_VALUE,
+    )
+    saliency = explainer.generate_map(image, log_debug_stats=True)
+    assert saliency.shape == IMAGE_SHAPE[1:]
+    explainer.cleanup()
+
+
+def test_gradcam_log_debug_stats(model: TinyRegressor, image: torch.Tensor) -> None:
+    """GradCAM runs and logs debug statistics when enabled."""
+    grad_cam = GradCAM(model, "features.0", relu=False)
+    heatmap = grad_cam.generate_map(image.unsqueeze(0), 0, log_debug_stats=True)
+    assert heatmap.shape == IMAGE_SHAPE[1:]
+    grad_cam.cleanup(failed=False)
