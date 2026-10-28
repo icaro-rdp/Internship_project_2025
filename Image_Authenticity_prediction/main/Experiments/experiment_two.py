@@ -210,7 +210,7 @@ def _map_output_path(model_name: str, variant_tag: str, method: str) -> Path:
 
 
 def run_generation_loop(
-    model, loader, device, model_name, variant_tag, method, save_maps
+    model, loader, device, model_name, variant_tag, method, save_maps, cluster_computing=False
 ):
     if not save_maps:
         return
@@ -248,15 +248,24 @@ def run_generation_loop(
             f"({completed_images}/{len(loader)} images already saved)"
         )
 
+    px_batch = 512 if cluster_computing else XAI_PARAMS["px_batch"]
+    use_amp = cluster_computing
+    amp_dtype = torch.bfloat16 if cluster_computing else torch.float32
+
+    if cluster_computing:
+        torch.backends.cudnn.benchmark = True
+
     explainer = (
         GradCAM(model, MODEL_REGISTRY[model_name]["target_layer"], False)
         if is_gc
         else MultiscalePixelMasking(
             model,
             XAI_PARAMS["sigma"],
-            XAI_PARAMS["px_batch"],
+            px_batch,
             XAI_PARAMS.get("mask_val", 0),
             stride=XAI_PARAMS.get("stride", 1),
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
         )
     )
 
@@ -270,7 +279,7 @@ def run_generation_loop(
                 raise ValueError(
                     f"run_generation_loop expects single-image batches (B=1), got shape {img.shape}"
                 )
-            img = img.to(device)
+            img = img.to(device, non_blocking=cluster_computing)
             res = explainer.generate_map(img, 0)
 
             if isinstance(res, torch.Tensor):
@@ -584,6 +593,7 @@ def run_experiment_2(
     comparison_target_resolution=(224, 224),
     save_comparison_json=True,
     save_plots=False,
+    cluster_computing=False,
 ):
     start = time.time()
     setup_directories()
@@ -626,16 +636,34 @@ def run_experiment_2(
                 model.requires_grad_(False)
 
                 ds = MODEL_REGISTRY[m_name]["dataset"]["test"]
-                loader = DataLoader(
-                    ds,
-                    batch_size=SINGLE_BATCH_SIZE,
-                    shuffle=False,
-                    num_workers=0,
-                )
+                if cluster_computing:
+                    loader = DataLoader(
+                        ds,
+                        batch_size=SINGLE_BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=4,
+                        pin_memory=True,
+                        prefetch_factor=2,
+                        persistent_workers=True,
+                    )
+                else:
+                    loader = DataLoader(
+                        ds,
+                        batch_size=SINGLE_BATCH_SIZE,
+                        shuffle=False,
+                        num_workers=0,
+                    )
 
                 for meth in methods:
                     run_generation_loop(
-                        model, loader, device, m_name, tag, meth, save_maps
+                        model,
+                        loader,
+                        device,
+                        m_name,
+                        tag,
+                        meth,
+                        save_maps,
+                        cluster_computing=cluster_computing,
                     )
 
                 model.cpu()

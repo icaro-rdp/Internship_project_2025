@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Benchmark Multiscale Pixel Masking (MPM) optimizations on Blackwell GPUs.
+"""Comprehensive Multiscale Pixel Masking (MPM) Optimization Benchmark on Blackwell GPU.
 
-Tests varying pixel batch sizes (64, 128, 256, 512), mixed precision (bfloat16),
-cuDNN autotuning, and measure speedup, peak VRAM, and numerical fidelity against baseline.
+Evaluates batch size scaling (64 to 2048), precision (FP32 vs bfloat16),
+cuDNN autotuning, memory scaling, and processing bottlenecks.
+Compares directly against GPU 1 (RTX 3090) baseline of 77.30s/img.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ from Image_Authenticity_prediction.main.Utils.explainability import (
     MultiscalePixelMasking,
 )
 
+# Reference baseline recorded on GPU 1 (gpuhasson1, RTX 3090, 24 GiB)
+GPU1_TIME_PER_IMG = 77.30  # seconds
+GPU1_VARIANT_MINS = (GPU1_TIME_PER_IMG * 273) / 60.0  # 351.7 mins (~5h 52m)
+
 
 def load_test_image(dataset_dir: Path, img_size: int = 224) -> torch.Tensor:
     """Find and load one real test image as normalized (1, 3, H, W) tensor."""
@@ -50,11 +55,11 @@ def load_test_image(dataset_dir: Path, img_size: int = 224) -> torch.Tensor:
 
     if candidates:
         img_path = candidates[0]
-        print(f"Loaded test image from: {img_path}")
+        print(f"Loaded test image from: {img_path}", flush=True)
         img = Image.open(img_path).convert("RGB")
         return transform(img).unsqueeze(0)
     else:
-        print("Warning: No image file found, generating synthetic RGB tensor.")
+        print("Warning: No image file found, generating synthetic RGB tensor.", flush=True)
         return torch.randn(1, 3, img_size, img_size)
 
 
@@ -73,7 +78,7 @@ class AutocastMPM(MultiscalePixelMasking):
 
 
 def run_benchmark():
-    parser = argparse.ArgumentParser(description="Benchmark MPM on Blackwell GPU")
+    parser = argparse.ArgumentParser(description="Benchmark MPM scaling on Blackwell GPU")
     parser.add_argument(
         "--weights",
         type=str,
@@ -90,52 +95,76 @@ def run_benchmark():
         "--sigmas",
         nargs="+",
         type=int,
-        default=[4, 8, 16],
-        help="Occluder scale sizes",
+        default=[3, 17, 65],
+        help="Occluder scale sizes (production config: 3 17 65)",
+    )
+    parser.add_argument(
+        "--strides",
+        nargs="+",
+        type=int,
+        default=[2, 4, 16],
+        help="Occluder strides per scale (production config: 2 4 16)",
     )
     args = parser.parse_args()
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"=== Running on Device: {device} ===")
+    print("=" * 110, flush=True)
+    print("DIPSEN HPC (Node c31) - DenseNet-161 MPM Optimization Benchmark", flush=True)
+    print("=" * 110, flush=True)
+    print(f"Device: {device}", flush=True)
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        print(f"GPU Model: {gpu_name} ({total_vram:.1f} GiB VRAM)")
+        print(f"GPU Hardware: {gpu_name} ({total_vram:.1f} GiB VRAM)", flush=True)
     else:
-        print("ERROR: CUDA not available!")
+        print("ERROR: CUDA not available!", flush=True)
         sys.exit(1)
 
+    print(f"Production Parameters: Sigmas={args.sigmas}, Strides={args.strides}", flush=True)
+    # Calculate exact total occlusions
+    h, w = 224, 224
+    total_occlusions = sum((h // s) * (w // s) for s in args.strides)
+    print(f"Total Occlusion Forward Passes per Image: {total_occlusions:,}", flush=True)
+    print(f"GPU 1 Reference Baseline: {GPU1_TIME_PER_IMG:.2f}s/img | {GPU1_VARIANT_MINS:.1f} min/variant (273 imgs)", flush=True)
+    print("=" * 110 + "\n", flush=True)
+
     # 1. Instantiate Model
-    print("Initializing DenseNet-161 model...")
+    print("Initializing DenseNet-161 model...", flush=True)
     model = DenseNet161AuthenticityPredictor(freeze_backbone=True)
     weights_path = Path(args.weights)
     if weights_path.exists():
-        print(f"Loading weights from {weights_path}...")
+        print(f"Loading weights from {weights_path}...", flush=True)
         state = torch.load(weights_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=False)
     else:
-        print(f"Weights not found at {weights_path}; benchmarking with base initialized architecture.")
+        print(f"Weights not found at {weights_path}; benchmarking with base initialized architecture.", flush=True)
     model.eval()
     model.to(device)
 
     # 2. Load test image
     img_tensor = load_test_image(Path(args.dataset_dir)).to(device)
 
-    # 3. Configurations to benchmark
-    # Baseline: Batch 64, FP32 (matching GPU 1 setup)
+    # 3. Comprehensive Configurations to Benchmark
     configs = [
-        {"name": "Baseline (GPU1 match)", "batch": 64, "dtype": None, "cudnn": False},
-        {"name": "Batch 128 (FP32)", "batch": 128, "dtype": None, "cudnn": False},
-        {"name": "Batch 256 (FP32)", "batch": 256, "dtype": None, "cudnn": True},
-        {"name": "Batch 512 (FP32)", "batch": 512, "dtype": None, "cudnn": True},
-        {"name": "Batch 256 (bfloat16 + cuDNN)", "batch": 256, "dtype": torch.bfloat16, "cudnn": True},
-        {"name": "Batch 512 (bfloat16 + cuDNN)", "batch": 512, "dtype": torch.bfloat16, "cudnn": True},
+        # Baseline matching GPU 1 setup on Blackwell hardware
+        {"name": "Blackwell Baseline (B=64, FP32)", "batch": 64, "dtype": None, "cudnn": False},
+        # FP32 Scaling with cuDNN benchmark
+        {"name": "Batch 128 (FP32 + cuDNN)", "batch": 128, "dtype": None, "cudnn": True},
+        {"name": "Batch 256 (FP32 + cuDNN)", "batch": 256, "dtype": None, "cudnn": True},
+        {"name": "Batch 512 (FP32 + cuDNN)", "batch": 512, "dtype": None, "cudnn": True},
+        # bfloat16 Tensor Core Scaling
+        {"name": "Batch 64  (BF16 + cuDNN)", "batch": 64, "dtype": torch.bfloat16, "cudnn": True},
+        {"name": "Batch 128 (BF16 + cuDNN)", "batch": 128, "dtype": torch.bfloat16, "cudnn": True},
+        {"name": "Batch 256 (BF16 + cuDNN)", "batch": 256, "dtype": torch.bfloat16, "cudnn": True},
+        {"name": "Batch 512 (BF16 + cuDNN)", "batch": 512, "dtype": torch.bfloat16, "cudnn": True},
+        {"name": "Batch 1024 (BF16 + cuDNN)", "batch": 1024, "dtype": torch.bfloat16, "cudnn": True},
+        {"name": "Batch 2048 (BF16 + cuDNN)", "batch": 2048, "dtype": torch.bfloat16, "cudnn": True},
     ]
 
     results = []
     baseline_map = None
 
-    print(f"\nBenchmarking MPM across {len(configs)} configurations (Scales: {args.sigmas})...\n")
+    print(f"Running benchmark across {len(configs)} configurations...\n", flush=True)
 
     for cfg in configs:
         b_size = cfg["batch"]
@@ -153,11 +182,11 @@ def run_benchmark():
             pixel_batch_size=b_size,
             mask_value=0.0,
             use_tqdm=False,
-            stride=1,
+            stride=args.strides,
             autocast_dtype=dtype,
         )
 
-        # Synchronize and run timed execution
+        # Warmup and timing
         torch.cuda.synchronize(device)
         t0 = time.perf_counter()
         saliency_map = explainer.generate_map(img_tensor, target_index=0, normalize=True)
@@ -166,13 +195,12 @@ def run_benchmark():
 
         peak_vram = torch.cuda.max_memory_allocated(device) / (1024**3)
 
-        # Numerical comparison against baseline
+        # Numerical comparison against baseline (Batch 64 FP32)
         if baseline_map is None:
             baseline_map = saliency_map
             corr = 1.0000
             mae = 0.0000
         else:
-            # Flatten and compute Pearson correlation and MAE
             flat_base = baseline_map.flatten()
             flat_curr = saliency_map.flatten()
             mae = float(np.mean(np.abs(flat_base - flat_curr)))
@@ -181,8 +209,9 @@ def run_benchmark():
             else:
                 corr = 1.0
 
-        # Calculate time for full variant (273 images)
         variant_mins = (elapsed * 273) / 60.0
+        variant_hours = variant_mins / 60.0
+        speedup_gpu1 = GPU1_TIME_PER_IMG / elapsed
 
         results.append(
             {
@@ -192,29 +221,49 @@ def run_benchmark():
                 "time_sec": elapsed,
                 "peak_vram_gb": peak_vram,
                 "variant_mins": variant_mins,
+                "variant_hours": variant_hours,
+                "speedup_gpu1": speedup_gpu1,
                 "corr": corr,
                 "mae": mae,
             }
         )
 
         print(
-            f"  -> [{name:^30}] Time: {elapsed:5.2f}s | Peak VRAM: {peak_vram:4.1f} GiB | "
-            f"Est. Variant (273 imgs): {variant_mins:5.1f}m | r={corr:.4f}, MAE={mae:.4f}"
+            f"  -> [{name:^30}] Time: {elapsed:5.2f}s | "
+            f"Speedup vs GPU1: {speedup_gpu1:5.1f}x | "
+            f"Est. 273 imgs: {variant_mins:5.1f} min ({variant_hours:4.2f}h) | "
+            f"VRAM: {peak_vram:4.1f} GB | r={corr:.4f}",
+            flush=True,
         )
 
-    # Print Summary Table
-    base_time = results[0]["time_sec"]
-    print("\n" + "=" * 95)
-    print(f"{'Configuration':<32} | {'Batch':<5} | {'Prec':<5} | {'Sec/Img':<7} | {'Speedup':<7} | {'Variant (273)':<14} | {'VRAM':<7} | {'Corr (r)':<8}")
-    print("-" * 95)
+    # Print Formatted Comparison Table
+    print("\n" + "=" * 125, flush=True)
+    print(
+        f"{'Configuration':<32} | {'Batch':<5} | {'Prec':<5} | {'Sec/Img':<7} | "
+        f"{'Speedup (GPU 1)':<15} | {'Est. 273 Imgs':<16} | {'VRAM':<7} | {'Corr (r)':<8}",
+        flush=True,
+    )
+    print("-" * 125, flush=True)
+
+    # Reference row
+    print(
+        f"{'GPU 1 (RTX 3090 Reference)':<32} | {'64':<5} | {'FP32':<5} | "
+        f"{GPU1_TIME_PER_IMG:>6.2f}s | {'1.0x (baseline)':<15} | "
+        f"{GPU1_VARIANT_MINS:>7.1f}m ({GPU1_VARIANT_MINS/60:>4.2f}h) | {'~4.2 GB':<7} | {'1.0000':<8}",
+        flush=True,
+    )
+    print("-" * 125, flush=True)
+
     for r in results:
-        speedup = base_time / r["time_sec"]
+        time_str = f"{r['variant_mins']:>5.1f}m ({r['variant_hours']:>4.2f}h)"
+        spd_str = f"{r['speedup_gpu1']:.1f}x faster"
         print(
             f"{r['name']:<32} | {r['batch']:<5} | {r['precision']:<5} | "
-            f"{r['time_sec']:>6.2f}s | {speedup:>6.2f}x | {r['variant_mins']:>10.1f} min | "
-            f"{r['peak_vram_gb']:>5.1f} GB | {r['corr']:>8.4f}"
+            f"{r['time_sec']:>6.2f}s | {spd_str:<15} | "
+            f"{time_str:<16} | {r['peak_vram_gb']:>5.1f} GB | {r['corr']:>8.4f}",
+            flush=True,
         )
-    print("=" * 95 + "\n")
+    print("=" * 125 + "\n", flush=True)
 
 
 if __name__ == "__main__":

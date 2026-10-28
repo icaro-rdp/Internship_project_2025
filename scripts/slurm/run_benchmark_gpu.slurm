@@ -66,6 +66,6 @@ mkdir -p logs
 python scripts/python/benchmark_mpm_optimizations.py \
     --weights "Outputs/Experiment_1_variants/Weights/densenet161_exp1a_variant1_best.pth" \
     --dataset-dir "$SCRATCH/Dataset/AIGCIQA2023" \
-    --sigmas 4 8 16
+    --sigmas 3 17 65 --strides 2 4 16
 
 echo "Benchmark completed successfully."
