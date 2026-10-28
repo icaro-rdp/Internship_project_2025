@@ -63,7 +63,7 @@ cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs
 
 # --- 5. Execute Optimization Benchmark ---
-python scripts/benchmark_mpm_optimizations.py \
+python scripts/python/benchmark_mpm_optimizations.py \
     --weights "Outputs/Experiment_1_variants/Weights/densenet161_exp1a_variant1_best.pth" \
     --dataset-dir "$SCRATCH/Dataset/AIGCIQA2023" \
     --sigmas 4 8 16
