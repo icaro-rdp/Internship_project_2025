@@ -209,6 +209,8 @@ class TestExperimentsCLI:
             comparison_kinds=["between_model_architectures"],
             comparison_metrics=["correlation"],
             target_resolution="224,224",
+            save_plots=True,
+            cluster_computing=False,
         )
 
         with (
@@ -230,6 +232,8 @@ class TestExperimentsCLI:
                 comparison_metrics=("correlation",),
                 comparison_target_resolution=(224, 224),
                 save_comparison_json=True,
+                save_plots=True,
+                cluster_computing=False,
             )
 
     def test_dispatch_experiment_three_command(self) -> None:

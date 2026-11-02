@@ -1,4 +1,4 @@
-"""Unit tests for scripts/visualize_saliency_overlays.py."""
+"""Unit tests for scripts/python/visualize_saliency_overlays.py."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from scripts.visualize_saliency_overlays import (
+from scripts.python.visualize_saliency_overlays import (
     discover_heatmap_files,
     generate_comparison_grid,
     render_overlay_rgb,
@@ -201,7 +201,7 @@ def test_visualize_and_save_saliency_creates_expected_artifacts(tmp_path: Path) 
 
 def test_resolve_maps_dir(tmp_path: Path) -> None:
     """Verify resolve_maps_dir locates nested GradCAM/MPM directories."""
-    from scripts.visualize_saliency_overlays import resolve_maps_dir
+    from scripts.python.visualize_saliency_overlays import resolve_maps_dir
 
     nested_dir = tmp_path / "Experiment_2_variants" / "XAI_Maps" / "Test_Set"
     (nested_dir / "GradCAM").mkdir(parents=True)

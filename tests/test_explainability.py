@@ -122,7 +122,7 @@ def test_stability_defaults_and_cleanup(
     """MPM uses safe fp32 defaults, batch_size=64, and clean cleanup."""
     explainer = MultiscalePixelMasking(model, SIGMAS, mask_value=MASK_VALUE)
     assert explainer.pixel_batch_size == 64
-    assert not hasattr(explainer, "use_amp")
+    assert explainer.use_amp is False
     explainer.generate_map(image)
     explainer.cleanup(failed=True)
     explainer.cleanup(failed=False)
