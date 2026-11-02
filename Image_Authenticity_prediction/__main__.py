@@ -258,6 +258,7 @@ def experiment_two_command(args):
         comparison_target_resolution=target_res,
         save_comparison_json=True,
         save_plots=args.save_plots,
+        cluster_computing=args.cluster_computing,
     )
 
     print("=" * 80)
@@ -515,6 +516,12 @@ def main():
         dest="save_maps",
         action="store_false",
         help="Do not save generated heatmaps",
+    )
+    exp2_parser.add_argument(
+        "--cluster-computing",
+        action="store_true",
+        default=False,
+        help="Enable DIPSEN HPC Blackwell optimizations (batch=512, bfloat16, cuDNN autotune, pinned DataLoader)",
     )
     exp2_parser.add_argument(
         "--comparison-only",

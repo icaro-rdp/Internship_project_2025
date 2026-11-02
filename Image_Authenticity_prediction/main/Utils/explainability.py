@@ -332,6 +332,8 @@ class MultiscalePixelMasking(ModelsExplainer):
         mask_value: float = 0.0,
         use_tqdm: bool = False,
         stride: int | Sequence[int] | None = None,
+        use_amp: bool = False,
+        amp_dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         """Initialize the MPM explainer.
 
@@ -349,6 +351,8 @@ class MultiscalePixelMasking(ModelsExplainer):
                 or if ``sigma_list`` is empty.
         """
         super().__init__(model)
+        self.use_amp = bool(use_amp)
+        self.amp_dtype = amp_dtype
         if pixel_batch_size <= 0:
             raise ValueError(
                 f"pixel_batch_size must be positive, got {pixel_batch_size}"
@@ -489,7 +493,11 @@ class MultiscalePixelMasking(ModelsExplainer):
                 self.mask_value, dtype=torch.float32, device=self.device
             )
 
-            original_output, _ = self.model(image)
+            if self.use_amp and self.is_cuda:
+                with torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    original_output, _ = self.model(image)
+            else:
+                original_output, _ = self.model(image)
             original_score_t = original_output[0, target_index].detach()
 
             scale_pairs = list(zip(self.sigma_list, self.strides, strict=True))
@@ -529,7 +537,11 @@ class MultiscalePixelMasking(ModelsExplainer):
                     )
                     masked_images = batch_buffer[:actual_batch_size]
                     torch.where(occluded, mask_val_tensor, image, out=masked_images)
-                    output_batch, _ = self.model(masked_images)
+                    if self.use_amp and self.is_cuda:
+                        with torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype):
+                            output_batch, _ = self.model(masked_images)
+                    else:
+                        output_batch, _ = self.model(masked_images)
 
                     scale_scores_gpu[batch_start:batch_end] = (
                         original_score_t - output_batch[:, target_index].detach()
