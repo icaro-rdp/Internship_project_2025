@@ -143,6 +143,7 @@ def mock_experiment_dirs(
     exp2_dir = tmp_path / "Outputs" / "Experiment_2_variants"
     gradcam_dir = exp2_dir / "XAI_Maps" / "GradCAM"
     mpm_dir = exp2_dir / "XAI_Maps" / "Multiscale_Pixel_Masking"
+    lime_dir = exp2_dir / "XAI_Maps" / "LIME"
     exp2_plots_dir = exp2_dir / "Plots"
 
     exp3_dir = tmp_path / "Outputs" / "Experiment_3_ensemble"
@@ -160,6 +161,7 @@ def mock_experiment_dirs(
         test_results_dir,
         gradcam_dir,
         mpm_dir,
+        lime_dir,
         exp2_plots_dir,
         exp3_weights_dir,
         exp3_results_dir,
@@ -180,6 +182,7 @@ def mock_experiment_dirs(
         "exp1_test_results": test_results_dir,
         "exp2_gradcam": gradcam_dir,
         "exp2_mpm": mpm_dir,
+        "exp2_lime": lime_dir,
         "exp2_plots": exp2_plots_dir,
         "exp3_weights": exp3_weights_dir,
         "exp3_results": exp3_results_dir,
@@ -273,9 +276,10 @@ def mock_saliency_arrays(
     """
     gradcam_dir = mock_experiment_dirs["exp2_gradcam"]
     mpm_dir = mock_experiment_dirs["exp2_mpm"]
+    lime_dir = mock_experiment_dirs["exp2_lime"]
 
     np.random.seed(42)
-    created: dict[str, list[Path]] = {"gradcam": [], "mpm": []}
+    created: dict[str, list[Path]] = {"gradcam": [], "mpm": [], "lime": []}
 
     models = ["vgg16", "resnet152"]
     variants = ["exp1a_variant1", "exp1b_variant1_greedy_pruned"]
@@ -284,14 +288,26 @@ def mock_saliency_arrays(
         for variant in variants:
             gradcam_arr = np.random.rand(10, 224, 224).astype(np.float32)
             mpm_arr = np.random.rand(10, 224, 224).astype(np.float32)
+            lime_arr = np.random.uniform(-1.0, 1.0, (10, 224, 224)).astype(np.float32)
+            lime_r2 = np.random.uniform(0.1, 0.9, (10,)).astype(np.float32)
+            lime_betas = {
+                f"img_{i}": np.random.randn(20).astype(np.float32) for i in range(10)
+            }
 
             g_path = gradcam_dir / f"{model_name}_{variant}_maps.npy"
             m_path = mpm_dir / f"{model_name}_{variant}_maps.npy"
+            l_path = lime_dir / f"{model_name}_{variant}_maps.npy"
+            l_r2_path = lime_dir / f"{model_name}_{variant}_r2.npy"
+            l_betas_path = lime_dir / f"{model_name}_{variant}_betas.npz"
 
             np.save(g_path, gradcam_arr)
             np.save(m_path, mpm_arr)
+            np.save(l_path, lime_arr)
+            np.save(l_r2_path, lime_r2)
+            np.savez_compressed(l_betas_path, **lime_betas)
 
             created["gradcam"].append(g_path)
             created["mpm"].append(m_path)
+            created["lime"].append(l_path)
 
     return created

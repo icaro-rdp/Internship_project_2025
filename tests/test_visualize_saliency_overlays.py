@@ -38,8 +38,10 @@ def mock_maps_dir(tmp_path: Path) -> Path:
     """Create a temporary directory structure mimicking XAI_Maps."""
     gc_dir = tmp_path / "GradCAM"
     mpm_dir = tmp_path / "Multiscale_Pixel_Masking"
+    lime_dir = tmp_path / "LIME"
     gc_dir.mkdir(parents=True)
     mpm_dir.mkdir(parents=True)
+    lime_dir.mkdir(parents=True)
 
     dummy_maps = np.zeros((5, 14, 14), dtype=np.float32)
 
@@ -47,6 +49,7 @@ def mock_maps_dir(tmp_path: Path) -> Path:
     np.save(gc_dir / "clip_vit_b16_exp1b_variant1_greedy_pruned_maps.npy", dummy_maps)
     np.save(gc_dir / "resnet152_exp1a_variant1_best_maps.npy", dummy_maps)
     np.save(mpm_dir / "clip_vit_b16_exp1a_variant1_best_maps.npy", dummy_maps)
+    np.save(lime_dir / "clip_vit_b16_exp1a_variant1_best_maps.npy", dummy_maps)
 
     return tmp_path
 
@@ -219,3 +222,89 @@ def test_select_sample_indices_manifest() -> None:
     indices = select_sample_indices(manifest, num_samples=3)
     assert len(indices) == 3
     assert set(indices) == {0, 1, 2}
+
+
+def test_discover_lime_heatmap_files(mock_maps_dir: Path) -> None:
+    """Verify discover_heatmap_files locates LIME maps."""
+    discovered = discover_heatmap_files(
+        maps_dir=mock_maps_dir,
+        methods=("gradcam", "mpm", "lime"),
+        variants_filter="best",
+    )
+    assert "lime" in discovered
+    assert "clip_vit_b16" in discovered["lime"]
+
+
+def test_lime_visualization_helpers_and_overlays(tmp_path: Path) -> None:
+    """Verify SLIC boundary rendering, seismic overlay, R^2 plots, and LIME individual overlays."""
+    from Image_Authenticity_prediction.main.Utils.explainability import (
+        compute_slic_segments,
+    )
+    from Image_Authenticity_prediction.main.Utils.visualization import (
+        plot_lime_r2_distributions,
+        render_slic_boundaries_rgb,
+        save_lime_seismic_overlay,
+    )
+
+    orig_rgb = np.ones((32, 32, 3), dtype=np.float32) * 0.5
+    saliency = np.linspace(-0.8, 0.8, 32 * 32, dtype=np.float32).reshape(32, 32)
+
+    # 1. Symmetric overlay rendering
+    sym_overlay = render_overlay_rgb(
+        orig_rgb, saliency, cmap_name="bwr", alpha=0.5, symmetric=True
+    )
+    assert sym_overlay.shape == (32, 32, 3)
+    assert sym_overlay.dtype == np.uint8
+
+    # 2. SLIC boundaries rendering
+    segs = compute_slic_segments(orig_rgb, n_segments=8, compactness=10.0)
+    tess = render_slic_boundaries_rgb(orig_rgb, segs)
+    assert tess.shape == (32, 32, 3)
+    assert tess.dtype == np.uint8
+
+    # 3. Seismic overlay saving
+    seismic_path = tmp_path / "lime_seismic.png"
+    save_lime_seismic_overlay(
+        orig_rgb,
+        saliency,
+        seismic_path,
+        add_title=True,
+        dpi=80,
+    )
+    assert seismic_path.exists()
+
+    # 4. R^2 distributions plotting
+    r2_by_model = {
+        "vgg16": np.array([0.5, 0.6, 0.7], dtype=np.float32),
+        "resnet152": np.array([0.7, 0.8, 0.9], dtype=np.float32),
+    }
+    r2_dir = tmp_path / "r2_plots"
+    plot_lime_r2_distributions(r2_by_model, r2_dir, dpi=80)
+    assert (r2_dir / "lime_r2_pooled_hist.png").exists()
+    assert (r2_dir / "lime_r2_by_arch_hist.png").exists()
+    assert (r2_dir / "lime_r2_by_arch_boxplot.png").exists()
+
+    # 5. Individual overlays with LIME produces slic_tessellation.png and LIME subfolder
+    models_data: list[dict[str, Any]] = [
+        {
+            "model_name": "clip_vit_b16",
+            "method": "lime",
+            "variant": "exp1a_variant1",
+            "saliency": saliency,
+        }
+    ]
+    sample_dir = tmp_path / "sample_0002"
+    save_individual_overlays(
+        sample_idx=2,
+        orig_rgb=orig_rgb,
+        models_data=models_data,
+        sample_dir=sample_dir,
+        segments=segs,
+    )
+    assert (sample_dir / "slic_tessellation.png").exists()
+    assert (
+        sample_dir / "LIME" / "overlays" / "clip_vit_b16_exp1a_variant1_overlay.png"
+    ).exists()
+    assert (
+        sample_dir / "LIME" / "heatmaps" / "clip_vit_b16_exp1a_variant1_heatmap.png"
+    ).exists()

@@ -5,13 +5,14 @@ This module provides a single source of truth for all configuration values,
 loading them from the YAML config file.
 """
 
-import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
 import torch
+import yaml
 
 # Cache the config to avoid repeated file I/O
-_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+_CONFIG_CACHE: dict[str, Any] | None = None
 
 
 def get_project_root() -> Path:
@@ -20,7 +21,7 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+def load_config(config_path: str | None = None) -> dict[str, Any]:
     """
     Load configuration from YAML file.
 
@@ -74,7 +75,7 @@ def get_seed() -> int:
     return config["run_settings"]["seed"]
 
 
-def get_training_config() -> Dict[str, Any]:
+def get_training_config() -> dict[str, Any]:
     """Get training configuration."""
     config = load_config()
     return {
@@ -87,7 +88,7 @@ def get_training_config() -> Dict[str, Any]:
     }
 
 
-def get_pruning_config() -> Dict[str, Any]:
+def get_pruning_config() -> dict[str, Any]:
     """Get pruning configuration."""
     config = load_config()
     return {
@@ -97,20 +98,30 @@ def get_pruning_config() -> Dict[str, Any]:
     }
 
 
-def get_xai_config() -> Dict[str, Any]:
+def get_xai_config() -> dict[str, Any]:
     """Get XAI (explainability) configuration."""
     config = load_config()
+    xai_cfg = config["xai"]
     return {
-        "sigma": config["xai"]["sigma"],
-        "stride": config["xai"].get("stride", 1),
-        "mask_val": config["xai"]["mask_val"],
-        "px_batch": config["xai"]["pixel_batch"],
-        "gc_interval": config["xai"]["gradcam_interval"],
-        "mpm_interval": config["xai"]["mpm_interval"],
+        "sigma": xai_cfg["sigma"],
+        "stride": xai_cfg.get("stride", 1),
+        "mask_val": xai_cfg["mask_val"],
+        "px_batch": xai_cfg["pixel_batch"],
+        "gc_interval": xai_cfg["gradcam_interval"],
+        "mpm_interval": xai_cfg["mpm_interval"],
+        "lime_interval": xai_cfg.get("lime_interval", 25),
+        "lime_n_segments": xai_cfg.get("lime_n_segments", 150),
+        "lime_compactness": xai_cfg.get("lime_compactness", 10.0),
+        "lime_num_perturbations": xai_cfg.get("lime_num_perturbations", 1200),
+        "lime_keep_prob": xai_cfg.get("lime_keep_prob", 0.7),
+        "lime_kernel_width": xai_cfg.get("lime_kernel_width", 0.25),
+        "lime_ridge_alpha": xai_cfg.get("lime_ridge_alpha", 1.0),
+        "lime_seed": xai_cfg.get("lime_seed", 0),
+        "lime_batch_size": xai_cfg.get("lime_batch_size", 64),
     }
 
 
-def get_ensemble_config() -> Dict[str, Any]:
+def get_ensemble_config() -> dict[str, Any]:
     """Get ensemble configuration."""
     config = load_config()
     return {
@@ -124,7 +135,7 @@ def get_ensemble_config() -> Dict[str, Any]:
     }
 
 
-def get_data_config() -> Dict[str, Any]:
+def get_data_config() -> dict[str, Any]:
     """Get data configuration."""
     config = load_config()
     return {
@@ -138,7 +149,7 @@ def get_data_config() -> Dict[str, Any]:
     }
 
 
-def get_paths_config() -> Dict[str, Path]:
+def get_paths_config() -> dict[str, Path]:
     """Get paths configuration."""
     config = load_config()
     root = get_project_root()
@@ -149,7 +160,7 @@ def get_paths_config() -> Dict[str, Path]:
     }
 
 
-def get_model_config(model_name: str) -> Dict[str, Any]:
+def get_model_config(model_name: str) -> dict[str, Any]:
     """Get configuration for a specific model."""
     config = load_config()
     if model_name not in config["models"]:

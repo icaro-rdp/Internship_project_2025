@@ -11,6 +11,7 @@ import torch
 from Image_Authenticity_prediction.main.Experiments import experiment_two
 from Image_Authenticity_prediction.main.Experiments.experiment_two import (
     NpEncoder,
+    _resolve_methods,
     get_weight_files,
     load_and_resize_map,
     run_comparisons,
@@ -18,6 +19,10 @@ from Image_Authenticity_prediction.main.Experiments.experiment_two import (
     run_generation_loop,
     save_plots_for_result,
     setup_directories,
+)
+from Image_Authenticity_prediction.main.Utils.comparisons import (
+    compare_lime_beta_collections,
+    compare_lime_betas,
 )
 
 
@@ -37,6 +42,7 @@ class TestExperimentTwoDirectoryAndWeightDiscovery:
             "maps": exp2_base / "XAI_Maps",
             "gradcam": exp2_base / "XAI_Maps" / "GradCAM",
             "mpm": exp2_base / "XAI_Maps" / "Multiscale_Pixel_Masking",
+            "lime": exp2_base / "XAI_Maps" / "LIME",
             "plots": exp2_base / "Plots",
         }
         monkeypatch.setattr(experiment_two, "DIRS", custom_dirs)
@@ -390,3 +396,148 @@ class TestExperimentTwoExecution:
             )
 
         mock_cleanup.assert_called_once_with(failed=True)
+
+    def test_resolve_methods_all_options(self) -> None:
+        """Verify _resolve_methods expands 'both', 'all', and single method names."""
+        assert _resolve_methods("gradcam") == ["gradcam"]
+        assert _resolve_methods("mpm") == ["mpm"]
+        assert _resolve_methods("lime") == ["lime"]
+        assert _resolve_methods("both") == ["gradcam", "mpm"]
+        assert _resolve_methods("all") == ["gradcam", "mpm", "lime"]
+        with pytest.raises(ValueError, match="Unknown XAI method"):
+            _resolve_methods("invalid_method")
+
+    def test_compare_lime_betas_and_collections(self) -> None:
+        """Verify 1D superpixel beta comparisons compute Pearson, Spearman, and top-k IoU."""
+        beta_a = np.array([0.8, 0.5, -0.2, -0.7, 0.1], dtype=np.float32)
+        beta_b = np.array([0.9, 0.4, -0.1, -0.8, 0.0], dtype=np.float32)
+        pair_res = compare_lime_betas(beta_a, beta_b, k_list=(2,))
+        assert pair_res["correlation"] > 0.9
+        assert pair_res["spearman"] > 0.9
+        assert pair_res["top_percent_iou_2"] == pytest.approx(1.0)
+        assert pair_res["bot_percent_iou_2"] == pytest.approx(1.0)
+
+        collections = [
+            {"img_0": beta_a, "img_1": beta_b},
+            {"img_0": beta_b, "img_1": beta_a},
+        ]
+        coll_res = compare_lime_beta_collections(collections, k_list=(2,))
+        assert "summary" in coll_res
+        assert "0_vs_1" in coll_res["summary"]["correlation"]
+
+    def test_run_comparisons_with_lime_and_three_way_cross_methods(
+        self,
+        mock_experiment_dirs: dict[str, Path],
+        mock_saliency_arrays: dict[str, list[Path]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify run_comparisons includes LIME 2D maps, R^2 summary, superpixel betas, and 3-way cross_methods."""
+        monkeypatch.setitem(experiment_two.DIRS, "output", mock_experiment_dirs["root"])
+        monkeypatch.setitem(
+            experiment_two.DIRS, "gradcam", mock_experiment_dirs["exp2_gradcam"]
+        )
+        monkeypatch.setitem(
+            experiment_two.DIRS, "mpm", mock_experiment_dirs["exp2_mpm"]
+        )
+        monkeypatch.setitem(
+            experiment_two.DIRS, "lime", mock_experiment_dirs["exp2_lime"]
+        )
+        monkeypatch.setitem(
+            experiment_two.DIRS, "plots", mock_experiment_dirs["exp2_plots"]
+        )
+
+        results = run_comparisons(
+            methods=["gradcam", "mpm", "lime"],
+            kinds=(
+                "within_model_variants",
+                "between_model_architectures",
+                "cross_methods",
+            ),
+            metrics=("correlation",),
+            target_res=(224, 224),
+            models_filter=["vgg16", "resnet152"],
+            save_json=False,
+            save_plots=True,
+        )
+
+        assert "lime_within_model_variants" in results
+        assert "lime_between_model_architectures" in results
+        assert "lime_r2_summary" in results
+        assert "vgg16" in results["lime_r2_summary"]
+        assert "lime_superpixel_within_model_variants" in results
+        assert "lime_superpixel_between_model_architectures" in results
+        assert "cross_methods_pairs" in results
+        assert "gradcam_vs_mpm" in results["cross_methods_pairs"]
+        assert "gradcam_vs_lime" in results["cross_methods_pairs"]
+        assert "mpm_vs_lime" in results["cross_methods_pairs"]
+        # Legacy alias preserved when gradcam and mpm are both present
+        assert "cross_methods" in results
+
+    def test_run_generation_loop_lime_saves_maps_r2_and_betas(
+        self,
+        mock_experiment_dirs: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify run_generation_loop with method='lime' writes _maps.npy, _r2.npy, and _betas.npz."""
+        monkeypatch.setitem(experiment_two.DIRS, "output", mock_experiment_dirs["root"])
+        monkeypatch.setitem(
+            experiment_two.DIRS, "lime", mock_experiment_dirs["exp2_lime"]
+        )
+
+        class FakeLIME:
+            def __init__(self, *args, **kwargs) -> None:
+                self.last_r2 = 0.75
+                self.last_beta = np.array([0.1, -0.2, 0.3], dtype=np.float32)
+
+            def generate_map(
+                self, img, target_index, segments=None, log_debug_stats=False
+            ):
+                return np.ones((8, 8), dtype=np.float32)
+
+            def cleanup(self, failed: bool = False) -> None:
+                pass
+
+        monkeypatch.setattr(experiment_two, "LIME", FakeLIME)
+
+        class DummyLoader:
+            batch_size = 1
+
+            def __iter__(self):
+                yield (torch.zeros((1, 3, 8, 8)), 0)
+                yield (torch.zeros((1, 3, 8, 8)), 0)
+
+            def __len__(self):
+                return 2
+
+        precomputed_segs = np.zeros((2, 8, 8), dtype=np.int16)
+        run_generation_loop(
+            model=object(),
+            loader=DummyLoader(),
+            device="cpu",
+            model_name="vgg16",
+            variant_tag="exp1a_variant1",
+            method="lime",
+            save_maps=True,
+            slic_segments=precomputed_segs,
+        )
+
+        lime_dir = mock_experiment_dirs["exp2_lime"]
+        maps_file = lime_dir / "vgg16_exp1a_variant1_maps.npy"
+        r2_file = lime_dir / "vgg16_exp1a_variant1_r2.npy"
+        betas_file = lime_dir / "vgg16_exp1a_variant1_betas.npz"
+
+        assert maps_file.exists()
+        assert r2_file.exists()
+        assert betas_file.exists()
+
+        loaded_maps = np.load(maps_file)
+        assert loaded_maps.shape == (2, 8, 8)
+
+        loaded_r2 = np.load(r2_file)
+        assert loaded_r2.shape == (2,)
+        assert np.allclose(loaded_r2, 0.75)
+
+        with np.load(betas_file) as data:
+            assert "img_0000" in data
+            assert "img_0001" in data
+            assert np.allclose(data["img_0000"], [0.1, -0.2, 0.3])

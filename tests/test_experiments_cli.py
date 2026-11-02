@@ -43,7 +43,7 @@ class TestExperimentsCLI:
             "--xai-methods",
             type=str,
             default="both",
-            choices=["gradcam", "mpm", "both"],
+            choices=["gradcam", "mpm", "lime", "both", "all"],
         )
         exp2_parser.add_argument("--variants", type=str, default="all")
         exp2_parser.add_argument("--save-maps", action="store_true", default=True)
@@ -142,6 +142,12 @@ class TestExperimentsCLI:
         assert "between_model_architectures" in args.comparison_kinds
         assert "within_model_variants" in args.comparison_kinds
         assert args.comparison_metrics == ["correlation", "rmse"]
+
+        for method_opt in ("lime", "all", "both", "mpm"):
+            m_args = cli_parser.parse_args(
+                ["experiment-two", "--xai-methods", method_opt]
+            )
+            assert m_args.xai_methods == method_opt
 
     def test_parse_experiment_three_flags(
         self, cli_parser: argparse.ArgumentParser

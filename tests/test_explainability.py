@@ -6,8 +6,11 @@ import torch
 from torch import nn
 
 from Image_Authenticity_prediction.main.Utils.explainability import (
+    LIME,
     GradCAM,
     MultiscalePixelMasking,
+    compute_slic_segments,
+    weighted_r2,
 )
 
 IMAGE_SHAPE = (3, 9, 11)  # Non-square to catch row/column swaps.
@@ -191,3 +194,95 @@ def test_gradcam_log_debug_stats(model: TinyRegressor, image: torch.Tensor) -> N
     heatmap = grad_cam.generate_map(image.unsqueeze(0), 0, log_debug_stats=True)
     assert heatmap.shape == IMAGE_SHAPE[1:]
     grad_cam.cleanup(failed=False)
+
+
+def test_compute_slic_segments_properties(image: torch.Tensor) -> None:
+    """SLIC segmentation returns contiguous int16 labels starting at 0."""
+    img_rgb = torch.clamp(image.permute(1, 2, 0), 0.0, 1.0).numpy().astype(np.float32)
+    segments = compute_slic_segments(img_rgb, n_segments=6, compactness=10.0)
+    assert segments.shape == IMAGE_SHAPE[1:]
+    assert segments.dtype == np.int16
+    assert segments.min() == 0
+    num_unique = len(np.unique(segments))
+    assert num_unique == int(segments.max()) + 1
+
+
+def test_weighted_r2_computation() -> None:
+    """Weighted R^2 returns 1 for exact fit and 0 for mean predictor."""
+    y_true = np.array([1.0, 2.0, 3.0, 4.0])
+    weights = np.array([0.5, 1.0, 1.5, 2.0])
+    assert weighted_r2(y_true, y_true, weights) == pytest.approx(1.0)
+    w_mean = np.sum(weights * y_true) / np.sum(weights)
+    assert weighted_r2(y_true, np.full_like(y_true, w_mean), weights) == pytest.approx(
+        0.0
+    )
+    assert weighted_r2(np.ones(4), np.ones(4), weights) == pytest.approx(1.0)
+
+
+def test_lime_generates_symmetric_normalized_map_and_metadata(
+    model: TinyRegressor, image: torch.Tensor
+) -> None:
+    """LIME produces a zero-centered map in [-1, 1] and records beta, R^2, and segments."""
+    explainer = LIME(
+        model,
+        n_segments=6,
+        compactness=10.0,
+        num_perturbations=24,
+        keep_prob=0.7,
+        kernel_width=0.25,
+        ridge_alpha=1.0,
+        seed=42,
+        batch_size=8,
+        use_tqdm=False,
+    )
+    raw = explainer.generate_map(image, target_index=0, normalize=False)
+    saliency = explainer.generate_map(image, target_index=0, log_debug_stats=True)
+    assert saliency.shape == IMAGE_SHAPE[1:]
+    assert saliency.dtype == np.float32
+    expected_max = float(np.max(np.abs(raw))) / (float(np.max(np.abs(raw))) + 1e-8)
+    assert np.max(np.abs(saliency)) == pytest.approx(expected_max, rel=1e-4)
+    assert explainer.last_beta is not None
+    assert explainer.last_segments is not None
+    assert explainer.last_r2 is not None
+    assert explainer.last_yhat0 is not None
+    assert len(explainer.last_beta) == int(explainer.last_segments.max()) + 1
+
+    # Passing precomputed segments yields identical output
+    saliency_pre = explainer.generate_map(
+        image,
+        target_index=0,
+        segments=explainer.last_segments,
+    )
+    np.testing.assert_allclose(saliency, saliency_pre, rtol=1e-6, atol=1e-6)
+    explainer.cleanup()
+
+
+def test_lime_post_masking_resize(model: TinyRegressor, image: torch.Tensor) -> None:
+    """LIME supports post-masking spatial upsampling while returning original canvas resolution."""
+    explainer = LIME(
+        model,
+        n_segments=5,
+        num_perturbations=12,
+        batch_size=6,
+        model_input_size=(16, 16),
+    )
+    saliency = explainer.generate_map(image, normalize=False)
+    assert saliency.shape == IMAGE_SHAPE[1:]
+
+
+def test_lime_input_validation(model: TinyRegressor) -> None:
+    """LIME raises ValueError when initialized with out-of-range hyperparameters."""
+    with pytest.raises(ValueError, match="n_segments must be positive"):
+        LIME(model, n_segments=0)
+    with pytest.raises(ValueError, match="compactness must be positive"):
+        LIME(model, compactness=0.0)
+    with pytest.raises(ValueError, match="num_perturbations must be > 1"):
+        LIME(model, num_perturbations=0)
+    with pytest.raises(ValueError, match="keep_prob must be in"):
+        LIME(model, keep_prob=1.0)
+    with pytest.raises(ValueError, match="kernel_width must be positive"):
+        LIME(model, kernel_width=-0.1)
+    with pytest.raises(ValueError, match="ridge_alpha must be positive"):
+        LIME(model, ridge_alpha=-1.0)
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        LIME(model, batch_size=0)

@@ -34,15 +34,19 @@ from Image_Authenticity_prediction.main.data import (
     imageNet_dataset,
 )
 from Image_Authenticity_prediction.main.Utils.config import get_model_order
+from Image_Authenticity_prediction.main.Utils.explainability import (
+    compute_slic_segments,
+)
 from Image_Authenticity_prediction.main.Utils.logger import error, info, warn
 from Image_Authenticity_prediction.main.Utils.visualization import (
     denormalize_image,
     render_overlay_rgb,
+    render_slic_boundaries_rgb,
 )
 
 
 def resolve_maps_dir(maps_dir: Path) -> Path:
-    """Resolve the specific directory containing GradCAM and Multiscale_Pixel_Masking.
+    """Resolve the specific directory containing GradCAM, Multiscale_Pixel_Masking, or LIME.
 
     Allows callers to point to a root results directory (e.g. Outputs/old_results)
     or directly to the XAI_Maps folder.
@@ -55,7 +59,11 @@ def resolve_maps_dir(maps_dir: Path) -> Path:
         maps_dir / "Test_Set",
     ]
     for cand in candidate_subdirs:
-        if (cand / "GradCAM").is_dir() or (cand / "Multiscale_Pixel_Masking").is_dir():
+        if (
+            (cand / "GradCAM").is_dir()
+            or (cand / "Multiscale_Pixel_Masking").is_dir()
+            or (cand / "LIME").is_dir()
+        ):
             return cand
     return maps_dir
 
@@ -163,6 +171,7 @@ def discover_heatmap_files(
     method_dirs = {
         "gradcam": resolved_dir / "GradCAM",
         "mpm": resolved_dir / "Multiscale_Pixel_Masking",
+        "lime": resolved_dir / "LIME",
     }
 
     for method in methods:
@@ -354,7 +363,11 @@ def generate_comparison_grid(
 
     overlays = [
         render_overlay_rgb(
-            orig_rgb, m_info["saliency"], cmap_name=cmap_name, alpha=alpha
+            orig_rgb,
+            m_info["saliency"],
+            cmap_name=cmap_name,
+            alpha=alpha,
+            symmetric=(str(m_info.get("method", "")).lower() == "lime"),
         )
         for m_info in models_data
     ]
@@ -398,12 +411,14 @@ def save_individual_overlays(
     sample_dir: Path,
     cmap_name: str = "bwr",
     alpha: float = 0.5,
+    segments: np.ndarray | None = None,
 ) -> None:
     """Save individual original, heatmap, and overlay images in structured subfolders.
 
     Folder layout:
         sample_dir/
             original.png
+            slic_tessellation.png  (when LIME is present or segments provided)
             <Method>/
                 overlays/
                     <model>_<variant>_overlay.png
@@ -418,6 +433,19 @@ def save_individual_overlays(
         str(sample_dir / "original.png"), cv2.cvtColor(orig_uint8, cv2.COLOR_RGB2BGR)
     )
 
+    has_lime = any(str(m.get("method", "")).lower() == "lime" for m in models_data)
+    if segments is not None or has_lime:
+        seg_arr = (
+            segments
+            if segments is not None
+            else compute_slic_segments(orig_uint8, n_segments=150, compactness=10.0)
+        )
+        tess_rgb = render_slic_boundaries_rgb(orig_rgb, seg_arr)
+        cv2.imwrite(
+            str(sample_dir / "slic_tessellation.png"),
+            cv2.cvtColor(tess_rgb, cv2.COLOR_RGB2BGR),
+        )
+
     # 2. Save individual heatmaps and overlays grouped by method then type
     try:
         cmap = plt.get_cmap(cmap_name)
@@ -427,6 +455,7 @@ def save_individual_overlays(
     method_display_names = {
         "gradcam": "GradCAM",
         "mpm": "Multiscale_Pixel_Masking",
+        "lime": "LIME",
     }
 
     h, w = orig_rgb.shape[:2]
@@ -436,6 +465,7 @@ def save_individual_overlays(
         meth = m_info["method"]
         var = m_info["variant"]
         saliency = m_info["saliency"]
+        is_lime = str(meth).lower() == "lime"
 
         method_folder = method_display_names.get(meth.lower(), meth.capitalize())
         overlays_dir = sample_dir / method_folder / "overlays"
@@ -445,7 +475,11 @@ def save_individual_overlays(
 
         # Overlay
         overlay_rgb = render_overlay_rgb(
-            orig_rgb, saliency, cmap_name=cmap_name, alpha=alpha
+            orig_rgb,
+            saliency,
+            cmap_name=cmap_name,
+            alpha=alpha,
+            symmetric=is_lime,
         )
         overlay_path = overlays_dir / f"{m_name}_{var}_overlay.png"
         cv2.imwrite(str(overlay_path), cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR))
@@ -458,13 +492,21 @@ def save_individual_overlays(
             if saliency.shape[:2] != (h, w)
             else saliency.astype(np.float32)
         )
-        s_min, s_max = float(s_resized.min()), float(s_resized.max())
-        denom = s_max - s_min
-        norm_s = (
-            (s_resized - s_min) / denom
-            if denom > 1e-8
-            else np.full_like(s_resized, 0.5)
-        )
+        if is_lime:
+            max_abs = float(np.max(np.abs(s_resized)))
+            norm_s = (
+                0.5 + 0.5 * (s_resized / max_abs)
+                if max_abs > 1e-8
+                else np.full_like(s_resized, 0.5)
+            )
+        else:
+            s_min, s_max = float(s_resized.min()), float(s_resized.max())
+            denom = s_max - s_min
+            norm_s = (
+                (s_resized - s_min) / denom
+                if denom > 1e-8
+                else np.full_like(s_resized, 0.5)
+            )
         heat_rgb = (cmap(norm_s)[:, :, :3] * 255).astype(np.uint8)
         heat_path = heatmaps_dir / f"{m_name}_{var}_heatmap.png"
         cv2.imwrite(str(heat_path), cv2.cvtColor(heat_rgb, cv2.COLOR_RGB2BGR))
@@ -538,6 +580,15 @@ def run_visualization(
                     )
                 except (OSError, ValueError) as e:
                     error("Failed to load map file %s: %s", p, e)
+
+    slic_segments_arr: np.ndarray | None = None
+    slic_cache_path = maps_dir / "LIME" / "slic_segments.npy"
+    if slic_cache_path.exists():
+        try:
+            slic_segments_arr = np.load(slic_cache_path)
+            info("Loaded SLIC tessellation cache: %s", slic_cache_path)
+        except (OSError, ValueError) as e:
+            warn("Failed to load SLIC cache %s: %s", slic_cache_path, e)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     grids_dir = output_dir / "Comparison_Grids"
@@ -626,6 +677,11 @@ def run_visualization(
 
         # 2. Individual Overlays (organized by method and type)
         sample_folder = individual_dir / img_stem
+        seg_sample = (
+            slic_segments_arr[sample_idx]
+            if (slic_segments_arr is not None and sample_idx < len(slic_segments_arr))
+            else None
+        )
         save_individual_overlays(
             sample_idx=sample_idx,
             orig_rgb=orig_rgb,
@@ -633,6 +689,7 @@ def run_visualization(
             sample_dir=sample_folder,
             cmap_name=cmap_name,
             alpha=alpha,
+            segments=seg_sample,
         )
         info("Saved individual overlays in: %s", sample_folder)
 
@@ -676,7 +733,7 @@ def main() -> None:
         "--methods",
         type=str,
         default="both",
-        choices=["both", "gradcam", "mpm"],
+        choices=["both", "all", "gradcam", "mpm", "lime"],
         help="XAI methods to visualize (default: 'both').",
     )
     parser.add_argument(
@@ -727,7 +784,12 @@ def main() -> None:
         if args.models.lower() == "all"
         else [m.strip() for m in args.models.split(",")]
     )
-    methods_list = ["gradcam", "mpm"] if args.methods == "both" else [args.methods]
+    if args.methods == "both":
+        methods_list = ["gradcam", "mpm"]
+    elif args.methods == "all":
+        methods_list = ["gradcam", "mpm", "lime"]
+    else:
+        methods_list = [args.methods]
 
     run_visualization(
         maps_dir=args.maps_dir,

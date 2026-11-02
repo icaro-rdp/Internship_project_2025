@@ -1,17 +1,16 @@
 """Utility functions for comparisons between heatmaps."""
 
+from collections.abc import Mapping, Sequence
 from itertools import combinations
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, TypedDict, Union, cast
+from typing import TypedDict
 
 import cv2
 import numpy as np
-from scipy.stats import pearsonr, wasserstein_distance
-from sklearn.metrics import mean_squared_error
-from sklearn.metrics.pairwise import paired_cosine_distances
+from scipy.stats import pearsonr, spearmanr, wasserstein_distance
 from skimage.metrics import structural_similarity as ssim
+from sklearn.metrics.pairwise import paired_cosine_distances
 
-from .logger import warn
-
+from Image_Authenticity_prediction.main.Utils.logger import warn
 
 MetricName = str
 PairKey = str
@@ -26,8 +25,8 @@ class MetricSummary(TypedDict):
     median: float
 
 
-PerImageResults = Dict[MetricName, Dict[PairKey, np.ndarray]]
-SummaryResults = Dict[MetricName, Dict[PairKey, MetricSummary]]
+PerImageResults = dict[MetricName, dict[PairKey, np.ndarray]]
+SummaryResults = dict[MetricName, dict[PairKey, MetricSummary]]
 
 
 class ComparisonResults(TypedDict):
@@ -39,7 +38,7 @@ def uniform_heatmaps(
     heatmap_array: np.ndarray,
     height: int = 224,
     width: int = 224,
-    num_images: Optional[int] = None,
+    num_images: int | None = None,
 ) -> np.ndarray:
     """Reshape heatmaps to a common spatial resolution.
 
@@ -238,5 +237,179 @@ def compare_heatmaps(
                 "max": float(np.max(values)),
                 "median": float(np.median(values)),
             }
+
+    return {"per_image": per_image, "summary": summary}
+
+
+def topk_superpixels_by_value(beta: np.ndarray, k: int) -> np.ndarray:
+    """Return superpixel indices of the largest ``k`` (most positive) values.
+
+    Args:
+        beta: 1D superpixel coefficient vector of shape ``(K,)``.
+        k: Number of top positive superpixels to select.
+
+    Returns:
+        1D integer index array of length ``min(k, beta.size)`` sorted descending.
+    """
+    flat = np.asarray(beta, dtype=np.float64).ravel()
+    k_eff = max(1, min(int(k), flat.size))
+    idx = np.argpartition(flat, -k_eff)[-k_eff:]
+    return idx[np.argsort(flat[idx])[::-1]]
+
+
+def bottomk_superpixels_by_value(beta: np.ndarray, k: int) -> np.ndarray:
+    """Return superpixel indices of the smallest ``k`` (most negative) values.
+
+    Args:
+        beta: 1D superpixel coefficient vector of shape ``(K,)``.
+        k: Number of bottom negative superpixels to select.
+
+    Returns:
+        1D integer index array of length ``min(k, beta.size)`` sorted ascending.
+    """
+    flat = np.asarray(beta, dtype=np.float64).ravel()
+    k_eff = max(1, min(int(k), flat.size))
+    idx = np.argpartition(flat, k_eff - 1)[:k_eff]
+    return idx[np.argsort(flat[idx])]
+
+
+def superpixel_set_iou(
+    idx_a: Sequence[int] | np.ndarray, idx_b: Sequence[int] | np.ndarray
+) -> float:
+    """Compute Intersection-over-Union (IoU) between two sets of superpixel IDs.
+
+    Args:
+        idx_a: First collection of superpixel integer indices.
+        idx_b: Second collection of superpixel integer indices.
+
+    Returns:
+        Set IoU in ``[0.0, 1.0]``, or ``np.nan`` if both sets are empty.
+    """
+    set_a = {int(x) for x in idx_a}
+    set_b = {int(x) for x in idx_b}
+    if not set_a and not set_b:
+        return float("nan")
+    return float(len(set_a & set_b) / len(set_a | set_b))
+
+
+def compare_lime_betas(
+    beta1: np.ndarray,
+    beta2: np.ndarray,
+    k_list: Sequence[int] = (5, 15, 25),
+) -> dict[str, float]:
+    """Compare two 1D LIME superpixel coefficient vectors on a shared tessellation.
+
+    Args:
+        beta1: First 1D superpixel $\\beta$ array of shape ``(K,)``.
+        beta2: Second 1D superpixel $\\beta$ array of shape ``(K,)``.
+        k_list: Superpixel counts $K$ for top-positive and bottom-negative IoU.
+
+    Returns:
+        Dictionary with ``correlation`` (Pearson), ``spearman``, and
+        ``top_percent_iou_{k}`` / ``bot_percent_iou_{k}`` for each ``k`` in
+        ``k_list``.
+    """
+    b1 = np.asarray(beta1, dtype=np.float64).ravel()
+    b2 = np.asarray(beta2, dtype=np.float64).ravel()
+    if (
+        b1.size == 0
+        or b1.size != b2.size
+        or not (np.isfinite(b1).all() and np.isfinite(b2).all())
+    ):
+        out: dict[str, float] = {"correlation": float("nan"), "spearman": float("nan")}
+        for k in k_list:
+            out[f"top_percent_iou_{k}"] = float("nan")
+            out[f"bot_percent_iou_{k}"] = float("nan")
+        return out
+
+    p_val = (
+        float(pearsonr(b1, b2)[0])
+        if np.std(b1) > 1e-12 and np.std(b2) > 1e-12
+        else float("nan")
+    )
+    s_res = spearmanr(b1, b2, nan_policy="omit").correlation
+    s_val = float(s_res) if s_res is not None else float("nan")
+
+    out = {"correlation": p_val, "spearman": s_val}
+    for k in k_list:
+        k_eff = min(int(k), b1.size)
+        pos1 = topk_superpixels_by_value(b1, k_eff)
+        pos2 = topk_superpixels_by_value(b2, k_eff)
+        neg1 = bottomk_superpixels_by_value(b1, k_eff)
+        neg2 = bottomk_superpixels_by_value(b2, k_eff)
+        out[f"top_percent_iou_{k}"] = superpixel_set_iou(pos1, pos2)
+        out[f"bot_percent_iou_{k}"] = superpixel_set_iou(neg1, neg2)
+    return out
+
+
+def compare_lime_beta_collections(
+    beta_collections: Sequence[Mapping[str, np.ndarray]],
+    k_list: Sequence[int] = (5, 15, 25),
+) -> ComparisonResults:
+    """Compare multiple per-image 1D superpixel $\\beta$ collections across images.
+
+    Matches the exact metric definitions of ``LimeAnalyzeConsistency.py`` (Paper
+    Table 5 and Figure 3C) while returning a ``ComparisonResults`` dictionary
+    compatible with the repository's plotting and summary utilities.
+
+    Args:
+        beta_collections: Sequence of mappings (one per variant or prototype),
+            each mapping image keys (``img_0000``, ...) to 1D ``(K,)`` arrays.
+        k_list: Superpixel counts $K$ for top-positive and bottom-negative IoU.
+
+    Returns:
+        ``ComparisonResults`` containing ``per_image`` and ``summary`` dicts for
+        ``correlation`` (Pearson), ``spearman``, and ``top_percent_iou_{k}``.
+    """
+    if not beta_collections:
+        raise ValueError("beta_collections must contain at least one mapping.")
+
+    common_keys = sorted(
+        set.intersection(*(set(col.keys()) for col in beta_collections))
+    )
+    n_images = len(common_keys)
+    metrics_list = (
+        ["correlation", "spearman"]
+        + [f"top_percent_iou_{k}" for k in k_list]
+        + [f"bot_percent_iou_{k}" for k in k_list]
+    )
+
+    per_image: PerImageResults = {m: {} for m in metrics_list}
+    pairs = list(combinations(range(len(beta_collections)), 2))
+
+    for i, j in pairs:
+        pair_key = f"{i}_vs_{j}"
+        for m in metrics_list:
+            per_image[m][pair_key] = np.full(n_images, np.nan, dtype=float)
+
+        for img_idx, key in enumerate(common_keys):
+            res = compare_lime_betas(
+                beta_collections[i][key],
+                beta_collections[j][key],
+                k_list=k_list,
+            )
+            for m, val in res.items():
+                per_image[m][pair_key][img_idx] = val
+
+    summary: SummaryResults = {m: {} for m in metrics_list}
+    for m in metrics_list:
+        for pair_key, values in per_image[m].items():
+            finite = values[np.isfinite(values)]
+            if finite.size > 0:
+                summary[m][pair_key] = {
+                    "mean": float(np.mean(finite)),
+                    "std": float(np.std(finite)),
+                    "min": float(np.min(finite)),
+                    "max": float(np.max(finite)),
+                    "median": float(np.median(finite)),
+                }
+            else:
+                summary[m][pair_key] = {
+                    "mean": float("nan"),
+                    "std": float("nan"),
+                    "min": float("nan"),
+                    "max": float("nan"),
+                    "median": float("nan"),
+                }
 
     return {"per_image": per_image, "summary": summary}

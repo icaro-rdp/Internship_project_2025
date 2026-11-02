@@ -62,9 +62,19 @@ xai:
   stride: [2, 4, 16]
   mask_val: 0
   pixel_batch: 64
+  # LIME parameters
+  lime_n_segments: 150
+  lime_compactness: 10.0
+  lime_num_perturbations: 1200
+  lime_keep_prob: 0.7
+  lime_kernel_width: 0.25
+  lime_ridge_alpha: 1.0
+  lime_seed: 0
+  lime_batch_size: 64
   # Checkpoint intervals for memory management
   gradcam_interval: 50
   mpm_interval: 10
+  lime_interval: 25
   # Comparison settings
   default_target_resolution: [224, 224]
 

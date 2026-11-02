@@ -496,8 +496,8 @@ def main():
         "--xai-methods",
         type=str,
         default="both",
-        choices=["gradcam", "mpm", "both"],
-        help="XAI methods to use (default: both)",
+        choices=["gradcam", "mpm", "lime", "both", "all"],
+        help="XAI methods to use (default: both; 'all' runs gradcam, mpm, and lime)",
     )
     exp2_parser.add_argument(
         "--variants",

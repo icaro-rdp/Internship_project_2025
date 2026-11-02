@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import cv2
@@ -14,6 +15,7 @@ import seaborn as sns
 import torch
 from matplotlib import colors
 from matplotlib.figure import Figure
+from skimage.segmentation import mark_boundaries
 
 from Image_Authenticity_prediction.main.Utils.logger import debug, error, warn
 
@@ -520,14 +522,17 @@ def render_overlay_rgb(
     saliency_2d: np.ndarray,
     cmap_name: str = "bwr",
     alpha: float = 0.5,
+    symmetric: bool = False,
 ) -> np.ndarray:
     """Create a colored heatmap overlay on a desaturated grayscale base image.
 
     Args:
         img_rgb: Float RGB image array in range [0, 1] of shape (H, W, 3).
         saliency_2d: Float 2D saliency heatmap of shape (H', W').
-        cmap_name: Matplotlib colormap name (e.g. 'bwr', 'coolwarm').
+        cmap_name: Matplotlib colormap name (e.g. 'bwr', 'coolwarm', 'seismic').
         alpha: Blending opacity between 0.0 (image only) and 1.0 (heatmap only).
+        symmetric: If True, scales symmetrically around 0.0 so that 0.0 maps to
+            0.5 (neutral midpoint of diverging colormaps).
 
     Returns:
         Blended RGB uint8 image array of shape (H, W, 3).
@@ -543,17 +548,24 @@ def render_overlay_rgb(
         saliency_resized = saliency_2d.astype(np.float32)
 
     # Normalize saliency to [0, 1] for colormap lookup
-    s_min, s_max = float(saliency_resized.min()), float(saliency_resized.max())
-    denom = s_max - s_min
-    if denom > 1e-8:
-        norm_saliency = (saliency_resized - s_min) / denom
+    if symmetric:
+        max_abs = float(np.max(np.abs(saliency_resized)))
+        if max_abs > 1e-8:
+            norm_saliency = 0.5 + 0.5 * (saliency_resized / max_abs)
+        else:
+            norm_saliency = np.full_like(saliency_resized, 0.5)
     else:
-        norm_saliency = np.full_like(saliency_resized, 0.5)
+        s_min, s_max = float(saliency_resized.min()), float(saliency_resized.max())
+        denom = s_max - s_min
+        if denom > 1e-8:
+            norm_saliency = (saliency_resized - s_min) / denom
+        else:
+            norm_saliency = np.full_like(saliency_resized, 0.5)
 
     try:
         cmap = plt.get_cmap(cmap_name)
     except (ValueError, KeyError):
-        warn(f"Colormap '{cmap_name}' not found. Using default 'coolwarm'.")
+        warn("Colormap '%s' not found. Using default 'coolwarm'.", cmap_name)
         cmap = plt.get_cmap("coolwarm")
 
     heatmap_rgba = cmap(norm_saliency)
@@ -565,6 +577,157 @@ def render_overlay_rgb(
 
     blended = (1.0 - alpha) * gray_rgb + alpha * heatmap_rgb
     return np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+
+
+def render_slic_boundaries_rgb(
+    img_rgb: np.ndarray,
+    segments: np.ndarray,
+    color: tuple[float, float, float] = (1.0, 0.85, 0.0),
+) -> np.ndarray:
+    """Render SLIC superpixel boundaries overlaid on an RGB image.
+
+    Args:
+        img_rgb: RGB image array of shape ``(H, W, 3)``, either ``uint8`` in
+            ``[0, 255]`` or floating-point in ``[0, 1]``.
+        segments: 2D integer superpixel label array of shape ``(H_s, W_s)``.
+        color: RGB boundary color in ``[0, 1]`` (defaults to high-contrast yellow).
+
+    Returns:
+        RGB ``uint8`` image array of shape ``(H, W, 3)`` with boundaries drawn.
+    """
+    if img_rgb.dtype == np.uint8 or float(np.nanmax(img_rgb)) > 1.0:
+        img_float = np.clip(img_rgb.astype(np.float32) / 255.0, 0.0, 1.0)
+    else:
+        img_float = np.clip(img_rgb.astype(np.float32), 0.0, 1.0)
+
+    h, w = img_float.shape[:2]
+    seg_arr = np.asarray(segments, dtype=np.int32)
+    if seg_arr.shape[:2] != (h, w):
+        seg_arr = cv2.resize(
+            seg_arr.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST
+        ).astype(np.int32)
+
+    marked = mark_boundaries(img_float, seg_arr, color=color, mode="thick")
+    return np.clip(marked * 255.0, 0, 255).astype(np.uint8)
+
+
+def save_lime_seismic_overlay(
+    img_rgb_or_gray: np.ndarray,
+    heat: np.ndarray,
+    save_path: str | Path,
+    alpha: float = 0.45,
+    dpi: int = 200,
+    add_title: bool = True,
+) -> None:
+    """Save a LIME Ridge overlay figure matching ``save_overlay_and_arrays`` in ``lime_run.py``.
+
+    Args:
+        img_rgb_or_gray: 2D grayscale or 3D RGB image array.
+        heat: 2D LIME attribution array of shape ``(H, W)``.
+        save_path: Destination file path for the PNG figure.
+        alpha: Overlay opacity (``0.45`` in the reference implementation).
+        dpi: Output resolution in dots per inch.
+        add_title: Whether to include the descriptive title above the figure.
+    """
+    out_path = Path(save_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if img_rgb_or_gray.ndim == 3:
+        if (
+            img_rgb_or_gray.dtype != np.uint8
+            and float(np.nanmax(img_rgb_or_gray)) <= 1.0
+        ):
+            u8 = np.clip(img_rgb_or_gray * 255.0, 0, 255).astype(np.uint8)
+        else:
+            u8 = img_rgb_or_gray.astype(np.uint8)
+        gray_u8 = cv2.cvtColor(u8, cv2.COLOR_RGB2GRAY)
+    else:
+        gray_u8 = img_rgb_or_gray.astype(np.uint8)
+
+    max_abs = float(np.max(np.abs(heat))) + 1e-8
+    heat_norm = np.asarray(heat, dtype=np.float32) / max_abs
+
+    fig = plt.figure(figsize=(6, 6))
+    plt.imshow(gray_u8, cmap="gray")
+    plt.imshow(heat_norm, cmap="seismic", vmin=-1.0, vmax=1.0, alpha=alpha)
+    plt.axis("off")
+    if add_title:
+        plt.title(
+            "LIME (Ridge) overlay\nred=increases predicted authenticity, blue=decreases"
+        )
+    plt.tight_layout()
+    fig.savefig(str(out_path), dpi=dpi)
+    plt.close(fig)
+
+
+def plot_lime_r2_distributions(
+    r2_by_model: Mapping[str, np.ndarray],
+    save_dir: str | Path,
+    dpi: int = 300,
+) -> None:
+    """Generate and save LIME weighted-$R^2$ diagnostic plots across architectures.
+
+    Ports the $R^2$ visualization cells from ``LimeAnalyzeConsistency.py``:
+    1. ``lime_r2_pooled_hist.png``: Pooled histogram of weighted $R^2$ across all fits.
+    2. ``lime_r2_by_arch_hist.png``: Per-architecture small-multiples histograms.
+    3. ``lime_r2_by_arch_boxplot.png``: Boxplot of weighted $R^2$ by architecture.
+
+    Args:
+        r2_by_model: Mapping from architecture name to 1D or 2D array of $R^2$ values.
+        save_dir: Directory where the three diagnostic plots will be written.
+        dpi: Resolution of saved figures.
+    """
+    out_dir = Path(save_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_by_arch: dict[str, np.ndarray] = {}
+    for arch, arr in r2_by_model.items():
+        flat = np.asarray(arr, dtype=float).ravel()
+        finite = flat[np.isfinite(flat)]
+        if finite.size > 0:
+            clean_by_arch[arch] = finite
+
+    if not clean_by_arch:
+        return
+
+    archs = list(clean_by_arch.keys())
+    pooled = np.concatenate([clean_by_arch[a] for a in archs])
+
+    # 1. Pooled histogram
+    fig1 = plt.figure(figsize=(7, 5))
+    plt.hist(pooled, bins=50)
+    plt.title("LIME fit quality: weighted $R^2$ (pooled)")
+    plt.xlabel("weighted $R^2$")
+    plt.ylabel("count")
+    plt.tight_layout()
+    fig1.savefig(str(out_dir / "lime_r2_pooled_hist.png"), dpi=dpi)
+    plt.close(fig1)
+
+    # 2. Per-architecture histograms (small multiples)
+    n_archs = len(archs)
+    ncols = min(3, n_archs)
+    nrows = int(np.ceil(n_archs / ncols))
+    fig2 = plt.figure(figsize=(5 * ncols, 4 * nrows))
+    for idx, arch in enumerate(archs):
+        ax = fig2.add_subplot(nrows, ncols, idx + 1)
+        ax.hist(clean_by_arch[arch], bins=30)
+        ax.set_title(arch)
+        ax.set_xlabel("weighted $R^2$")
+        ax.set_ylabel("count")
+    plt.tight_layout()
+    fig2.savefig(str(out_dir / "lime_r2_by_arch_hist.png"), dpi=dpi)
+    plt.close(fig2)
+
+    # 3. Boxplot by architecture
+    fig3 = plt.figure(figsize=(10, 4))
+    data = [clean_by_arch[a] for a in archs]
+    plt.boxplot(data, tick_labels=archs, showfliers=False)
+    plt.title("LIME weighted $R^2$ by architecture")
+    plt.ylabel("weighted $R^2$")
+    plt.xticks(rotation=30, ha="right")
+    plt.tight_layout()
+    fig3.savefig(str(out_dir / "lime_r2_by_arch_boxplot.png"), dpi=dpi)
+    plt.close(fig3)
 
 
 def visualize_and_save_saliency(

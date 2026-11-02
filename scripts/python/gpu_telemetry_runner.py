@@ -214,7 +214,8 @@ def inspect_experiment_progress(
     """
     mpm_dir = output_dir / "XAI_Maps" / "Multiscale_Pixel_Masking"
     gradcam_dir = output_dir / "XAI_Maps" / "GradCAM"
-    if not mpm_dir.exists() and not gradcam_dir.exists():
+    lime_dir = output_dir / "XAI_Maps" / "LIME"
+    if not mpm_dir.exists() and not gradcam_dir.exists() and not lime_dir.exists():
         return 0, 0
 
     completed = (
@@ -229,20 +230,22 @@ def inspect_experiment_progress(
     )
 
     temp_parts = 0
-    for method_dir in (gradcam_dir, mpm_dir):
+    for method_dir in (gradcam_dir, mpm_dir, lime_dir):
         if not method_dir.exists():
             continue
         specific_temp = method_dir / f"temp_{active_variant}"
         if specific_temp.is_dir():
-            temp_parts += len(list(specific_temp.glob("part_*.npy")))
+            temp_parts += len(list(specific_temp.glob("part_[0-9][0-9][0-9][0-9].npy")))
         elif active_variant in ALL_EXP1A_VARIANTS:
             clip_temp = method_dir / f"temp_clip_vit_b16_{active_variant}"
             if clip_temp.is_dir():
-                temp_parts += len(list(clip_temp.glob("part_*.npy")))
+                temp_parts += len(list(clip_temp.glob("part_[0-9][0-9][0-9][0-9].npy")))
         else:
             for temp_dir in method_dir.glob("temp_*"):
                 if temp_dir.is_dir():
-                    temp_parts += len(list(temp_dir.glob("part_*.npy")))
+                    temp_parts += len(
+                        list(temp_dir.glob("part_[0-9][0-9][0-9][0-9].npy"))
+                    )
 
     return completed, temp_parts
 
@@ -950,13 +953,15 @@ def _variant_maps_complete(
     """
     maps_dir = output_dir / "XAI_Maps"
     stem = f"{model_name}_{variant}_maps.npy"
-    needs_gc = xai_methods in ("gradcam", "both")
-    needs_mpm = xai_methods in ("mpm", "both")
+    needs_gc = xai_methods in ("gradcam", "both", "all")
+    needs_mpm = xai_methods in ("mpm", "both", "all")
+    needs_lime = xai_methods in ("lime", "all")
     gc_ok = (maps_dir / "GradCAM" / stem).exists() if needs_gc else True
     mpm_ok = (
         (maps_dir / "Multiscale_Pixel_Masking" / stem).exists() if needs_mpm else True
     )
-    return gc_ok and mpm_ok
+    lime_ok = (maps_dir / "LIME" / stem).exists() if needs_lime else True
+    return gc_ok and mpm_ok and lime_ok
 
 
 def generate_progress_dashboard(
@@ -1376,7 +1381,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--xai-methods",
         type=str,
         default="both",
-        choices=["gradcam", "mpm", "both"],
+        choices=["gradcam", "mpm", "lime", "both", "all"],
         help="XAI methods to generate when --run-exp2 is enabled (default: both).",
     )
     parser.add_argument(

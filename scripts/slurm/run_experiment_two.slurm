@@ -8,17 +8,14 @@
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
 
-# DIPSEN HPC Golden Rules compliance:
-# 1. Explicit request: partition, gres, cpus-per-task, mem, time
-# 2. Even CPU count: 8 (SMT core allocation)
-# 3. Validated /scratch staging and cleanup trap from dipsen-hpc skill
-# 4. Thread pinning matching allocated CPUs
-# 5. Environment activation from pre-built .venv (no WAN access in jobs)
-# 6. Forwards all CLI arguments to experiment-two via "$@"
+# SLURM batch script for Experiment 2 (Explainability Map Generation & Comparison).
+# Stages the dataset to local scratch storage, configures thread pinning and the
+# project virtual environment, and executes the Experiment 2 pipeline on GPU.
+# Custom CLI arguments can be passed via `sbatch run_experiment_two.slurm <args>`.
 
 set -euo pipefail
 
-# --- 1. Validated /scratch staging on c31 (Rule 8) ---
+# --- 1. Local scratch staging and cleanup trap ---
 if [[ -z "${USER:-}" || "${USER:-}" == */* || ! "${SLURM_JOB_ID:-}" =~ ^[0-9]+$ ]]; then
     echo "Invalid user identity or SLURM_JOB_ID; scratch cleanup disabled." >&2
     exit 2
@@ -38,7 +35,7 @@ cleanup_scratch() {
 trap cleanup_scratch EXIT
 
 echo "=========================================================="
-echo "DIPSEN HPC (Node c31) - Experiment 2 Execution"
+echo "HPC Cluster - Experiment 2 Execution"
 echo "=========================================================="
 echo "Job ID:          $SLURM_JOB_ID"
 echo "Node:            $(hostname)"
@@ -47,7 +44,7 @@ echo "GPU allocated:   ${CUDA_VISIBLE_DEVICES:-<unset>}"
 nvidia-smi -L
 echo "=========================================================="
 
-# --- 2. Lmod Environment & Thread Pinning (Rules 4 & 6) ---
+# --- 2. Environment modules & thread pinning ---
 source /opt/ohpc/admin/lmod/lmod/init/bash
 source /etc/profile.d/zz-ohpc-modulepath.sh
 module purge
@@ -66,18 +63,23 @@ echo "Staging dataset to /scratch..."
 cp -a "$SLURM_SUBMIT_DIR/Image_Authenticity_prediction/Dataset/AIGCIQA2023" "$SCRATCH/Dataset/"
 
 cd "$SLURM_SUBMIT_DIR"
-mkdir -p logs Outputs/Experiment_2_variants/XAI_Maps
+mkdir -p logs Outputs/Experiment_2_variants/XAI_Maps/GradCAM \
+    Outputs/Experiment_2_variants/XAI_Maps/Multiscale_Pixel_Masking \
+    Outputs/Experiment_2_variants/XAI_Maps/LIME
 
-# --- 5. Forward CLI arguments to experiment-two ---
-# If no arguments provided, default to running all remaining variants with cluster optimizations
+# --- 5. Execute Experiment 2 ---
+# If no arguments are provided, run all models, unpruned variants, all XAI methods,
+# and full comparisons with cluster optimizations (existing maps are skipped automatically).
 if [ $# -eq 0 ]; then
-    echo "Running with default arguments: remaining models (densenet161, efficientnetb3) with --cluster-computing"
+    echo "Running with default arguments: all models, unpruned variants, all XAI methods, and comparisons"
     srun python -m Image_Authenticity_prediction experiment-two \
-        --models densenet161 efficientnetb3 \
         --variants unpruned \
-        --xai-methods both \
+        --xai-methods all \
         --cluster-computing \
-        --save-maps
+        --save-maps \
+        --run-comparison \
+        --comparison-kinds within_model_variants between_model_architectures cross_methods \
+        --comparison-metrics correlation ssim rmse cosine top_percent_iou_10 earth_movers_distance
 else
     echo "Running with custom arguments: $@"
     srun python -m Image_Authenticity_prediction experiment-two "$@"
