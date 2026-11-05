@@ -1767,7 +1767,7 @@ def experiment_3d_plot_ensemble_heatmaps(
                         saliency = mpm.generate_map(
                             img_tensor.unsqueeze(0),
                             target_index=0,
-                            normalize=False,
+                            normalize=True,
                         )
                         if saliency.shape != (height, width):
                             saliency = uniform_heatmaps(
