@@ -70,8 +70,8 @@ _Avoid_: Readout layer, adapter network, prediction head, linear probe
 An independently trained instance of an architecture with a distinct random seed governing parameter initialization and data partitioning.
 _Avoid_: Seed run, checkpoint, iteration, training trial
 
-**Validation-Based Pruning**:
-A feature selection protocol using Sequential Backward Selection (SBS) on validation data to identify essential readout channels before testing.
+**Validation-Based Pruning (Legacy / Optional)**:
+A legacy feature selection protocol using Sequential Backward Selection (SBS) on validation data to identify readout channels before testing. Deprecated in favor of unpruned baselines (ADR-0005).
 _Avoid_: Test-set pruning, in-sample channel selection, feature drop
 
 ### Quality vs. Authenticity Disentanglement
@@ -127,11 +127,11 @@ _Avoid_: Model multiplicity, explanatory ambiguity, attribution discordance
 ### Ensembling & Aggregation
 
 **Bagging Ensemble**:
-An aggregated model whose prediction is the arithmetic mean of scalar outputs across all trained variants and architectures.
+An aggregated model whose prediction is the arithmetic mean of scalar outputs across base architectures for a given data split variant.
 _Avoid_: Average ensemble, bootstrap aggregating, mean voting
 
 **Stacking Meta-Learner**:
-A level-1 linear regression model trained via out-of-fold cross-validation on base-model predictions to optimize behavioral score estimation.
+A level-1 linear regression model fitted on held-out validation predictions across base architectures for a given data split variant to optimize behavioral score estimation.
 _Avoid_: Blending, meta-regressor, stacked generalization
 
 **Consensus Predictor**:

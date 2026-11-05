@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: deprecated (superseded by ADR-0005)
 ---
 
 # Migrate Experiment 1B channel pruning to validation split to prevent test-set leakage
