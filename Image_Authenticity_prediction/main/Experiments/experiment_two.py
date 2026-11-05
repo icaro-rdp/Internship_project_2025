@@ -1,5 +1,6 @@
 import gc
 import json
+import os
 import re
 import shutil
 import sys
@@ -58,8 +59,10 @@ SINGLE_BATCH_SIZE = _data_cfg["single_batch_size"]
 NUM_WORKERS = _data_cfg["num_workers"]
 
 DIRS = {
-    "output": Path("Outputs/Experiment_2_variants"),
-    "weights": Path("Outputs/Experiment_1_variants/Weights"),
+    "output": Path(os.environ.get("EXP2_OUTPUT_DIR", "Outputs/Experiment_2_variants")),
+    "weights": Path(
+        os.environ.get("EXP1_WEIGHTS_DIR", "Outputs/Experiment_1_variants/Weights")
+    ),
 }
 DIRS["maps"] = DIRS["output"] / "XAI_Maps"
 DIRS["gradcam"] = DIRS["maps"] / "GradCAM"

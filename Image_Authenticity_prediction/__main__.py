@@ -266,9 +266,34 @@ def experiment_two_command(args):
     print("=" * 80)
 
 
-def experiment_three_command(args):
+def experiment_three_command(args: argparse.Namespace) -> None:
     """Execute experiment three command."""
     from main.Experiments.experiment_three import run_experiment_3
+
+    run_pruning = (
+        args.prune if isinstance(getattr(args, "prune", None), bool) else args.train
+    )
+    skip_heatmaps = (
+        args.skip_heatmaps
+        if isinstance(getattr(args, "skip_heatmaps", None), bool)
+        else False
+    )
+    run_heatmaps = False if skip_heatmaps else args.heatmaps
+    variants = (
+        args.variants if isinstance(getattr(args, "variants", None), str) else "all"
+    )
+    reuse_exp2_maps = (
+        args.reuse_exp2_maps
+        if isinstance(getattr(args, "reuse_exp2_maps", None), bool)
+        else True
+    )
+    live_mpm = (
+        args.live_mpm if isinstance(getattr(args, "live_mpm", None), bool) else False
+    )
+    raw_device = getattr(args, "device", None)
+    device = (
+        raw_device if isinstance(raw_device, str) and raw_device != "auto" else None
+    )
 
     print("=" * 80)
     print("STARTING EXPERIMENT THREE")
@@ -276,25 +301,32 @@ def experiment_three_command(args):
     print("Configuration:")
     print(f"  - Models: {args.models if args.models else 'all'}")
     print(f"  - Strategy: {args.strategy}")
+    print(f"  - Variants: {variants}")
     print(f"  - Train: {args.train}")
+    print(f"  - Prune: {run_pruning}")
     print(f"  - Evaluate: {args.evaluate}")
+    print(f"  - Heatmaps: {run_heatmaps}")
+    print(f"  - Reuse Exp2 Maps: {reuse_exp2_maps and not live_mpm}")
+    print(f"  - Live MPM: {live_mpm}")
     print(f"  - Save results: {args.save_results}")
     print("=" * 80)
 
-    # Map CLI strategy to experiment_3 ensemble_mode
     ensemble_mode = (
-        ["bagging", "stacking"] if args.strategy == "both" else [args.strategy]
+        ["bagging", "stacking"] if args.strategy in ("all", "both") else [args.strategy]
     )
 
-    # Run experiment
     run_experiment_3(
         models=args.models,
         run_training=args.train,
-        run_pruning=args.train,
+        run_pruning=run_pruning,
         run_evaluation=args.evaluate,
-        run_heatmaps=args.heatmaps,
+        run_heatmaps=run_heatmaps,
         save_results=args.save_results,
         ensemble_mode=ensemble_mode,
+        variants=variants,
+        reuse_exp2_maps=reuse_exp2_maps,
+        live_mpm=live_mpm,
+        device=device,
     )
 
     print("=" * 80)
@@ -588,32 +620,50 @@ def main():
         type=str,
         nargs="+",
         choices=list(MODEL_REGISTRY.keys()),
-        help="Specific models to process (default: all models)",
+        help="Specific models to process (default: all 7 models)",
     )
     exp3_parser.add_argument(
         "--strategy",
         type=str,
-        default="both",
-        choices=["bagging", "stacking", "both"],
-        help="Ensemble strategy to use (default: both)",
+        default="all",
+        choices=["all", "both", "bagging", "stacking"],
+        help="Ensemble strategy to use (default: all)",
+    )
+    exp3_parser.add_argument(
+        "--variants",
+        type=str,
+        default="all",
+        help="Variants to process: 'all' or comma-separated indices e.g. '1,2,3' (default: all)",
     )
     exp3_parser.add_argument(
         "--train",
         action="store_true",
-        default=True,
-        help="Train stacking models (default: True, bagging uses pre-trained)",
+        default=False,
+        help="Run legacy Stage 3A training (default: False; reuses Experiment 1A checkpoints)",
     )
     exp3_parser.add_argument(
         "--no-train",
         dest="train",
         action="store_false",
-        help="Skip training stacking models",
+        help="Skip Stage 3A training (default)",
+    )
+    exp3_parser.add_argument(
+        "--prune",
+        action="store_true",
+        default=False,
+        help="Run legacy Stage 3B pruning (default: False)",
+    )
+    exp3_parser.add_argument(
+        "--no-prune",
+        dest="prune",
+        action="store_false",
+        help="Skip Stage 3B pruning (default)",
     )
     exp3_parser.add_argument(
         "--evaluate",
         action="store_true",
         default=True,
-        help="Evaluate ensemble models (default: True)",
+        help="Evaluate ensemble models in Stage 3C (default: True)",
     )
     exp3_parser.add_argument(
         "--no-evaluate",
@@ -633,13 +683,11 @@ def main():
         action="store_false",
         help="Do not save results to JSON",
     )
-
-    # heatmap options (Experiment 3D)
     exp3_parser.add_argument(
         "--heatmaps",
         action="store_true",
-        default=False,
-        help="Generate ensemble heatmaps for the chosen strategy(ies)",
+        default=True,
+        help="Generate ensemble MPM heatmaps in Stage 3D (default: True)",
     )
     exp3_parser.add_argument(
         "--no-heatmaps",
@@ -647,9 +695,37 @@ def main():
         action="store_false",
         help="Do not generate any heatmaps",
     )
-    # note: the mode(s) used by heatmap generation are determined by
-    # the --strategy argument; passing --heatmaps in combination with
-    # --strategy bagging will produce bagging heatmaps, etc.
+    exp3_parser.add_argument(
+        "--skip-heatmaps",
+        action="store_true",
+        default=False,
+        help="Skip Stage 3D XAI map generation",
+    )
+    exp3_parser.add_argument(
+        "--reuse-exp2-maps",
+        action="store_true",
+        default=True,
+        help="Linearly combine precomputed Experiment 2 MPM maps (default: True)",
+    )
+    exp3_parser.add_argument(
+        "--no-reuse-exp2-maps",
+        dest="reuse_exp2_maps",
+        action="store_false",
+        help="Disable Experiment 2 map reuse",
+    )
+    exp3_parser.add_argument(
+        "--live-mpm",
+        action="store_true",
+        default=False,
+        help="Compute MPM maps via live ensemble forward passes",
+    )
+    exp3_parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "cpu"],
+        help="Computation device: 'auto', 'cuda', or 'cpu' (default: auto)",
+    )
 
     # Descriptive Quality vs Authenticity parser
     qa_parser = subparsers.add_parser(

@@ -61,6 +61,7 @@ source "$SLURM_SUBMIT_DIR/.venv/bin/activate"
 mkdir -p "$SCRATCH/Dataset"
 echo "Staging dataset to /scratch..."
 cp -a "$SLURM_SUBMIT_DIR/Image_Authenticity_prediction/Dataset/AIGCIQA2023" "$SCRATCH/Dataset/"
+export DATASET_ROOT="$SCRATCH"
 
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs \

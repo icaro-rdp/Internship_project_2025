@@ -1,164 +1,304 @@
-# Experiment 3: Bagging Ensemble with Independent Training and Pruning
-#
-# This experiment trains 10 variants per architecture (like Experiment 1),
-# but with a key difference in the data split:
-# - Train on training set
-# - Validate and PRUNE on validation set (same validation set used for training)
-# - Test set is reserved ONLY for final ensemble evaluation
-#
-# This ensures the ensemble is evaluated on truly unseen data.
+"""Experiment 3: Variant-Aligned Unpruned 7-Model Ensembles and MPM Attribution.
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset, random_split
-import sys
-from pathlib import Path
-import numpy as np
-import time
-import re
+Implements ADR-0005:
+- Reuses the 70 unpruned Experiment 1A checkpoints across all 7 architectures
+  (vgg16, vgg19, resnet152, densenet161, efficientnetb3, barlowtwins, clip_vit_b16).
+- Constructs 10 variant-aligned 7-model ensembles (k = 1..10) so each ensemble
+  variant k shares an identical training split (959 images) and disjoint
+  validation split val_k (136 images, seed = 42 + k).
+- Fits StackingMetaLearner weights via closed-form Ridge regression (alpha = 1.0)
+  strictly on val_k and evaluates both Bagging and Stacking on the untouched
+  273-image global test set.
+- Generates full-dataset (273, 224, 224) Multiscale Pixel Masking (MPM) attribution
+  maps per variant and architectural prototype heatmaps for Bagging and Stacking,
+  supporting both fast Experiment 2 map reuse and live GPU MPM computation.
+"""
+
+from __future__ import annotations
+
+import gc
 import json
+import os
+import re
+import sys
+import time
 import traceback
 from collections import defaultdict
-from typing import List, Dict, Any, Tuple
-import time
+from collections.abc import Sequence
+from itertools import combinations
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from scipy.stats import kendalltau, pearsonr, spearmanr
+from torch import nn
+from torch.utils.data import DataLoader, Dataset, Subset
+
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from main.data import (
+    CLIP_DATASET,
+    DENSENET_DATASET,
+    IMAGENET_DATASET,
+    clip_dataset,
+    denseNet_dataset,
+    imageNet_dataset,
+)
+from main.Models import (
+    BarlowTwinsAuthenticityPredictor,
+    CLIPViTAuthenticityPredictor,
+    DenseNet161AuthenticityPredictor,
+    EfficientNetB3AuthenticityPredictor,
+    ResNet152AuthenticityPredictor,
+    VGG16AuthenticityPredictor,
+    VGG19AuthenticityPredictor,
+)
+from main.train import test_model, train_model
+from main.Utils import FeatureMapsPruner
+from main.Utils.cleanup import cleanup_model_and_data, clear_gpu_memory
+from main.Utils.comparisons import compare_heatmaps, uniform_heatmaps
+from main.Utils.config import (
+    get_data_config,
+    get_ensemble_config,
+    get_model_order,
+    get_pruning_config,
+    get_training_config,
+    get_xai_config,
+)
+from main.Utils.explainability import MultiscalePixelMasking
+from main.Utils.logger import debug, error, info, set_level, warn
+from main.Utils.normalization import normalize_data
+from main.Utils.visualization import (
+    visualize_and_save_saliency,
+    visualize_similarity_distribution,
+    visualize_similarity_matrix,
+)
 
 # ============================================================================
 # 1. SETUP & CONFIGURATION
 # ============================================================================
-project_root = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(project_root))
 
-from main.Models import (
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
-    DenseNet161AuthenticityPredictor,
-    EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor,
-)
-from main.Utils import FeatureMapsPruner
-from main.Utils.cleanup import clear_gpu_memory, cleanup_model_and_data
-from main.Utils.logger import info, warn, error, debug, set_level
-from main.Utils.config import (
-    get_ensemble_config,
-    get_data_config,
-    get_training_config,
-    get_pruning_config,
-)
-
-from main.data import (
-    IMAGENET_DATASET,
-    DENSENET_DATASET,
-    imageNet_dataset,
-    denseNet_dataset,
-    SEED,
-)
-from main.train import train_model, test_model
-
-# Load configs
 _data_cfg = get_data_config()
-NUM_WORKERS = _data_cfg["num_workers"]
-BATCH_SIZE = _data_cfg["batch_size"]
+NUM_WORKERS: int = int(_data_cfg["num_workers"])
+BATCH_SIZE: int = int(_data_cfg["batch_size"])
 
-TRAINING_CONFIG = get_training_config()
-PRUNING_CONFIG = get_pruning_config()
-ENSEMBLE_CONFIG = get_ensemble_config()
+TRAINING_CONFIG: dict[str, Any] = get_training_config()
+PRUNING_CONFIG: dict[str, Any] = get_pruning_config()
+ENSEMBLE_CONFIG: dict[str, Any] = get_ensemble_config()
 
-# Number of variants per model
-NUM_VARIANTS = 10
+NUM_VARIANTS: int = 10
+HUMAN_AUTHENTICITY_RELIABILITY: float = 0.67
 
-# ============================================================================
-# 1.1 DIRECTORIES
-# ============================================================================
-OUTPUT_DIR = Path(__file__).resolve().parent / "tmp_Outputs" / "Experiment_3_ensemble"
-DIRS = {
+CANONICAL_MODEL_ORDER: tuple[str, ...] = (
+    "vgg16",
+    "vgg19",
+    "resnet152",
+    "densenet161",
+    "efficientnetb3",
+    "barlowtwins",
+    "clip_vit_b16",
+)
+
+OUTPUT_DIR: Path = Path(
+    os.environ.get("EXP3_OUTPUT_DIR", "Outputs/Experiment_3_ensemble")
+)
+EXP1_WEIGHTS_DIR: Path = Path(
+    os.environ.get("EXP1_WEIGHTS_DIR", "Outputs/Experiment_1_variants/Weights")
+)
+EXP2_MPM_DIR: Path = Path(
+    os.environ.get(
+        "EXP2_MPM_DIR",
+        "Outputs/Experiment_2_variants/XAI_Maps/Multiscale_Pixel_Masking",
+    )
+)
+
+DIRS: dict[str, Path] = {
+    "output": OUTPUT_DIR,
+    "exp1_weights": EXP1_WEIGHTS_DIR,
+    "exp2_mpm": EXP2_MPM_DIR,
     "weights": OUTPUT_DIR / "Weights",
+    "results": OUTPUT_DIR / "Results",
+    "maps": OUTPUT_DIR / "XAI_Maps",
+    "mpm": OUTPUT_DIR / "XAI_Maps" / "Multiscale_Pixel_Masking",
+    "plots": OUTPUT_DIR / "Plots",
+    "heatmaps": OUTPUT_DIR / "Heatmaps",
     "rankings": OUTPUT_DIR / "Ranking_arrays",
     "ranking_plots": OUTPUT_DIR / "Ranking_Plots",
     "training_plots": OUTPUT_DIR / "Training_Plots",
     "training_history": OUTPUT_DIR / "Training_History",
-    "results": OUTPUT_DIR / "Results",
 }
 
-# ============================================================================
-# 1.2 MODEL REGISTRY
-# ============================================================================
-MODEL_REGISTRY = {
+MODEL_REGISTRY: dict[str, dict[str, Any]] = {
     "vgg16": {
         "class": VGG16AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
         "backbone_dataset": imageNet_dataset,
         "target_layer": "features.28",
+        "input_size": 224,
     },
     "vgg19": {
         "class": VGG19AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
         "backbone_dataset": imageNet_dataset,
         "target_layer": "features.34",
+        "input_size": 224,
     },
     "resnet152": {
         "class": ResNet152AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
         "backbone_dataset": imageNet_dataset,
         "target_layer": "features.7.2.conv3",
+        "input_size": 224,
     },
     "densenet161": {
         "class": DenseNet161AuthenticityPredictor,
         "dataset": DENSENET_DATASET,
         "backbone_dataset": denseNet_dataset,
         "target_layer": "features.denseblock4.denselayer24.conv2",
+        "input_size": 300,
     },
     "efficientnetb3": {
         "class": EfficientNetB3AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
         "backbone_dataset": imageNet_dataset,
         "target_layer": "features.8.0",
+        "input_size": 224,
     },
     "barlowtwins": {
         "class": BarlowTwinsAuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
         "backbone_dataset": imageNet_dataset,
         "target_layer": "features.7.2.conv3",
+        "input_size": 224,
+    },
+    "clip_vit_b16": {
+        "class": CLIPViTAuthenticityPredictor,
+        "dataset": CLIP_DATASET,
+        "backbone_dataset": clip_dataset,
+        "target_layer": "visual_projection",
+        "input_size": 224,
     },
 }
 
+BASE_WEIGHT_RE = re.compile(r"^([a-z0-9_]+)_(?:exp3a|exp1a)_variant(\d+)_best\.pth$")
+LEGACY_PRUNED_WEIGHT_RE = re.compile(
+    r"^([a-z0-9_]+)_(?:exp3b|exp1b)_variant(\d+)_greedy_pruned(?:_best)?\.pth$"
+)
 
-def setup_directories():
-    """Create all required directories."""
-    for p in DIRS.values():
-        p.mkdir(parents=True, exist_ok=True)
+
+def _effective_num_workers(device: str | torch.device) -> int:
+    """Determine a safe DataLoader worker count respecting SLURM CPU allocations."""
+    dev_str = str(device)
+    if dev_str.startswith("cpu"):
+        return 0
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus is not None and slurm_cpus.isdigit():
+        return max(1, min(NUM_WORKERS, int(slurm_cpus)))
+    return NUM_WORKERS
+
+
+def setup_directories() -> None:
+    """Create all required Experiment 3 output directories."""
+    skip_keys = {"exp1_weights", "exp2_mpm"}
+    for key, path in DIRS.items():
+        if key not in skip_keys:
+            path.mkdir(parents=True, exist_ok=True)
 
 
 class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
+    """JSON encoder supporting NumPy scalars and arrays."""
+
+    def default(self, obj: Any) -> Any:
+        """Convert NumPy types to standard Python serializable equivalents."""
         if isinstance(obj, np.integer):
             return int(obj)
         if isinstance(obj, np.floating):
             return float(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
-        return super(NpEncoder, self).default(obj)
+        return super().default(obj)
 
 
 # ============================================================================
-# 2. DATA SPLITTING UTILITIES
+# 2. DATA SPLITTING & ORDERING UTILITIES
 # ============================================================================
+
+
+def get_ordered_models(models_filter: Sequence[str] | None = None) -> list[str]:
+    """Return model names strictly ordered according to CANONICAL_MODEL_ORDER.
+
+    Args:
+        models_filter: Optional subset of model names to retain.
+
+    Returns:
+        Ordered list of registered model identifiers.
+    """
+    if models_filter is None:
+        return [m for m in CANONICAL_MODEL_ORDER if m in MODEL_REGISTRY]
+    requested = {str(m) for m in models_filter}
+    ordered = [
+        m for m in CANONICAL_MODEL_ORDER if m in requested and m in MODEL_REGISTRY
+    ]
+    for extra in models_filter:
+        if extra in MODEL_REGISTRY and extra not in ordered:
+            ordered.append(extra)
+    return ordered
+
+
+def parse_variant_indices(
+    variants: str | Sequence[int] | int | None = "all",
+    num_variants: int = NUM_VARIANTS,
+) -> list[int]:
+    """Parse a variant specification into a sorted list of 1-based variant indices.
+
+    Args:
+        variants: Variant selector ('all', comma-separated string '1,2,3',
+            integer count, or sequence of ints).
+        num_variants: Total number of variants when 'all' or None is specified.
+
+    Returns:
+        Sorted list of unique 1-based variant indices.
+
+    Raises:
+        ValueError: If no valid positive variant indices are parsed.
+    """
+    if variants is None:
+        return list(range(1, num_variants + 1))
+    if isinstance(variants, int):
+        if variants <= 0:
+            raise ValueError(f"Variant count must be positive, got {variants}")
+        return list(range(1, variants + 1))
+    if isinstance(variants, str):
+        cleaned = variants.strip().lower()
+        if cleaned in {"all", ""}:
+            return list(range(1, num_variants + 1))
+        parsed = [int(tok.strip()) for tok in cleaned.split(",") if tok.strip()]
+    else:
+        parsed = [int(v) for v in variants]
+
+    unique_sorted = sorted({v for v in parsed if v > 0})
+    if not unique_sorted:
+        raise ValueError(f"No valid variant indices parsed from: {variants!r}")
+    return unique_sorted
 
 
 def create_global_test_indices(
     dataset_size: int, test_fraction: float = 0.2, seed: int = 42
-) -> List[int]:
-    """
-    Create global test indices that remain constant across all variants.
+) -> list[int]:
+    """Create global test indices that remain constant across all variants.
 
     Args:
-        dataset_size: Total size of the dataset
-        test_fraction: Fraction of data to use for test set
-        seed: Random seed for reproducibility
+        dataset_size: Total number of samples in the dataset.
+        test_fraction: Fraction of data reserved for the global test set.
+        seed: Random seed for reproducible permutation.
 
     Returns:
-        List of test indices
+        List of integer indices forming the global test partition.
     """
     test_size = int(test_fraction * dataset_size)
     gen = torch.Generator().manual_seed(seed)
@@ -167,38 +307,32 @@ def create_global_test_indices(
 
 
 def create_variant_split(
-    backbone_dataset,
-    global_test_indices: List[int],
+    backbone_dataset: Dataset,
+    global_test_indices: Sequence[int],
     variant_idx: int,
-    val_fraction: float = 0.125,  # 0.125 of remaining = 10% of total
-) -> Tuple[Subset, Subset, Subset, List[int]]:
-    """
-    Create train/val/test split for a specific variant.
-
-    The key difference from Experiment 1: we return val_indices so we can
-    use the SAME validation set for pruning later.
+    val_fraction: float = 0.125,
+) -> tuple[Subset, Subset, Subset, list[int]]:
+    """Create deterministic train/val/test split for a specific variant index.
 
     Args:
-        backbone_dataset: The full dataset
-        global_test_indices: Pre-computed test indices (constant across variants)
-        variant_idx: Variant index (1-10) used to seed the train/val shuffle
-        val_fraction: Fraction of remaining data to use for validation
+        backbone_dataset: Full dataset instance to partition.
+        global_test_indices: Pre-computed global test set indices.
+        variant_idx: Variant index (1..10) seeding the train/val shuffle (42 + k).
+        val_fraction: Fraction of non-test samples allocated to validation
+            (0.125 of 80% remaining = 10% of total dataset = 136 images).
 
     Returns:
-        Tuple of (train_ds, val_ds, test_ds, val_indices)
+        Tuple of (train_ds, val_ds, test_ds, val_indices).
     """
-    total_size = len(backbone_dataset)
-    test_indices = set(global_test_indices)
+    total_size = len(backbone_dataset)  # type: ignore[arg-type]
+    test_indices_set = set(global_test_indices)
 
-    # Remaining indices for training and validation
-    remaining_indices = [i for i in range(total_size) if i not in test_indices]
+    remaining_indices = [i for i in range(total_size) if i not in test_indices_set]
 
-    # Shuffle remaining indices per-variant to create different train/val splits
     gen = torch.Generator().manual_seed(42 + variant_idx)
     perm = torch.randperm(len(remaining_indices), generator=gen).tolist()
     shuffled_remaining = [remaining_indices[i] for i in perm]
 
-    # Split remaining into train and val
     val_size = int(val_fraction * len(shuffled_remaining))
     train_size = len(shuffled_remaining) - val_size
 
@@ -212,20 +346,41 @@ def create_variant_split(
     return train_ds, val_ds, test_ds, val_indices
 
 
+def _build_default_global_test_indices() -> dict[str, list[int]]:
+    """Build the default global test indices dictionary across all dataset types."""
+    return {
+        "imagenet": create_global_test_indices(len(imageNet_dataset)),
+        "densenet": create_global_test_indices(len(denseNet_dataset)),
+        "clip": create_global_test_indices(len(clip_dataset)),
+    }
+
+
+def _dataset_key_for_model(model_name: str) -> str:
+    """Return the canonical dataset key ('imagenet', 'densenet', or 'clip') for a model."""
+    ds = MODEL_REGISTRY[model_name]["dataset"]
+    if ds is CLIP_DATASET:
+        return "clip"
+    if ds is DENSENET_DATASET:
+        return "densenet"
+    return "imagenet"
+
+
 # ============================================================================
-# 3. MODEL LOADING & UTILITIES
+# 3. MODEL LOADING, META-LEARNER & METRIC UTILITIES
 # ============================================================================
 
 
-def reset_regression_head(model: nn.Module):
-    """Reinitialize regression head weights for a distinct starting state."""
-    try:
-        for layer in model.regression_head.modules():
+def reset_regression_head(model: nn.Module) -> None:
+    """Reinitialize linear layer parameters in the model's regression head.
+
+    Args:
+        model: Predictor module containing a ``regression_head`` submodule.
+    """
+    regression_head = getattr(model, "regression_head", None)
+    if isinstance(regression_head, nn.Module):
+        for layer in regression_head.modules():
             if isinstance(layer, nn.Linear):
                 layer.reset_parameters()
-    except AttributeError:
-        # If model does not have regression_head attribute, ignore
-        pass
 
 
 def load_model_with_weights(
@@ -234,14 +389,23 @@ def load_model_with_weights(
     device: str = "cuda",
     freeze_backbone: bool = True,
 ) -> nn.Module:
-    """Load a model with pre-trained weights."""
+    """Instantiate a registered architecture and load checkpoint weights.
+
+    Args:
+        model_name: Key in ``MODEL_REGISTRY``.
+        weights_path: Path to the saved ``state_dict`` ``.pth`` file.
+        device: Target compute device ('cuda' or 'cpu').
+        freeze_backbone: Whether backbone parameters are frozen.
+
+    Returns:
+        Model loaded with weights and moved to ``device``.
+    """
     model_cls = MODEL_REGISTRY[model_name]["class"]
-    model = model_cls(freeze_backbone=freeze_backbone)
+    model: nn.Module = model_cls(freeze_backbone=freeze_backbone)
 
     if weights_path.exists():
-        model.load_state_dict(
-            torch.load(weights_path, map_location=device, weights_only=True)
-        )
+        state_dict = torch.load(weights_path, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
         debug(f"Loaded weights: {weights_path.name}")
     else:
         warn(f"Weights not found: {weights_path}, using initialized model")
@@ -252,120 +416,369 @@ def load_model_with_weights(
 def get_predictions(
     model: nn.Module, dataloader: DataLoader, device: str = "cuda"
 ) -> torch.Tensor:
-    """Get predictions from a model."""
+    """Run forward inference over ``dataloader`` and concatenate scalar predictions.
+
+    Args:
+        model: Evaluated PyTorch model returning ``(outputs, features)``.
+        dataloader: DataLoader yielding ``(images, labels)`` batches.
+        device: Target compute device.
+
+    Returns:
+        Concatenated prediction tensor on CPU.
+    """
     model.eval()
-    all_preds = []
+    all_preds: list[torch.Tensor] = []
 
     with torch.no_grad():
         for images, _ in dataloader:
             images = images.to(device)
             outputs, _ = model(images)
-            all_preds.append(outputs.cpu())
+            all_preds.append(outputs.detach().cpu())
 
     return torch.cat(all_preds, dim=0)
 
 
 def get_labels(dataloader: DataLoader) -> torch.Tensor:
-    """Extract labels from a dataloader."""
-    all_labels = []
+    """Extract and concatenate ground-truth scalar labels from ``dataloader``.
+
+    Args:
+        dataloader: DataLoader yielding ``(images, labels)`` batches.
+
+    Returns:
+        1D tensor of ground-truth target scores.
+    """
+    all_labels: list[torch.Tensor] = []
     for _, labels in dataloader:
-        all_labels.append(labels.squeeze())
-    return torch.cat(all_labels)
+        squeezed = labels.squeeze()
+        if squeezed.ndim == 0:
+            squeezed = squeezed.unsqueeze(0)
+        all_labels.append(squeezed.cpu())
+    return torch.cat(all_labels, dim=0)
 
 
 class StackingMetaLearner(nn.Module):
-    """Linear meta-learner for stacking ensemble."""
+    """Level-1 linear combiner for stacking ensembles."""
 
-    def __init__(self, num_base_models: int):
+    def __init__(self, num_base_models: int) -> None:
+        """Initialize the linear meta-learner.
+
+        Args:
+            num_base_models: Number of base architectures in the ensemble.
+        """
         super().__init__()
         self.fc = nn.Linear(num_base_models, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute linear combination of base model predictions.
+
+        Args:
+            x: Base prediction feature matrix of shape ``(B, num_base_models)``.
+
+        Returns:
+            Stacked prediction tensor of shape ``(B, 1)``.
+        """
         return self.fc(x)
 
 
+def fit_ridge_stacking_meta(
+    x_val: np.ndarray,
+    y_val: np.ndarray,
+    alpha: float = 1.0,
+) -> tuple[StackingMetaLearner, np.ndarray, float, float, float]:
+    """Fit unconstrained Ridge regression meta-learner in closed form on validation data.
+
+    Solves:
+        w_ext = (X_ext^T X_ext + alpha * I)^{-1} X_ext^T y_val
+    where X_ext = [X_val, 1] includes the intercept column.
+
+    Args:
+        x_val: Validation base-model prediction matrix of shape ``(N_val, M)``.
+        y_val: Validation ground-truth vector of shape ``(N_val,)``.
+        alpha: L2 regularization penalty (default 1.0).
+
+    Returns:
+        Tuple of ``(meta_learner, weights, intercept, val_mse, val_r2)``.
+    """
+    x_mat = np.asarray(x_val, dtype=np.float64)
+    y_vec = np.asarray(y_val, dtype=np.float64).ravel()
+    n_samples, num_models = x_mat.shape
+
+    ones = np.ones((n_samples, 1), dtype=np.float64)
+    x_ext = np.hstack([x_mat, ones])
+
+    reg_eye = alpha * np.eye(num_models + 1, dtype=np.float64)
+    gram = x_ext.T @ x_ext + reg_eye
+    rhs = x_ext.T @ y_vec
+
+    try:
+        theta = np.linalg.solve(gram, rhs)
+    except np.linalg.LinAlgError:
+        theta = np.linalg.lstsq(gram, rhs, rcond=None)[0]
+
+    weights = theta[:num_models].astype(np.float64)
+    intercept = float(theta[num_models])
+
+    y_val_pred = x_mat @ weights + intercept
+    val_mse = float(np.mean((y_val_pred - y_vec) ** 2))
+    ss_res = float(np.sum((y_vec - y_val_pred) ** 2))
+    ss_tot = float(np.sum((y_vec - np.mean(y_vec)) ** 2))
+    val_r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
+
+    meta_model = StackingMetaLearner(num_base_models=num_models)
+    with torch.no_grad():
+        meta_model.fc.weight.copy_(
+            torch.tensor(weights, dtype=torch.float32).unsqueeze(0)
+        )
+        meta_model.fc.bias.copy_(torch.tensor([intercept], dtype=torch.float32))
+
+    return meta_model, weights, intercept, val_mse, val_r2
+
+
+def compute_regression_metrics(
+    y_pred: np.ndarray, y_true: np.ndarray
+) -> dict[str, float]:
+    """Compute MSE, RMSE, MAE, PLCC, SRCC, and KRCC between predictions and targets.
+
+    Args:
+        y_pred: 1D array of predicted scores.
+        y_true: 1D array of ground-truth scores.
+
+    Returns:
+        Dictionary of scalar evaluation metrics.
+    """
+    pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    true = np.asarray(y_true, dtype=np.float64).ravel()
+
+    mse = float(np.mean((pred - true) ** 2))
+    rmse = float(np.sqrt(mse))
+    mae = float(np.mean(np.abs(pred - true)))
+
+    if pred.size >= 2 and np.std(pred) > 1e-12 and np.std(true) > 1e-12:
+        plcc_val, _ = pearsonr(pred, true)
+        srcc_val, _ = spearmanr(pred, true)
+        krcc_val, _ = kendalltau(pred, true)
+        plcc = float(plcc_val)
+        srcc = float(srcc_val)
+        krcc = float(krcc_val)
+    else:
+        plcc = 0.0
+        srcc = 0.0
+        krcc = 0.0
+
+    return {
+        "mse": mse,
+        "rmse": rmse,
+        "mae": mae,
+        "plcc": plcc,
+        "srcc": srcc,
+        "krcc": krcc,
+    }
+
+
+def compute_prediction_reliability(
+    prediction_vectors: Sequence[np.ndarray],
+    human_reliability: float = HUMAN_AUTHENTICITY_RELIABILITY,
+) -> tuple[float, float]:
+    """Compute Model Prediction Reliability and Combined Correlation Ceiling.
+
+    Model Prediction Reliability is the mean pairwise Pearson correlation between
+    prediction vectors generated across the 10 variants. The Combined Correlation
+    Ceiling is sqrt(r_human * r_model).
+
+    Args:
+        prediction_vectors: Sequence of 1D test-set prediction arrays across variants.
+        human_reliability: Spearman-Brown split-half human reliability (r_human).
+
+    Returns:
+        Tuple of ``(prediction_reliability, combined_correlation_ceiling)``.
+    """
+    if len(prediction_vectors) < 2:
+        return 0.0, 0.0
+
+    pairwise_corrs: list[float] = []
+    for vec_a, vec_b in combinations(prediction_vectors, 2):
+        a = np.asarray(vec_a, dtype=np.float64).ravel()
+        b = np.asarray(vec_b, dtype=np.float64).ravel()
+        if a.size >= 2 and np.std(a) > 1e-12 and np.std(b) > 1e-12:
+            r_val, _ = pearsonr(a, b)
+            if np.isfinite(r_val):
+                pairwise_corrs.append(float(r_val))
+
+    if not pairwise_corrs:
+        return 0.0, 0.0
+
+    r_model = float(np.mean(pairwise_corrs))
+    ceiling = (
+        float(np.sqrt(human_reliability * r_model))
+        if r_model > 0.0 and human_reliability > 0.0
+        else 0.0
+    )
+    return r_model, ceiling
+
+
+def _summarize_variant_metrics(
+    variant_entries: Sequence[dict[str, Any]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Compute mean and std dictionaries across variant metric records."""
+    metric_keys = ("mse", "rmse", "mae", "plcc", "srcc", "krcc")
+    if not variant_entries:
+        zeros = {k: 0.0 for k in metric_keys}
+        return zeros, zeros.copy()
+
+    mean_dict = {
+        k: float(np.mean([float(entry[k]) for entry in variant_entries]))
+        for k in metric_keys
+    }
+    std_dict = {
+        k: float(np.std([float(entry[k]) for entry in variant_entries]))
+        for k in metric_keys
+    }
+    return mean_dict, std_dict
+
+
+def discover_base_checkpoints(
+    models_filter: Sequence[str] | None = None,
+    variant_indices: Sequence[int] | None = None,
+) -> dict[str, dict[int, Path]]:
+    """Discover unpruned base-model checkpoints across Experiment 1A / 3A weight dirs.
+
+    Prefers ``DIRS['exp1_weights']`` (``Outputs/Experiment_1_variants/Weights``)
+    when ``DIRS['weights']`` is at its default location, or searches ``DIRS['weights']``
+    exclusively when ``DIRS['weights']`` has been overridden (e.g. in isolated tests).
+
+    Args:
+        models_filter: Optional subset of model names.
+        variant_indices: Optional subset of variant indices (1..10).
+
+    Returns:
+        Mapping ``{model_name: {variant_idx: checkpoint_path}}``.
+    """
+    ordered_models = get_ordered_models(models_filter)
+    allowed_models = set(ordered_models)
+    allowed_variants = set(variant_indices) if variant_indices is not None else None
+
+    weights_dir = DIRS["weights"]
+    exp1_dir = DIRS.get("exp1_weights", EXP1_WEIGHTS_DIR)
+
+    default_weights_dir = (OUTPUT_DIR / "Weights").resolve()
+    if weights_dir.resolve() != default_weights_dir:
+        candidate_dirs = [weights_dir]
+    else:
+        candidate_dirs = [exp1_dir, weights_dir]
+
+    discovered: dict[str, dict[int, Path]] = defaultdict(dict)
+
+    for search_dir in candidate_dirs:
+        if not search_dir.exists():
+            continue
+        pth_files = sorted(search_dir.glob("*.pth"))
+        for path in pth_files:
+            match = BASE_WEIGHT_RE.match(path.name)
+            if not match:
+                continue
+            model_name = match.group(1)
+            variant_idx = int(match.group(2))
+            if model_name not in allowed_models:
+                continue
+            if allowed_variants is not None and variant_idx not in allowed_variants:
+                continue
+            if variant_idx not in discovered[model_name]:
+                discovered[model_name][variant_idx] = path
+
+    # Fallback to legacy pruned checkpoints only if no unpruned checkpoints exist
+    if not discovered:
+        for search_dir in candidate_dirs:
+            if not search_dir.exists():
+                continue
+            for path in sorted(search_dir.glob("*.pth")):
+                match = LEGACY_PRUNED_WEIGHT_RE.match(path.name)
+                if not match:
+                    continue
+                model_name = match.group(1)
+                variant_idx = int(match.group(2))
+                if model_name not in allowed_models:
+                    continue
+                if allowed_variants is not None and variant_idx not in allowed_variants:
+                    continue
+                if variant_idx not in discovered[model_name]:
+                    discovered[model_name][variant_idx] = path
+
+    return {
+        m: dict(sorted(discovered[m].items()))
+        for m in ordered_models
+        if discovered.get(m)
+    }
+
+
 # ============================================================================
-# 4. EXPERIMENT 3A: TRAIN ALL VARIANTS
+# 4. EXPERIMENT 3A: TRAIN ALL VARIANTS (LEGACY / OPTIONAL)
 # ============================================================================
 
 
 def experiment_3a_train_all_variants(
-    models_to_train: List[str] = None,
-    global_test_indices: Dict[str, List[int]] = None,
+    models_to_train: list[str] | None = None,
+    global_test_indices: dict[str, list[int]] | None = None,
     save_plots: bool = True,
     verbose: bool = True,
-) -> Tuple[Dict[str, Any], Dict[str, Dict[int, List[int]]]]:
-    """
-    Train 10 variants per model architecture.
+) -> tuple[dict[str, Any], dict[str, dict[int, list[int]]]]:
+    """Train 10 variants per model architecture (optional legacy stage).
+
+    By default, Experiment 3 reuses the 70 unpruned checkpoints from Experiment 1A
+    (ADR-0005). This function is retained for backward compatibility.
 
     Args:
-        models_to_train: List of model names to train (None = all)
-        global_test_indices: Pre-computed test indices per dataset type
-        save_plots: Whether to save training plots
-        verbose: Whether to print detailed progress
+        models_to_train: List of model names to train (None = all 7 models).
+        global_test_indices: Pre-computed test indices per dataset type.
+        save_plots: Whether to save training loss curves.
+        verbose: Whether to log detailed per-variant progress.
 
     Returns:
-        Tuple of:
-        - results: Training results per model
-        - variant_val_indices: Dict mapping model_name -> {variant_idx -> val_indices}
-          This is critical for using the same validation set during pruning.
+        Tuple of ``(results, variant_val_indices)``.
     """
     info("=" * 80)
     info("EXPERIMENT 3A: TRAINING ALL VARIANTS")
     info("=" * 80)
 
-    # Create output directories
     DIRS["weights"].mkdir(parents=True, exist_ok=True)
     DIRS["training_plots"].mkdir(parents=True, exist_ok=True)
     DIRS["training_history"].mkdir(parents=True, exist_ok=True)
 
-    # Select models to train
-    if models_to_train is None:
-        models_to_train = list(MODEL_REGISTRY.keys())
+    ordered_models = get_ordered_models(models_to_train)
 
-    # Create global test indices if not provided
     if global_test_indices is None:
-        global_test_indices = {}
-        # For ImageNet-based models
-        total_imagenet = len(imageNet_dataset)
-        global_test_indices["imagenet"] = create_global_test_indices(total_imagenet)
-        # For DenseNet-based models
-        total_densenet = len(denseNet_dataset)
-        global_test_indices["densenet"] = create_global_test_indices(total_densenet)
+        global_test_indices = _build_default_global_test_indices()
+    else:
+        global_test_indices.setdefault("clip", global_test_indices.get("imagenet", []))
 
-    results = {}
-    variant_val_indices = {}  # Store val indices per model/variant for pruning
+    results: dict[str, Any] = {}
+    variant_val_indices: dict[str, dict[int, list[int]]] = {}
 
     device = torch.device(TRAINING_CONFIG["device"])
+    num_workers = _effective_num_workers(device)
 
-    for idx, model_name in enumerate(models_to_train, 1):
-        info(f"[{idx}/{len(models_to_train)}] Training {model_name.upper()}")
+    for idx, model_name in enumerate(ordered_models, 1):
+        info(f"[{idx}/{len(ordered_models)}] Training {model_name.upper()}")
         info("-" * 80)
 
         try:
             config = MODEL_REGISTRY[model_name]
             backbone_dataset = config["backbone_dataset"]
-
-            # Determine which global test indices to use
-            if config["dataset"] is IMAGENET_DATASET:
-                test_indices = global_test_indices["imagenet"]
-            else:
-                test_indices = global_test_indices["densenet"]
+            ds_key = _dataset_key_for_model(model_name)
+            test_indices = global_test_indices[ds_key]
 
             results[model_name] = {}
             variant_val_indices[model_name] = {}
 
             for variant_idx in range(1, NUM_VARIANTS + 1):
-                # Check if this variant is already trained
                 weights_path = (
                     DIRS["weights"]
                     / f"{model_name}_exp3a_variant{variant_idx}_best.pth"
                 )
                 if weights_path.exists():
                     info(
-                        f"✓ Variant {variant_idx}/{NUM_VARIANTS} for {model_name} already exists, skipping..."
+                        f"Variant {variant_idx}/{NUM_VARIANTS} for {model_name} "
+                        "already exists, skipping..."
                     )
-                    # Still need to store val_indices for pruning
                     _, _, _, val_indices = create_variant_split(
                         backbone_dataset, test_indices, variant_idx
                     )
@@ -374,35 +787,30 @@ def experiment_3a_train_all_variants(
 
                 info(f"Variant {variant_idx}/{NUM_VARIANTS} for {model_name}")
 
-                # Initialize model
                 model = config["class"](
                     freeze_backbone=TRAINING_CONFIG["freeze_backbone"]
                 )
                 reset_regression_head(model)
 
-                # Create data split - CRITICAL: store val_indices for pruning
-                train_ds, val_ds, test_ds, val_indices = create_variant_split(
+                train_ds, val_ds, _test_ds, val_indices = create_variant_split(
                     backbone_dataset, test_indices, variant_idx
                 )
                 variant_val_indices[model_name][variant_idx] = val_indices
 
-                # Create dataloaders
                 train_loader = DataLoader(
                     train_ds,
                     batch_size=BATCH_SIZE,
                     shuffle=True,
-                    num_workers=NUM_WORKERS,
+                    num_workers=num_workers,
                 )
                 val_loader = DataLoader(
                     val_ds,
                     batch_size=BATCH_SIZE,
                     shuffle=False,
-                    num_workers=NUM_WORKERS,
+                    num_workers=num_workers,
                 )
 
                 dataloaders = {"train": train_loader, "val": val_loader}
-
-                # Setup training
                 criterion = nn.MSELoss()
                 optimizer = torch.optim.Adam(
                     model.parameters(), lr=TRAINING_CONFIG["learning_rate"]
@@ -412,7 +820,6 @@ def experiment_3a_train_all_variants(
                     info(f"  Training on device: {device}")
                     info(f"  Train size: {len(train_ds)}, Val size: {len(val_ds)}")
 
-                # Train the model
                 best_model, history = train_model(
                     model=model,
                     dataloaders=dataloaders,
@@ -423,29 +830,18 @@ def experiment_3a_train_all_variants(
                     patience=TRAINING_CONFIG["patience"],
                 )
 
-                # Save model weights
-                weights_path = (
-                    DIRS["weights"]
-                    / f"{model_name}_exp3a_variant{variant_idx}_best.pth"
-                )
                 torch.save(best_model.state_dict(), weights_path)
-                info(f"✓ Variant weights saved to: {weights_path}")
+                info(f"Variant weights saved to: {weights_path}")
 
-                # Save training history
                 history_path = (
                     DIRS["training_history"]
                     / f"{model_name}_exp3a_variant{variant_idx}_history.npy"
                 )
                 np.save(history_path, history)
 
-                # Save training plots
                 if save_plots:
                     try:
-                        import matplotlib
-
                         matplotlib.use("Agg")
-                        import matplotlib.pyplot as plt
-
                         plt.figure(figsize=(10, 6))
                         plt.plot(history["train_loss"], label="Train Loss")
                         plt.plot(history["val_loss"], label="Val Loss")
@@ -461,10 +857,9 @@ def experiment_3a_train_all_variants(
                         )
                         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
                         plt.close()
-                    except Exception as e:
-                        warn(f"Could not save plot: {e}")
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        warn(f"Could not save plot: {exc}")
 
-                # Store results
                 results[model_name][f"variant{variant_idx}"] = {
                     "final_val_loss": history["val_loss"][-1],
                     "best_val_loss": min(history["val_loss"]),
@@ -473,17 +868,13 @@ def experiment_3a_train_all_variants(
                     "val_indices_count": len(val_indices),
                 }
 
-                info(f"✓ {model_name} variant {variant_idx} complete!")
-                info(f"  Best Val Loss: {min(history['val_loss']):.4f}")
-
-                # Cleanup after each variant
                 del model, best_model, train_loader, val_loader
                 clear_gpu_memory()
 
-        except Exception as e:
-            error(f"Error training {model_name}: {e}")
+        except (RuntimeError, ValueError, KeyError, OSError) as exc:
+            error(f"Error training {model_name}: {exc}")
             error(traceback.format_exc())
-            results[model_name] = {"error": str(e)}
+            results[model_name] = {"error": str(exc)}
 
         finally:
             cleanup_model_and_data(
@@ -493,18 +884,14 @@ def experiment_3a_train_all_variants(
             )
             clear_gpu_memory()
 
-    # Save variant validation indices for later use
     val_indices_path = DIRS["results"] / "variant_val_indices.json"
     DIRS["results"].mkdir(parents=True, exist_ok=True)
-
-    # Convert to serializable format
     serializable_indices = {
         model: {str(k): v for k, v in variants.items()}
         for model, variants in variant_val_indices.items()
     }
     with open(val_indices_path, "w") as f:
         json.dump(serializable_indices, f, cls=NpEncoder)
-    info(f"✓ Validation indices saved to: {val_indices_path}")
 
     info("=" * 80)
     info("EXPERIMENT 3A: TRAINING COMPLETE")
@@ -514,201 +901,136 @@ def experiment_3a_train_all_variants(
 
 
 # ============================================================================
-# 5. EXPERIMENT 3B: PRUNE ALL VARIANTS (ON VALIDATION SET)
+# 5. EXPERIMENT 3B: PRUNE ALL VARIANTS (LEGACY / OPTIONAL)
 # ============================================================================
 
 
 def experiment_3b_prune_all_variants(
-    models_to_prune: List[str] = None,
-    variant_val_indices: Dict[str, Dict[int, List[int]]] = None,
-    global_test_indices: Dict[str, List[int]] = None,
+    models_to_prune: list[str] | None = None,
+    variant_val_indices: dict[str, dict[int, list[int]]] | None = None,
+    global_test_indices: dict[str, list[int]] | None = None,
     verbose: bool = True,
-) -> Dict[str, Any]:
-    """
-    Prune trained variants using greedy pruning on the VALIDATION set.
+) -> dict[str, Any]:
+    """Prune trained variants using greedy pruning on the validation set (legacy stage).
 
-    This is the key difference from Experiment 1: pruning is done on validation,
-    not on test, so the test set remains completely unseen for ensemble evaluation.
+    Deprecated in ADR-0005 in favor of unpruned Experiment 1A base checkpoints;
+    retained as an optional function for backward compatibility.
 
     Args:
-        models_to_prune: List of model names to prune (None = all trained)
-        variant_val_indices: Dict mapping model_name -> {variant_idx -> val_indices}
-        global_test_indices: Pre-computed test indices per dataset type
-        verbose: Whether to print detailed progress
+        models_to_prune: List of model names to prune (None = all available).
+        variant_val_indices: Mapping ``model_name -> {variant_idx -> val_indices}``.
+        global_test_indices: Pre-computed test indices per dataset type.
+        verbose: Whether to log detailed progress.
 
     Returns:
-        Pruning results per model/variant
+        Dictionary of pruning metrics per model and variant.
     """
     info("=" * 80)
     info("EXPERIMENT 3B: PRUNING ALL VARIANTS (ON VALIDATION SET)")
     info("=" * 80)
 
-    # Create output directories
     DIRS["rankings"].mkdir(parents=True, exist_ok=True)
     DIRS["ranking_plots"].mkdir(parents=True, exist_ok=True)
 
-    # Load variant validation indices if not provided
-    if variant_val_indices is None:
-        val_indices_path = DIRS["results"] / "variant_val_indices.json"
-        if val_indices_path.exists():
-            with open(val_indices_path, "r") as f:
-                loaded_indices = json.load(f)
-            # Convert string keys back to int
-            variant_val_indices = {
-                model: {int(k): v for k, v in variants.items()}
-                for model, variants in loaded_indices.items()
-            }
-            info(f"Loaded validation indices from: {val_indices_path}")
-        else:
-            error(f"Validation indices not found: {val_indices_path}")
-            error("Please run experiment_3a_train_all_variants first.")
-            return {}
-
-    # Create global test indices if not provided (for reference)
     if global_test_indices is None:
-        global_test_indices = {}
-        global_test_indices["imagenet"] = create_global_test_indices(
-            len(imageNet_dataset)
-        )
-        global_test_indices["densenet"] = create_global_test_indices(
-            len(denseNet_dataset)
-        )
+        global_test_indices = _build_default_global_test_indices()
+    else:
+        global_test_indices.setdefault("clip", global_test_indices.get("imagenet", []))
 
-    # Find all trained weight files
-    all_pth_files = sorted(DIRS["weights"].glob("*_exp3a_*.pth"))
-    if not all_pth_files:
+    checkpoints = discover_base_checkpoints(models_filter=models_to_prune)
+    if not checkpoints:
         error(f"No trained weights found in {DIRS['weights']}")
-        error("Please run experiment_3a_train_all_variants first.")
         return {}
 
-    # Group by model name
-    weights_by_model = defaultdict(list)
-    for p in all_pth_files:
-        match = re.match(r"^([a-z0-9]+)_exp3a_variant(\d+)_best\.pth$", p.name)
-        if match:
-            model_name = match.group(1)
-            if models_to_prune is None or model_name in models_to_prune:
-                if model_name in MODEL_REGISTRY:
-                    weights_by_model[model_name].append(p)
-
-    if not weights_by_model:
-        error("No valid model weights found to prune.")
-        return {}
-
-    info(f"Found weights for {len(weights_by_model)} models:")
-    for mn, files in weights_by_model.items():
-        info(f"  - {mn}: {len(files)} variants")
-
-    results = {}
+    results: dict[str, Any] = {}
     device = torch.device(TRAINING_CONFIG["device"])
+    num_workers = _effective_num_workers(device)
     criterion = nn.MSELoss()
 
-    for idx, (model_name, weight_files) in enumerate(weights_by_model.items(), 1):
-        info(f"[{idx}/{len(weights_by_model)}] Pruning {model_name.upper()}")
+    for idx, (model_name, variant_map) in enumerate(checkpoints.items(), 1):
+        info(f"[{idx}/{len(checkpoints)}] Pruning {model_name.upper()}")
         info("-" * 80)
 
         try:
             config = MODEL_REGISTRY[model_name]
             backbone_dataset = config["backbone_dataset"]
             target_layer = config["target_layer"]
+            ds_key = _dataset_key_for_model(model_name)
+            test_indices = global_test_indices[ds_key]
 
             results[model_name] = {}
 
-            for weights_path in weight_files:
-                # Extract variant index from filename
-                match = re.search(r"variant(\d+)", weights_path.name)
-                if not match:
-                    continue
-                variant_idx = int(match.group(1))
+            for variant_idx, weights_path in variant_map.items():
                 variant_tag = f"variant{variant_idx}"
-
-                # Check if this variant is already pruned
                 pruned_weights_path = (
                     DIRS["weights"]
                     / f"{model_name}_exp3b_{variant_tag}_greedy_pruned.pth"
                 )
                 if pruned_weights_path.exists():
-                    info(f"✓ {model_name} {variant_tag} already pruned, skipping...")
+                    info(f"{model_name} {variant_tag} already pruned, skipping...")
                     continue
 
-                info(f"Processing {variant_tag}...")
-
-                # Get validation indices for this variant
                 if (
-                    model_name not in variant_val_indices
-                    or variant_idx not in variant_val_indices[model_name]
+                    variant_val_indices is not None
+                    and model_name in variant_val_indices
+                    and variant_idx in variant_val_indices[model_name]
                 ):
-                    warn(
-                        f"No validation indices for {model_name} {variant_tag}, skipping"
+                    val_indices = variant_val_indices[model_name][variant_idx]
+                else:
+                    _, _, _, val_indices = create_variant_split(
+                        backbone_dataset, test_indices, variant_idx
                     )
-                    continue
 
-                val_indices = variant_val_indices[model_name][variant_idx]
-
-                # Create validation dataloader (SAME as used in training)
                 val_ds = Subset(backbone_dataset, val_indices)
                 val_loader = DataLoader(
                     val_ds,
                     batch_size=BATCH_SIZE,
                     shuffle=False,
-                    num_workers=NUM_WORKERS,
+                    num_workers=num_workers,
                 )
 
                 if verbose:
                     info(f"  Validation set size: {len(val_ds)}")
 
-                # Load the trained model
                 model = config["class"](freeze_backbone=False)
-                model.load_state_dict(torch.load(weights_path, weights_only=True))
+                model.load_state_dict(
+                    torch.load(weights_path, map_location=device, weights_only=True)
+                )
 
-                # Create pruner using VALIDATION loader (not test!)
                 pruner = FeatureMapsPruner(
                     model=model,
-                    dataloader=val_loader,  # KEY: prune on validation set
+                    dataloader=val_loader,
                     layer_name=target_layer,
                     criterion=criterion,
                     eval_function=test_model,
                     device=device,
                 )
 
-                # Compute importance scores
                 importance_path = (
                     DIRS["rankings"]
                     / f"{model_name}_exp3b_{variant_tag}_importance.npy"
                 )
-                importance_scores = pruner.compute_importance_scores(
+                pruner.compute_importance_scores(
                     save_path=str(importance_path),
                     force_recompute=PRUNING_CONFIG["force_recompute"],
                 )
 
-                # Ensure baseline is computed (may be None if importance was loaded from file)
                 if pruner.baseline_mse is None:
                     pruner.baseline_mse, pruner.baseline_rmse = pruner._evaluate_model()
 
-                # Plot importance scores
                 try:
                     plot_path = (
                         DIRS["ranking_plots"]
                         / f"{model_name}_exp3b_{variant_tag}_importance.png"
                     )
                     pruner.plot_importance_scores(save_path=str(plot_path))
-                except Exception as e:
-                    warn(f"Could not save importance plot: {e}")
+                except (OSError, RuntimeError, ValueError) as exc:
+                    warn(f"Could not save importance plot: {exc}")
 
-                info(
-                    f"  Baseline MSE: {pruner.baseline_mse:.4f}, RMSE: {pruner.baseline_rmse:.4f}"
-                )
-
-                # Perform greedy pruning
-                pruned_weights_path = (
-                    DIRS["weights"]
-                    / f"{model_name}_exp3b_{variant_tag}_greedy_pruned.pth"
-                )
                 pruning_results = pruner.greedy_pruning(
                     model_save_path=str(pruned_weights_path)
                 )
 
-                # Store results
                 results[model_name][variant_tag] = {
                     "baseline_mse": pruning_results["baseline_mse"],
                     "baseline_rmse": pruning_results["baseline_rmse"],
@@ -723,19 +1045,13 @@ def experiment_3b_prune_all_variants(
                     "original_weights_path": str(weights_path),
                 }
 
-                info(f"✓ {model_name} {variant_tag} pruning complete!")
-                info(f"  Final MSE: {pruning_results['final_mse']:.4f}")
-                info(f"  Features removed: {len(pruning_results['removed_features'])}")
-                info(f"  Reduction: {pruning_results['reduction_percentage']:.1f}%")
-
-                # Cleanup
                 del model, pruner, val_loader
                 clear_gpu_memory()
 
-        except Exception as e:
-            error(f"Error pruning {model_name}: {e}")
+        except (RuntimeError, ValueError, KeyError, OSError) as exc:
+            error(f"Error pruning {model_name}: {exc}")
             error(traceback.format_exc())
-            results[model_name] = {"error": str(e)}
+            results[model_name] = {"error": str(exc)}
 
         finally:
             cleanup_model_and_data(
@@ -745,11 +1061,10 @@ def experiment_3b_prune_all_variants(
             )
             clear_gpu_memory()
 
-    # Save pruning results
+    DIRS["results"].mkdir(parents=True, exist_ok=True)
     pruning_results_path = DIRS["results"] / "experiment_3b_pruning_results.json"
     with open(pruning_results_path, "w") as f:
         json.dump(results, f, indent=2, cls=NpEncoder)
-    info(f"✓ Pruning results saved to: {pruning_results_path}")
 
     info("=" * 80)
     info("EXPERIMENT 3B: PRUNING COMPLETE")
@@ -759,984 +1074,392 @@ def experiment_3b_prune_all_variants(
 
 
 # ============================================================================
-# 6. EXPERIMENT 3C: EVALUATE ENSEMBLE (ON TEST SET ONLY)
+# 6. EXPERIMENT 3C: EVALUATE VARIANT-ALIGNED ENSEMBLES
 # ============================================================================
 
 
 def experiment_3c_evaluate_ensemble(
-    models_filter: List[str] = None,
-    global_test_indices: Dict[str, List[int]] = None,
+    models_filter: list[str] | None = None,
+    global_test_indices: dict[str, list[int]] | None = None,
     device: str = "cuda",
-    ensemble_mode: List[str] = ["bagging", "stacking", "stacking_cv"],
+    ensemble_mode: Sequence[str] = ("bagging", "stacking"),
+    variants: str | Sequence[int] | int | None = "all",
+    ridge_alpha: float = 1.0,
     stacking_cv_folds: int = 5,
     stacking_cv_repeats: int = 1,
-) -> Dict[str, Any]:
-    """
-    Evaluate the ensemble(s) on the TEST set.
+) -> dict[str, Any]:
+    """Evaluate 10 variant-aligned 7-model Bagging and Stacking ensembles (Stage 3C).
 
-    This is the ONLY evaluation on test data - both training and pruning
-    were done on train/val splits, so test is truly unseen.
-
-    Produces a comprehensive comparison of:
-    - Baseline (unpruned) architectures: mean ± std across variants
-    - Greedy pruned versions: mean ± std across variants
-    - Ensemble (bagging: averaged predictions from all pruned variants)
-    - Ensemble (stacking: meta-model trained on pruned variants)
-    - Ensemble (stacking_cv: k-fold OOF stacking on available evaluation set)
+    For each variant k in 1..10:
+    - Reconstructs validation split val_k (136 images, seed = 42 + k).
+    - Computes base predictions X_val^(k) in R^{136 x 7} and X_test^(k) in R^{273 x 7}
+      strictly ordered by CANONICAL_MODEL_ORDER.
+    - Evaluates Bagging (unweighted arithmetic mean) on the 273 global test images.
+    - Fits StackingMetaLearner on (X_val^(k), y_val^(k)) via closed-form Ridge
+      regression (alpha = 1.0), saves stacking_exp3_variant{k}_meta.pth and
+      stacking_coefficients.json, and evaluates on the 273 global test images.
 
     Args:
-        models_filter: List of model names to include (None = all)
-        global_test_indices: Pre-computed test indices per dataset type
-        device: Device to use
-        ensemble_mode: List of ensemble modes to use (bagging, stacking, stacking_cv)
-        stacking_cv_folds: Number of folds for stacking_cv
-        stacking_cv_repeats: Number of repeated CV rounds for stacking_cv
+        models_filter: Optional list of model names to include (None = all 7 models).
+        global_test_indices: Optional pre-computed test indices per dataset type.
+        device: Compute device ('cuda' or 'cpu').
+        ensemble_mode: Ensemble strategies to run ('bagging', 'stacking').
+        variants: Variant indices to evaluate ('all', '1,2,3', or sequence of ints).
+        ridge_alpha: Ridge regularization parameter alpha for stacking meta-learner.
+        stacking_cv_folds: Kept for backward signature compatibility.
+        stacking_cv_repeats: Kept for backward signature compatibility.
 
     Returns:
-        Ensemble evaluation metrics with full comparison
+        Dictionary of evaluation results adhering to the ADR-0005 JSON schema.
     """
-    from scipy.stats import pearsonr, spearmanr, kendalltau
-
+    del stacking_cv_folds, stacking_cv_repeats
     info("=" * 80)
-    info("EXPERIMENT 3C: EVALUATING ENSEMBLE ON TEST SET")
+    info("EXPERIMENT 3C: EVALUATING VARIANT-ALIGNED ENSEMBLES (BAG & STACK)")
     info("=" * 80)
 
-    # Create global test indices if not provided
+    requested_variants = parse_variant_indices(variants)
+    ordered_models = get_ordered_models(models_filter)
+    modes = [m.lower() for m in ensemble_mode]
+
+    checkpoints_by_model = discover_base_checkpoints(
+        models_filter=ordered_models,
+        variant_indices=requested_variants,
+    )
+    if not checkpoints_by_model:
+        error(
+            f"No base model checkpoints found in {DIRS.get('exp1_weights')} "
+            f"or {DIRS['weights']}"
+        )
+        return {}
+
+    total_found = sum(len(v) for v in checkpoints_by_model.values())
+    info(
+        f"Discovered {total_found} checkpoints across "
+        f"{len(checkpoints_by_model)} architectures for variants {requested_variants}"
+    )
+
     if global_test_indices is None:
-        global_test_indices = {}
-        global_test_indices["imagenet"] = create_global_test_indices(
-            len(imageNet_dataset)
-        )
-        global_test_indices["densenet"] = create_global_test_indices(
-            len(denseNet_dataset)
-        )
-
-    # Find all baseline (unpruned) weight files
-    all_baseline_files = sorted(DIRS["weights"].glob("*_exp3a_*_best.pth"))
-    # Find all pruned weight files
-    all_pruned_files = sorted(DIRS["weights"].glob("*_exp3b_*_greedy_pruned.pth"))
-
-    if not all_pruned_files:
-        error(f"No pruned weights found in {DIRS['weights']}")
-        error("Please run experiment_3b_prune_all_variants first.")
-        return {}
-
-    # Group baseline weights by model name
-    baseline_weights_by_model = defaultdict(list)
-    for p in all_baseline_files:
-        match = re.match(r"^([a-z0-9]+)_exp3a_variant(\d+)_best\.pth$", p.name)
-        if match:
-            model_name = match.group(1)
-            if models_filter is None or model_name in models_filter:
-                if model_name in MODEL_REGISTRY:
-                    baseline_weights_by_model[model_name].append(p)
-
-    # Group pruned weights by model name
-    pruned_weights_by_model = defaultdict(list)
-    for p in all_pruned_files:
-        match = re.match(r"^([a-z0-9]+)_exp3b_variant(\d+)_greedy_pruned\.pth$", p.name)
-        if match:
-            model_name = match.group(1)
-            if models_filter is None or model_name in models_filter:
-                if model_name in MODEL_REGISTRY:
-                    pruned_weights_by_model[model_name].append(p)
-
-    if not pruned_weights_by_model:
-        error("No valid pruned model weights found.")
-        return {}
-
-    total_baseline_variants = sum(len(v) for v in baseline_weights_by_model.values())
-    total_pruned_variants = sum(len(v) for v in pruned_weights_by_model.values())
-    info(
-        f"Found {total_baseline_variants} baseline variants across {len(baseline_weights_by_model)} models"
-    )
-    info(
-        f"Found {total_pruned_variants} pruned variants across {len(pruned_weights_by_model)} models"
-    )
-
-    # Prepare test loaders for each dataset type
-    test_loaders = {}
-
-    # ImageNet test loader
-    imagenet_test_ds = Subset(imageNet_dataset, global_test_indices["imagenet"])
-    test_loaders["imagenet"] = DataLoader(
-        imagenet_test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
-    )
-
-    # DenseNet test loader
-    densenet_test_ds = Subset(denseNet_dataset, global_test_indices["densenet"])
-    test_loaders["densenet"] = DataLoader(
-        densenet_test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
-    )
-
-    # Get ground truth labels (same for both since same indices, different transforms)
-    y_true = get_labels(test_loaders["imagenet"]).numpy()
-
-    info(f"Test set size: {len(y_true)}")
-
-    # -------------------------------------------------------------------------
-    # EVALUATE BASELINE (UNPRUNED) MODELS
-    # -------------------------------------------------------------------------
-    info("\n" + "-" * 60)
-    info("Evaluating BASELINE (unpruned) models...")
-    info("-" * 60)
-
-    baseline_results = {}
-    all_baseline_preds = []  # For baseline ensemble
-
-    for model_name, weight_files in baseline_weights_by_model.items():
-        config = MODEL_REGISTRY[model_name]
-
-        # Determine which test loader to use
-        if config["dataset"] is IMAGENET_DATASET:
-            test_loader = test_loaders["imagenet"]
-        else:
-            test_loader = test_loaders["densenet"]
-
-        variant_metrics = []
-
-        for weights_path in weight_files:
-            info(f"  Processing {weights_path.name}...")
-
-            # Load model
-            model = load_model_with_weights(
-                model_name, weights_path, device, freeze_backbone=False
-            )
-
-            # Get predictions
-            preds = get_predictions(model, test_loader, device)
-            preds_np = preds.squeeze().cpu().numpy()
-            all_baseline_preds.append(preds.squeeze().cpu())
-
-            # Compute metrics
-            mse = float(np.mean((preds_np - y_true) ** 2))
-            rmse = float(np.sqrt(mse))
-            mae = float(np.mean(np.abs(preds_np - y_true)))
-            plcc, _ = pearsonr(preds_np, y_true)
-            srcc, _ = spearmanr(preds_np, y_true)
-            krcc, _ = kendalltau(preds_np, y_true)
-
-            variant_metrics.append(
-                {
-                    "weights_path": str(weights_path),
-                    "mse": mse,
-                    "rmse": rmse,
-                    "mae": mae,
-                    "plcc": float(plcc),
-                    "srcc": float(srcc),
-                    "krcc": float(krcc),
-                }
-            )
-
-            # Cleanup
-            del model
-            clear_gpu_memory()
-
-        # Compute mean and std for this architecture
-        mses = [v["mse"] for v in variant_metrics]
-        rmses = [v["rmse"] for v in variant_metrics]
-        maes = [v["mae"] for v in variant_metrics]
-        plccs = [v["plcc"] for v in variant_metrics]
-        srccs = [v["srcc"] for v in variant_metrics]
-        krccs = [v["krcc"] for v in variant_metrics]
-
-        baseline_results[model_name] = {
-            "variants": variant_metrics,
-            "num_variants": len(variant_metrics),
-            "mean": {
-                "mse": float(np.mean(mses)),
-                "rmse": float(np.mean(rmses)),
-                "mae": float(np.mean(maes)),
-                "plcc": float(np.mean(plccs)),
-                "srcc": float(np.mean(srccs)),
-                "krcc": float(np.mean(krccs)),
-            },
-            "std": {
-                "mse": float(np.std(mses)),
-                "rmse": float(np.std(rmses)),
-                "mae": float(np.std(maes)),
-                "plcc": float(np.std(plccs)),
-                "srcc": float(np.std(srccs)),
-                "krcc": float(np.std(krccs)),
-            },
-        }
-
-    # -------------------------------------------------------------------------
-    # COMPUTE BASELINE ENSEMBLE (average of baseline/unpruned models)
-    # -------------------------------------------------------------------------
-    info("\n" + "-" * 60)
-    info("Computing BASELINE ENSEMBLE predictions...")
-    info("-" * 60)
-
-    baseline_ensemble_results = {}
-    if all_baseline_preds:
-        y_pred_baseline_ens = torch.mean(torch.stack(all_baseline_preds), dim=0).numpy()
-        info(
-            f"Averaged predictions from {len(all_baseline_preds)} baseline model variants"
-        )
-
-        # Compute baseline ensemble metrics
-        base_ens_mse = float(np.mean((y_pred_baseline_ens - y_true) ** 2))
-        base_ens_rmse = float(np.sqrt(base_ens_mse))
-        base_ens_mae = float(np.mean(np.abs(y_pred_baseline_ens - y_true)))
-        base_ens_plcc, base_ens_plcc_p = pearsonr(y_pred_baseline_ens, y_true)
-        base_ens_srcc, base_ens_srcc_p = spearmanr(y_pred_baseline_ens, y_true)
-        base_ens_krcc, base_ens_krcc_p = kendalltau(y_pred_baseline_ens, y_true)
-
-        baseline_ensemble_results = {
-            "mse": base_ens_mse,
-            "rmse": base_ens_rmse,
-            "mae": base_ens_mae,
-            "plcc": float(base_ens_plcc),
-            "srcc": float(base_ens_srcc),
-            "krcc": float(base_ens_krcc),
-            "plcc_p_value": float(base_ens_plcc_p),
-            "srcc_p_value": float(base_ens_srcc_p),
-            "krcc_p_value": float(base_ens_krcc_p),
-            "num_models": len(all_baseline_preds),
-            "test_size": len(y_true),
-        }
+        global_test_indices = _build_default_global_test_indices()
     else:
-        info("No baseline predictions available for ensemble")
+        default_idx = next(iter(global_test_indices.values()))
+        global_test_indices.setdefault("imagenet", default_idx)
+        global_test_indices.setdefault("densenet", default_idx)
+        global_test_indices.setdefault("clip", default_idx)
+
+    num_workers = _effective_num_workers(device)
+
+    datasets_by_key: dict[str, Dataset] = {
+        "imagenet": imageNet_dataset,
+        "densenet": denseNet_dataset,
+        "clip": clip_dataset,
+    }
+    test_loaders: dict[str, DataLoader] = {}
+    for ds_key, ds_obj in datasets_by_key.items():
+        test_sub = Subset(ds_obj, global_test_indices[ds_key])
+        test_loaders[ds_key] = DataLoader(
+            test_sub,
+            batch_size=BATCH_SIZE,
+            shuffle=False,
+            num_workers=num_workers,
+        )
+
+    y_test = get_labels(test_loaders["imagenet"]).numpy().astype(np.float64)
+    info(f"Global held-out test set size: {len(y_test)}")
+
+    need_validation = "stacking" in modes
+    val_loaders_by_variant: dict[int, dict[str, DataLoader]] = {}
+    y_val_by_variant: dict[int, np.ndarray] = {}
+
+    if need_validation:
+        for var_idx in requested_variants:
+            val_loaders_by_variant[var_idx] = {}
+            for ds_key, ds_obj in datasets_by_key.items():
+                _, val_ds, _, _ = create_variant_split(
+                    ds_obj, global_test_indices[ds_key], var_idx
+                )
+                val_loaders_by_variant[var_idx][ds_key] = DataLoader(
+                    val_ds,
+                    batch_size=BATCH_SIZE,
+                    shuffle=False,
+                    num_workers=num_workers,
+                )
+            y_val_by_variant[var_idx] = (
+                get_labels(val_loaders_by_variant[var_idx]["imagenet"])
+                .numpy()
+                .astype(np.float64)
+            )
 
     # -------------------------------------------------------------------------
-    # EVALUATE PRUNED MODELS
+    # 1. EVALUATE BASELINE ARCHITECTURES & CACHE PREDICTIONS PER VARIANT
     # -------------------------------------------------------------------------
-    info("\n" + "-" * 60)
-    info("Evaluating PRUNED models...")
-    info("-" * 60)
+    baseline_models: dict[str, Any] = {}
+    test_preds_by_variant: dict[int, dict[str, np.ndarray]] = defaultdict(dict)
+    val_preds_by_variant: dict[int, dict[str, np.ndarray]] = defaultdict(dict)
 
-    pruned_results = {}
-    all_pruned_preds = []  # For ensemble
+    for model_name in ordered_models:
+        if model_name not in checkpoints_by_model:
+            continue
+        ds_key = _dataset_key_for_model(model_name)
+        test_loader = test_loaders[ds_key]
+        variant_records: list[dict[str, Any]] = []
+        model_test_vectors: list[np.ndarray] = []
 
-    for model_name, weight_files in pruned_weights_by_model.items():
-        config = MODEL_REGISTRY[model_name]
-
-        # Determine which test loader to use
-        if config["dataset"] is IMAGENET_DATASET:
-            test_loader = test_loaders["imagenet"]
-        else:
-            test_loader = test_loaders["densenet"]
-
-        variant_metrics = []
-
-        for weights_path in weight_files:
-            info(f"  Processing {weights_path.name}...")
-
-            # Load model
+        for var_idx, weights_path in checkpoints_by_model[model_name].items():
+            info(
+                f"  Evaluating {model_name} variant {var_idx} ({weights_path.name})..."
+            )
             model = load_model_with_weights(
-                model_name, weights_path, device, freeze_backbone=False
+                model_name, weights_path, device=device, freeze_backbone=False
             )
 
-            # Get predictions
-            preds = get_predictions(model, test_loader, device)
-            preds_np = preds.squeeze().cpu().numpy()
-            all_pruned_preds.append(preds.squeeze().cpu())
-
-            # Compute metrics
-            mse = float(np.mean((preds_np - y_true) ** 2))
-            rmse = float(np.sqrt(mse))
-            mae = float(np.mean(np.abs(preds_np - y_true)))
-            plcc, _ = pearsonr(preds_np, y_true)
-            srcc, _ = spearmanr(preds_np, y_true)
-            krcc, _ = kendalltau(preds_np, y_true)
-
-            variant_metrics.append(
-                {
-                    "weights_path": str(weights_path),
-                    "mse": mse,
-                    "rmse": rmse,
-                    "mae": mae,
-                    "plcc": float(plcc),
-                    "srcc": float(srcc),
-                    "krcc": float(krcc),
-                }
+            test_preds = (
+                get_predictions(model, test_loader, device=device)
+                .squeeze()
+                .cpu()
+                .numpy()
+                .astype(np.float64)
             )
+            test_preds_by_variant[var_idx][model_name] = test_preds
+            model_test_vectors.append(test_preds)
 
-            # Cleanup
+            if need_validation:
+                val_loader = val_loaders_by_variant[var_idx][ds_key]
+                val_preds = (
+                    get_predictions(model, val_loader, device=device)
+                    .squeeze()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float64)
+                )
+                val_preds_by_variant[var_idx][model_name] = val_preds
+
             del model
             clear_gpu_memory()
 
-        # Compute mean and std for this architecture
-        mses = [v["mse"] for v in variant_metrics]
-        rmses = [v["rmse"] for v in variant_metrics]
-        maes = [v["mae"] for v in variant_metrics]
-        plccs = [v["plcc"] for v in variant_metrics]
-        srccs = [v["srcc"] for v in variant_metrics]
-        krccs = [v["krcc"] for v in variant_metrics]
+            metrics = compute_regression_metrics(test_preds, y_test)
+            variant_records.append(
+                {
+                    "variant_idx": var_idx,
+                    "weights_path": str(weights_path),
+                    **metrics,
+                }
+            )
 
-        pruned_results[model_name] = {
-            "variants": variant_metrics,
-            "num_variants": len(variant_metrics),
-            "mean": {
-                "mse": float(np.mean(mses)),
-                "rmse": float(np.mean(rmses)),
-                "mae": float(np.mean(maes)),
-                "plcc": float(np.mean(plccs)),
-                "srcc": float(np.mean(srccs)),
-                "krcc": float(np.mean(krccs)),
-            },
-            "std": {
-                "mse": float(np.std(mses)),
-                "rmse": float(np.std(rmses)),
-                "mae": float(np.std(maes)),
-                "plcc": float(np.std(plccs)),
-                "srcc": float(np.std(srccs)),
-                "krcc": float(np.std(krccs)),
-            },
+        mean_metrics, std_metrics = _summarize_variant_metrics(variant_records)
+        pred_rel, comb_ceil = compute_prediction_reliability(model_test_vectors)
+
+        baseline_models[model_name] = {
+            "variants": variant_records,
+            "num_variants": len(variant_records),
+            "mean": mean_metrics,
+            "std": std_metrics,
+            "prediction_reliability": pred_rel,
+            "combined_correlation_ceiling": comb_ceil,
         }
 
-    pruned_ensemble_results = {}
-    stacking_ensemble_results = None
-    stacking_cv_ensemble_results = None
+    # -------------------------------------------------------------------------
+    # 2. CONSTRUCT & EVALUATE 10 VARIANT-ALIGNED ENSEMBLES
+    # -------------------------------------------------------------------------
+    DIRS["weights"].mkdir(parents=True, exist_ok=True)
+    DIRS["results"].mkdir(parents=True, exist_ok=True)
 
-    def _fit_linear_meta_and_predict(
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        X_eval: torch.Tensor,
-        train_steps: int = 500,
-        lr: float = 1e-2,
-        save_model_path: str = None,
-    ) -> np.ndarray:
-        meta_device = torch.device(
-            device if (device == "cpu" or torch.cuda.is_available()) else "cpu"
+    bagging_variants: list[dict[str, Any]] = []
+    bagging_test_vectors: list[np.ndarray] = []
+
+    stacking_variants: list[dict[str, Any]] = []
+    stacking_test_vectors: list[np.ndarray] = []
+    stacking_coeff_records: list[dict[str, Any]] = []
+
+    available_variants = sorted(test_preds_by_variant.keys())
+
+    for var_idx in available_variants:
+        active_models = [
+            m for m in ordered_models if m in test_preds_by_variant[var_idx]
+        ]
+        if not active_models:
+            continue
+
+        x_test_k = np.column_stack(
+            [test_preds_by_variant[var_idx][m] for m in active_models]
         )
-        model = StackingMetaLearner(num_base_models=X_train.shape[1]).to(meta_device)
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-        X_train_d = X_train.to(meta_device)
-        y_train_d = y_train.to(meta_device).unsqueeze(1)
-        X_eval_d = X_eval.to(meta_device)
-
-        model.train()
-        for _ in range(train_steps):
-            optimizer.zero_grad()
-            preds = model(X_train_d)
-            loss = criterion(preds, y_train_d)
-            loss.backward()
-            optimizer.step()
-
-        # optionally save the trained meta-learner weights
-        if save_model_path is not None:
-            try:
-                torch.save(model.state_dict(), save_model_path)
-                info(f"✓ Saved stacking meta-learner weights to {save_model_path}")
-            except Exception as e:
-                warn(f"Could not save stacking meta-learner weights: {e}")
-
-        model.eval()
-        with torch.no_grad():
-            y_pred = model(X_eval_d).squeeze(1).cpu().numpy()
-        return y_pred
-
-    if "bagging" in ensemble_mode:
-        # Bagging: average predictions
-        info("\n" + "-" * 60)
-        info("Computing PRUNED ENSEMBLE predictions (bagging)...")
-        info("-" * 60)
-        y_pred = torch.mean(torch.stack(all_pruned_preds), dim=0).numpy()
-        info(f"Averaged predictions from {len(all_pruned_preds)} pruned model variants")
-
-        # Compute pruned ensemble metrics
-        ens_mse = float(np.mean((y_pred - y_true) ** 2))
-        ens_rmse = float(np.sqrt(ens_mse))
-        ens_mae = float(np.mean(np.abs(y_pred - y_true)))
-        ens_plcc, ens_plcc_p = pearsonr(y_pred, y_true)
-        ens_srcc, ens_srcc_p = spearmanr(y_pred, y_true)
-        ens_krcc, ens_krcc_p = kendalltau(y_pred, y_true)
-
-        pruned_ensemble_results = {
-            "mse": ens_mse,
-            "rmse": ens_rmse,
-            "mae": ens_mae,
-            "plcc": float(ens_plcc),
-            "srcc": float(ens_srcc),
-            "krcc": float(ens_krcc),
-            "plcc_p_value": float(ens_plcc_p),
-            "srcc_p_value": float(ens_srcc_p),
-            "krcc_p_value": float(ens_krcc_p),
-            "num_models": len(all_pruned_preds),
-            "test_size": len(y_true),
-        }
-
-    if "stacking" in ensemble_mode:
-        # Stacking: use predictions of pruned models as features for meta-model
-        info("\n" + "-" * 60)
-        info("Computing PRUNED ENSEMBLE predictions (stacking)...")
-        info("-" * 60)
-        # Prepare stacking features: shape (n_samples, n_models)
-        X_stack = torch.stack(all_pruned_preds, dim=1).float()
-        if X_stack.ndim == 3:
-            X_stack = torch.squeeze(X_stack, dim=-1)
-
-        # Split in half: first half for meta-learner training, second half for final test
-        n_samples = X_stack.shape[0]
-        split_idx = n_samples // 2
-        if split_idx == 0 or split_idx == n_samples:
-            stacking_ensemble_results = {
-                "error": f"Not enough samples ({n_samples}) to create a 50/50 split for stacking"
-            }
-        else:
-            rng = np.random.default_rng(SEED)
-            perm = rng.permutation(n_samples)
-
-            meta_train_idx = perm[:split_idx]
-            meta_test_idx = perm[split_idx:]
-
-            train_idx_t = torch.from_numpy(meta_train_idx).long()
-            test_idx_t = torch.from_numpy(meta_test_idx).long()
-
-            X_meta_train = X_stack[train_idx_t]
-            X_meta_test = X_stack[test_idx_t]
-
-            y_meta_train = torch.from_numpy(y_true[meta_train_idx]).float()
-            y_meta_test = y_true[meta_test_idx]
-
-            # path for saving meta-learner weights (stacking)
-            stacking_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
-            y_pred_stack = _fit_linear_meta_and_predict(
-                X_meta_train,
-                y_meta_train,
-                X_meta_test,
-                save_model_path=str(stacking_weights_path),
-            )
-
-            ens_mse = float(np.mean((y_pred_stack - y_meta_test) ** 2))
-            ens_rmse = float(np.sqrt(ens_mse))
-            ens_mae = float(np.mean(np.abs(y_pred_stack - y_meta_test)))
-            ens_plcc, ens_plcc_p = pearsonr(y_pred_stack, y_meta_test)
-            ens_srcc, ens_srcc_p = spearmanr(y_pred_stack, y_meta_test)
-            ens_krcc, ens_krcc_p = kendalltau(y_pred_stack, y_meta_test)
-
-            stacking_ensemble_results = {
-                "mse": ens_mse,
-                "rmse": ens_rmse,
-                "mae": ens_mae,
-                "plcc": float(ens_plcc),
-                "srcc": float(ens_srcc),
-                "krcc": float(ens_krcc),
-                "plcc_p_value": float(ens_plcc_p),
-                "srcc_p_value": float(ens_srcc_p),
-                "krcc_p_value": float(ens_krcc_p),
-                "num_models": X_stack.shape[1],
-                "meta_train_size": len(meta_train_idx),
-                "meta_test_size": len(meta_test_idx),
-                "test_size": len(meta_test_idx),
-                "split_seed": int(SEED),
-                "meta_learner": "StackingMetaLearner (Linear)",
-            }
-
-    if "stacking_cv" in ensemble_mode:
-        # Stacking CV: OOF predictions from k-fold CV on available evaluation set
-        info("\n" + "-" * 60)
-        info("Computing PRUNED ENSEMBLE predictions (stacking_cv)...")
-        info("-" * 60)
-
-        X_stack = torch.stack(all_pruned_preds, dim=1).float()
-        if X_stack.ndim == 3:
-            X_stack = torch.squeeze(X_stack, dim=-1)
-
-        n_samples = X_stack.shape[0]
-        n_folds = max(2, min(int(stacking_cv_folds), n_samples))
-        n_repeats = max(1, int(stacking_cv_repeats))
-
-        if n_samples < 2:
-            stacking_cv_ensemble_results = {
-                "error": f"Not enough samples ({n_samples}) for stacking_cv"
-            }
-        else:
-            y_pred_sum = np.zeros(n_samples, dtype=np.float64)
-            y_pred_count = np.zeros(n_samples, dtype=np.int32)
-
-            for rep in range(n_repeats):
-                rng = np.random.default_rng(SEED + rep)
-                perm = rng.permutation(n_samples)
-                folds = np.array_split(perm, n_folds)
-
-                for fold_idx in range(n_folds):
-                    eval_idx = folds[fold_idx]
-                    train_idx = np.concatenate(
-                        [folds[i] for i in range(n_folds) if i != fold_idx]
-                    )
-
-                    if len(train_idx) == 0 or len(eval_idx) == 0:
-                        continue
-
-                    train_idx_t = torch.from_numpy(train_idx).long()
-                    eval_idx_t = torch.from_numpy(eval_idx).long()
-
-                    X_train = X_stack[train_idx_t]
-                    y_train = torch.from_numpy(y_true[train_idx]).float()
-                    X_eval = X_stack[eval_idx_t]
-
-                    # save each fold's meta-learner for inspection
-                    fold_weights_dir = DIRS["weights"] / "stacking_cv_models"
-                    fold_weights_dir.mkdir(parents=True, exist_ok=True)
-                    fold_path = fold_weights_dir / f"meta_rep{rep}_fold{fold_idx}.pth"
-                    y_fold_pred = _fit_linear_meta_and_predict(
-                        X_train,
-                        y_train,
-                        X_eval,
-                        save_model_path=str(fold_path),
-                    )
-                    y_pred_sum[eval_idx] += y_fold_pred
-                    y_pred_count[eval_idx] += 1
-
-            valid_mask = y_pred_count > 0
-            if not np.all(valid_mask):
-                stacking_cv_ensemble_results = {
-                    "error": "Some samples received no OOF prediction in stacking_cv"
+        if "bagging" in modes:
+            y_pred_bag = np.mean(x_test_k, axis=1)
+            bagging_test_vectors.append(y_pred_bag)
+            bag_metrics = compute_regression_metrics(y_pred_bag, y_test)
+            bagging_variants.append(
+                {
+                    "variant_idx": var_idx,
+                    "num_models": len(active_models),
+                    "models": active_models,
+                    **bag_metrics,
                 }
-            else:
-                y_pred_cv = y_pred_sum / y_pred_count
+            )
 
-                ens_mse = float(np.mean((y_pred_cv - y_true) ** 2))
-                ens_rmse = float(np.sqrt(ens_mse))
-                ens_mae = float(np.mean(np.abs(y_pred_cv - y_true)))
-                ens_plcc, ens_plcc_p = pearsonr(y_pred_cv, y_true)
-                ens_srcc, ens_srcc_p = spearmanr(y_pred_cv, y_true)
-                ens_krcc, ens_krcc_p = kendalltau(y_pred_cv, y_true)
+        if "stacking" in modes:
+            x_val_k = np.column_stack(
+                [val_preds_by_variant[var_idx][m] for m in active_models]
+            )
+            y_val_k = y_val_by_variant[var_idx]
 
-                stacking_cv_ensemble_results = {
-                    "mse": ens_mse,
-                    "rmse": ens_rmse,
-                    "mae": ens_mae,
-                    "plcc": float(ens_plcc),
-                    "srcc": float(ens_srcc),
-                    "krcc": float(ens_krcc),
-                    "plcc_p_value": float(ens_plcc_p),
-                    "srcc_p_value": float(ens_srcc_p),
-                    "krcc_p_value": float(ens_krcc_p),
-                    "num_models": X_stack.shape[1],
-                    "test_size": len(y_true),
-                    "cv_folds": n_folds,
-                    "cv_repeats": n_repeats,
-                    "split_seed": int(SEED),
-                    "meta_learner": "StackingMetaLearner (Linear, OOF CV)",
-                    "protocol_note": "Exploratory: CV uses the same available evaluation set for meta-training and OOF evaluation",
+            meta_model, weights_vec, intercept_val, val_mse, val_r2 = (
+                fit_ridge_stacking_meta(x_val_k, y_val_k, alpha=ridge_alpha)
+            )
+
+            meta_path = DIRS["weights"] / f"stacking_exp3_variant{var_idx}_meta.pth"
+            torch.save(meta_model.state_dict(), meta_path)
+
+            y_pred_stack = x_test_k @ weights_vec + intercept_val
+            stacking_test_vectors.append(y_pred_stack)
+            stack_metrics = compute_regression_metrics(y_pred_stack, y_test)
+
+            weights_list = [float(w) for w in weights_vec]
+            weights_by_model = {
+                m_name: float(w)
+                for m_name, w in zip(active_models, weights_vec, strict=True)
+            }
+
+            stacking_variants.append(
+                {
+                    "variant_idx": var_idx,
+                    "num_models": len(active_models),
+                    "models": active_models,
+                    "weights": weights_list,
+                    "weights_by_model": weights_by_model,
+                    "intercept": float(intercept_val),
+                    "val_mse": float(val_mse),
+                    "val_r2": float(val_r2),
+                    **stack_metrics,
                 }
+            )
 
-    # -------------------------------------------------------------------------
-    # LOAD PRUNING RESULTS FOR CHANNEL REDUCTION STATS
-    # -------------------------------------------------------------------------
-    # -------------------------------------------------------------------------
-    # DYNAMICALLY COMPUTE CHANNEL REDUCTION STATS FROM WEIGHTS
-    # -------------------------------------------------------------------------
-    info("\n" + "-" * 60)
-    info("Computing channel reduction stats directly from weights...")
-    info("-" * 60)
+            stacking_coeff_records.append(
+                {
+                    "variant_idx": var_idx,
+                    "models": active_models,
+                    "weights": weights_list,
+                    "weights_by_model": weights_by_model,
+                    "intercept": float(intercept_val),
+                    "val_mse": float(val_mse),
+                    "val_r2": float(val_r2),
+                    "meta_weights_path": str(meta_path),
+                }
+            )
 
-    pruning_stats = {}
-
-    def get_active_channels(state_dict, target_layer_name):
-        """Helper to count how many output channels are non-zero (active)."""
-        for key, tensor in state_dict.items():
-            if target_layer_name in key and key.endswith(".weight"):
-                out_channels = tensor.shape[0]
-                channel_norms = tensor.view(out_channels, -1).abs().sum(dim=1)
-                active_channels = (channel_norms > 1e-6).sum().item()
-                return out_channels, active_channels
-        return None, None
-
-    # Iterate through models that have both baseline and pruned weights
-    for model_name in set(baseline_weights_by_model.keys()).intersection(
-        pruned_weights_by_model.keys()
-    ):
-        config = MODEL_REGISTRY[model_name]
-        target_layer = config["target_layer"]
-
-        reduction_percentages = []
-        num_removed_list = []
-
-        # Create dictionaries mapping variant_idx to file path for easy matching
-        base_files = {
-            re.search(r"variant(\d+)", p.name).group(1): p
-            for p in baseline_weights_by_model[model_name]
-        }
-        pruned_files = {
-            re.search(r"variant(\d+)", p.name).group(1): p
-            for p in pruned_weights_by_model[model_name]
+    bagging_result: dict[str, Any] = {}
+    if bagging_variants:
+        bag_mean, bag_std = _summarize_variant_metrics(bagging_variants)
+        bag_rel, bag_ceil = compute_prediction_reliability(bagging_test_vectors)
+        bagging_result = {
+            "variants": bagging_variants,
+            "num_variants": len(bagging_variants),
+            "mean": bag_mean,
+            "std": bag_std,
+            "prediction_reliability": bag_rel,
+            "combined_correlation_ceiling": bag_ceil,
+            **bag_mean,
         }
 
-        # Find variants that exist in both
-        common_variants = set(base_files.keys()).intersection(pruned_files.keys())
+    stacking_result: dict[str, Any] = {}
+    if stacking_variants:
+        stack_mean, stack_std = _summarize_variant_metrics(stacking_variants)
+        stack_rel, stack_ceil = compute_prediction_reliability(stacking_test_vectors)
+        stacking_result = {
+            "variants": stacking_variants,
+            "num_variants": len(stacking_variants),
+            "mean": stack_mean,
+            "std": stack_std,
+            "prediction_reliability": stack_rel,
+            "combined_correlation_ceiling": stack_ceil,
+            **stack_mean,
+        }
 
-        for var_idx in common_variants:
-            base_sd = torch.load(
-                base_files[var_idx], map_location="cpu", weights_only=True
-            )
-            pruned_sd = torch.load(
-                pruned_files[var_idx], map_location="cpu", weights_only=True
-            )
+        # Export stacking_coefficients.json
+        mean_weights_by_model: dict[str, float] = {}
+        std_weights_by_model: dict[str, float] = {}
+        for m_name in ordered_models:
+            m_vals = [
+                rec["weights_by_model"][m_name]
+                for rec in stacking_coeff_records
+                if m_name in rec["weights_by_model"]
+            ]
+            if m_vals:
+                mean_weights_by_model[m_name] = float(np.mean(m_vals))
+                std_weights_by_model[m_name] = float(np.std(m_vals))
 
-            _, base_active = get_active_channels(base_sd, target_layer)
-            _, pruned_active = get_active_channels(pruned_sd, target_layer)
+        intercepts = [rec["intercept"] for rec in stacking_coeff_records]
+        coeff_summary = {
+            "ridge_alpha": float(ridge_alpha),
+            "model_order": ordered_models,
+            "variants": stacking_coeff_records,
+            "mean_weights": mean_weights_by_model,
+            "std_weights": std_weights_by_model,
+            "mean_intercept": float(np.mean(intercepts)) if intercepts else 0.0,
+            "std_intercept": float(np.std(intercepts)) if intercepts else 0.0,
+        }
+        coeff_path = DIRS["weights"] / "stacking_coefficients.json"
+        with open(coeff_path, "w") as f:
+            json.dump(coeff_summary, f, indent=2, cls=NpEncoder)
+        info(f"Saved stacking coefficients to: {coeff_path}")
 
-            if base_active is not None and pruned_active is not None:
-                removed = base_active - pruned_active
-                reduction_pct = (
-                    (removed / base_active) * 100.0 if base_active > 0 else 0.0
-                )
-
-                num_removed_list.append(removed)
-                reduction_percentages.append(reduction_pct)
-
-        # Calculate and store the averages for this architecture
-        if reduction_percentages:
-            pruning_stats[model_name] = {
-                "reduction_percentage_mean": float(np.mean(reduction_percentages)),
-                "reduction_percentage_std": float(np.std(reduction_percentages)),
-                "num_channels_removed_mean": float(np.mean(num_removed_list)),
-                "num_channels_removed_std": float(np.std(num_removed_list)),
-                "num_variants": len(reduction_percentages),
+    comparison_summary: dict[str, Any] = {
+        "bagging": (
+            {
+                "mean": bagging_result["mean"],
+                "std": bagging_result["std"],
+                "num_variants": bagging_result["num_variants"],
+                "prediction_reliability": bagging_result["prediction_reliability"],
+                "combined_correlation_ceiling": bagging_result[
+                    "combined_correlation_ceiling"
+                ],
             }
-            info(
-                f"  {model_name}: Computed reduction for {len(reduction_percentages)} variants ({np.mean(reduction_percentages):.1f}% mean)"
-            )
-
-    # -------------------------------------------------------------------------
-    # BUILD COMPARISON SUMMARY
-    # -------------------------------------------------------------------------
-    comparison_summary = {
-        "baseline_architectures": {},
-        "pruned_architectures": {},
-        "baseline_ensemble": baseline_ensemble_results,
-        "pruned_ensemble_bagging": pruned_ensemble_results,
-        "pruned_ensemble_stacking": stacking_ensemble_results,
-        "pruned_ensemble_stacking_cv": stacking_cv_ensemble_results,
-        "channel_reduction": pruning_stats,
-    }
-
-    # Add per-architecture comparison
-    all_models = set(baseline_results.keys()) | set(pruned_results.keys())
-    for model_name in sorted(all_models):
-        if model_name in baseline_results:
-            comparison_summary["baseline_architectures"][model_name] = {
-                "mean": baseline_results[model_name]["mean"],
-                "std": baseline_results[model_name]["std"],
-                "num_variants": baseline_results[model_name]["num_variants"],
+            if bagging_result
+            else None
+        ),
+        "stacking": (
+            {
+                "mean": stacking_result["mean"],
+                "std": stacking_result["std"],
+                "num_variants": stacking_result["num_variants"],
+                "prediction_reliability": stacking_result["prediction_reliability"],
+                "combined_correlation_ceiling": stacking_result[
+                    "combined_correlation_ceiling"
+                ],
             }
-        if model_name in pruned_results:
-            pruned_arch_data = {
-                "mean": pruned_results[model_name]["mean"],
-                "std": pruned_results[model_name]["std"],
-                "num_variants": pruned_results[model_name]["num_variants"],
+            if stacking_result
+            else None
+        ),
+        "baseline_architectures": {
+            m_name: {
+                "mean": m_data["mean"],
+                "std": m_data["std"],
+                "num_variants": m_data["num_variants"],
+                "prediction_reliability": m_data["prediction_reliability"],
+                "combined_correlation_ceiling": m_data["combined_correlation_ceiling"],
             }
-            # Add channel reduction stats if available
-            if model_name in pruning_stats:
-                pruned_arch_data["channel_reduction"] = pruning_stats[model_name]
-            comparison_summary["pruned_architectures"][model_name] = pruned_arch_data
-
-    # Compute overall averages across all architectures
-    all_baseline_mses = []
-    all_baseline_plccs = []
-    all_pruned_mses = []
-    all_pruned_plccs = []
-
-    for model_name, data in baseline_results.items():
-        for v in data["variants"]:
-            all_baseline_mses.append(v["mse"])
-            all_baseline_plccs.append(v["plcc"])
-
-    for model_name, data in pruned_results.items():
-        for v in data["variants"]:
-            all_pruned_mses.append(v["mse"])
-            all_pruned_plccs.append(v["plcc"])
-
-    comparison_summary["overall_summary"] = {
-        "baseline_all_variants": {
-            "mse_mean": (
-                float(np.mean(all_baseline_mses)) if all_baseline_mses else None
-            ),
-            "mse_std": float(np.std(all_baseline_mses)) if all_baseline_mses else None,
-            "plcc_mean": (
-                float(np.mean(all_baseline_plccs)) if all_baseline_plccs else None
-            ),
-            "plcc_std": (
-                float(np.std(all_baseline_plccs)) if all_baseline_plccs else None
-            ),
-            "num_variants": len(all_baseline_mses),
-        },
-        "pruned_all_variants": {
-            "mse_mean": float(np.mean(all_pruned_mses)) if all_pruned_mses else None,
-            "mse_std": float(np.std(all_pruned_mses)) if all_pruned_mses else None,
-            "plcc_mean": float(np.mean(all_pruned_plccs)) if all_pruned_plccs else None,
-            "plcc_std": float(np.std(all_pruned_plccs)) if all_pruned_plccs else None,
-            "num_variants": len(all_pruned_mses),
-        },
-        "baseline_ensemble": {
-            "mse": (
-                baseline_ensemble_results.get("mse")
-                if baseline_ensemble_results
-                else None
-            ),
-            "plcc": (
-                baseline_ensemble_results.get("plcc")
-                if baseline_ensemble_results
-                else None
-            ),
-        },
-        "pruned_ensemble_bagging": {
-            "mse": (
-                pruned_ensemble_results.get("mse") if pruned_ensemble_results else None
-            ),
-            "plcc": (
-                pruned_ensemble_results.get("plcc") if pruned_ensemble_results else None
-            ),
-        },
-        "pruned_ensemble_stacking": {
-            "mse": (
-                stacking_ensemble_results.get("mse")
-                if stacking_ensemble_results and "mse" in stacking_ensemble_results
-                else None
-            ),
-            "plcc": (
-                stacking_ensemble_results.get("plcc")
-                if stacking_ensemble_results and "plcc" in stacking_ensemble_results
-                else None
-            ),
-        },
-        "pruned_ensemble_stacking_cv": {
-            "mse": (
-                stacking_cv_ensemble_results.get("mse")
-                if stacking_cv_ensemble_results
-                and "mse" in stacking_cv_ensemble_results
-                else None
-            ),
-            "plcc": (
-                stacking_cv_ensemble_results.get("plcc")
-                if stacking_cv_ensemble_results
-                and "plcc" in stacking_cv_ensemble_results
-                else None
-            ),
+            for m_name, m_data in baseline_models.items()
         },
     }
 
-    # -------------------------------------------------------------------------
-    # PRINT RESULTS
-    # -------------------------------------------------------------------------
-    info("\n" + "=" * 80)
-    info("COMPARISON RESULTS (on unseen test set)")
-    info("=" * 80)
-
-    info("\n--- BASELINE (Unpruned) Architectures ---")
-    for model_name in sorted(baseline_results.keys()):
-        data = baseline_results[model_name]
-        info(f"  {model_name}:")
-        info(f"    MSE:  {data['mean']['mse']:.4f} ± {data['std']['mse']:.4f}")
-        info(f"    RMSE: {data['mean']['rmse']:.4f} ± {data['std']['rmse']:.4f}")
-        info(f"    PLCC: {data['mean']['plcc']:.4f} ± {data['std']['plcc']:.4f}")
-        info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
-
-    info("\n--- PRUNED Architectures ---")
-    for model_name in sorted(pruned_results.keys()):
-        data = pruned_results[model_name]
-        info(f"  {model_name}:")
-        info(f"    MSE:  {data['mean']['mse']:.4f} ± {data['std']['mse']:.4f}")
-        info(f"    RMSE: {data['mean']['rmse']:.4f} ± {data['std']['rmse']:.4f}")
-        info(f"    PLCC: {data['mean']['plcc']:.4f} ± {data['std']['plcc']:.4f}")
-        info(f"    SRCC: {data['mean']['srcc']:.4f} ± {data['std']['srcc']:.4f}")
-        # Print channel reduction stats if available
-        if model_name in pruning_stats:
-            ps = pruning_stats[model_name]
-            info(
-                f"    Channel Reduction: {ps['reduction_percentage_mean']:.1f}% ± {ps['reduction_percentage_std']:.1f}%"
-            )
-            if ps["num_channels_removed_mean"] is not None:
-                info(
-                    f"    Channels Removed: {ps['num_channels_removed_mean']:.1f} ± {ps['num_channels_removed_std']:.1f}"
-                )
-
-    info("\n--- ENSEMBLE ---")
-    if baseline_ensemble_results:
-        info("  BASELINE ENSEMBLE (unpruned models):")
-        info(f"    MSE:  {baseline_ensemble_results['mse']:.4f}")
-        info(f"    RMSE: {baseline_ensemble_results['rmse']:.4f}")
-        info(f"    MAE:  {baseline_ensemble_results['mae']:.4f}")
-        info(
-            f"    PLCC: {baseline_ensemble_results['plcc']:.4f} (p={baseline_ensemble_results['plcc_p_value']:.2e})"
-        )
-        info(
-            f"    SRCC: {baseline_ensemble_results['srcc']:.4f} (p={baseline_ensemble_results['srcc_p_value']:.2e})"
-        )
-        info(
-            f"    KRCC: {baseline_ensemble_results['krcc']:.4f} (p={baseline_ensemble_results['krcc_p_value']:.2e})"
-        )
-        info(f"    Num models: {baseline_ensemble_results['num_models']}")
-
-    if pruned_ensemble_results:
-        info("  PRUNED ENSEMBLE (bagging, greedy pruned models):")
-        info(f"    MSE:  {pruned_ensemble_results['mse']:.4f}")
-        info(f"    RMSE: {pruned_ensemble_results['rmse']:.4f}")
-        info(f"    MAE:  {pruned_ensemble_results['mae']:.4f}")
-        info(
-            f"    PLCC: {pruned_ensemble_results['plcc']:.4f} (p={pruned_ensemble_results['plcc_p_value']:.2e})"
-        )
-        info(
-            f"    SRCC: {pruned_ensemble_results['srcc']:.4f} (p={pruned_ensemble_results['srcc_p_value']:.2e})"
-        )
-        info(
-            f"    KRCC: {pruned_ensemble_results['krcc']:.4f} (p={pruned_ensemble_results['krcc_p_value']:.2e})"
-        )
-        info(f"    Num models: {pruned_ensemble_results['num_models']}")
-
-    if stacking_ensemble_results:
-        info("  PRUNED ENSEMBLE (stacking):")
-        if "error" in stacking_ensemble_results:
-            info(f"    Error: {stacking_ensemble_results['error']}")
-        else:
-            info(f"    MSE:  {stacking_ensemble_results['mse']:.4f}")
-            info(f"    RMSE: {stacking_ensemble_results['rmse']:.4f}")
-            info(f"    MAE:  {stacking_ensemble_results['mae']:.4f}")
-            info(
-                f"    PLCC: {stacking_ensemble_results['plcc']:.4f} (p={stacking_ensemble_results['plcc_p_value']:.2e})"
-            )
-            info(
-                f"    SRCC: {stacking_ensemble_results['srcc']:.4f} (p={stacking_ensemble_results['srcc_p_value']:.2e})"
-            )
-            info(
-                f"    KRCC: {stacking_ensemble_results['krcc']:.4f} (p={stacking_ensemble_results['krcc_p_value']:.2e})"
-            )
-            info(f"    Num models: {stacking_ensemble_results['num_models']}")
-
-    if stacking_cv_ensemble_results:
-        info("  PRUNED ENSEMBLE (stacking_cv, OOF):")
-        if "error" in stacking_cv_ensemble_results:
-            info(f"    Error: {stacking_cv_ensemble_results['error']}")
-        else:
-            info(f"    MSE:  {stacking_cv_ensemble_results['mse']:.4f}")
-            info(f"    RMSE: {stacking_cv_ensemble_results['rmse']:.4f}")
-            info(f"    MAE:  {stacking_cv_ensemble_results['mae']:.4f}")
-            info(
-                f"    PLCC: {stacking_cv_ensemble_results['plcc']:.4f} (p={stacking_cv_ensemble_results['plcc_p_value']:.2e})"
-            )
-            info(
-                f"    SRCC: {stacking_cv_ensemble_results['srcc']:.4f} (p={stacking_cv_ensemble_results['srcc_p_value']:.2e})"
-            )
-            info(
-                f"    KRCC: {stacking_cv_ensemble_results['krcc']:.4f} (p={stacking_cv_ensemble_results['krcc_p_value']:.2e})"
-            )
-            info(f"    Num models: {stacking_cv_ensemble_results['num_models']}")
-            info(
-                f"    CV: {stacking_cv_ensemble_results['cv_folds']}-fold x {stacking_cv_ensemble_results['cv_repeats']} repeats"
-            )
-
-    info("\n--- OVERALL SUMMARY ---")
-    if all_baseline_mses:
-        info(
-            f"  Baseline (all variants):  MSE = {np.mean(all_baseline_mses):.4f} ± {np.std(all_baseline_mses):.4f}"
-        )
-    if all_pruned_mses:
-        info(
-            f"  Pruned (all variants):    MSE = {np.mean(all_pruned_mses):.4f} ± {np.std(all_pruned_mses):.4f}"
-        )
-    if baseline_ensemble_results:
-        info(
-            f"  Baseline Ensemble:        MSE = {baseline_ensemble_results['mse']:.4f}"
-        )
-    if pruned_ensemble_results:
-        info(
-            f"  Pruned Ensemble (bagging):          MSE = {pruned_ensemble_results['mse']:.4f}"
-        )
-    if stacking_ensemble_results and "mse" in stacking_ensemble_results:
-        info(
-            f"  Pruned Ensemble (stacking):         MSE = {stacking_ensemble_results['mse']:.4f}"
-        )
-    if stacking_cv_ensemble_results and "mse" in stacking_cv_ensemble_results:
-        info(
-            f"  Pruned Ensemble (stacking_cv):      MSE = {stacking_cv_ensemble_results['mse']:.4f}"
-        )
-
-    if all_baseline_mses and all_pruned_mses:
-        baseline_avg = np.mean(all_baseline_mses)
-        pruned_avg = np.mean(all_pruned_mses)
-        info(f"\n  Improvement (baseline -> pruned): {baseline_avg - pruned_avg:.4f}")
-        if baseline_ensemble_results:
-            info(
-                f"  Improvement (baseline -> baseline ensemble): {baseline_avg - baseline_ensemble_results['mse']:.4f}"
-            )
-        if pruned_ensemble_results:
-            info(
-                f"  Improvement (baseline -> pruned ensemble, bagging): {baseline_avg - pruned_ensemble_results['mse']:.4f}"
-            )
-        if stacking_ensemble_results and "mse" in stacking_ensemble_results:
-            info(
-                f"  Improvement (baseline -> pruned ensemble, stacking): {baseline_avg - stacking_ensemble_results['mse']:.4f}"
-            )
-        if stacking_cv_ensemble_results and "mse" in stacking_cv_ensemble_results:
-            info(
-                f"  Improvement (baseline -> pruned ensemble, stacking_cv): {baseline_avg - stacking_cv_ensemble_results['mse']:.4f}"
-            )
-        if pruned_ensemble_results:
-            info(
-                f"  Improvement (pruned -> pruned ensemble, bagging): {pruned_avg - pruned_ensemble_results['mse']:.4f}"
-            )
-        if (
-            stacking_ensemble_results
-            and "mse" in stacking_ensemble_results
-            and pruned_ensemble_results
-        ):
-            info(
-                f"  Improvement (pruned -> pruned ensemble, stacking): {pruned_avg - stacking_ensemble_results['mse']:.4f}"
-            )
-        if stacking_cv_ensemble_results and "mse" in stacking_cv_ensemble_results:
-            info(
-                f"  Improvement (pruned -> pruned ensemble, stacking_cv): {pruned_avg - stacking_cv_ensemble_results['mse']:.4f}"
-            )
-        if baseline_ensemble_results and pruned_ensemble_results:
-            info(
-                f"  Improvement (baseline ensemble -> pruned ensemble, bagging): {baseline_ensemble_results['mse'] - pruned_ensemble_results['mse']:.4f}"
-            )
-        if (
-            baseline_ensemble_results
-            and stacking_ensemble_results
-            and "mse" in stacking_ensemble_results
-        ):
-            info(
-                f"  Improvement (baseline ensemble -> pruned ensemble, stacking): {baseline_ensemble_results['mse'] - stacking_ensemble_results['mse']:.4f}"
-            )
-        if (
-            baseline_ensemble_results
-            and stacking_cv_ensemble_results
-            and "mse" in stacking_cv_ensemble_results
-        ):
-            info(
-                f"  Improvement (baseline ensemble -> pruned ensemble, stacking_cv): {baseline_ensemble_results['mse'] - stacking_cv_ensemble_results['mse']:.4f}"
-            )
-
-    # -------------------------------------------------------------------------
-    # SAVE RESULTS
-    # -------------------------------------------------------------------------
-    full_results = {
-        "baseline_ensemble": baseline_ensemble_results,
-        "pruned_ensemble_bagging": (
-            pruned_ensemble_results if pruned_ensemble_results else None
-        ),
-        "pruned_ensemble_stacking": (
-            stacking_ensemble_results if stacking_ensemble_results else None
-        ),
-        "pruned_ensemble_stacking_cv": (
-            stacking_cv_ensemble_results if stacking_cv_ensemble_results else None
-        ),
-        "baseline_models": baseline_results,
-        "pruned_models": pruned_results,
+    full_results: dict[str, Any] = {
+        "bagging": bagging_result if bagging_result else None,
+        "stacking": stacking_result if stacking_result else None,
+        "baseline_models": baseline_models,
         "comparison_summary": comparison_summary,
+        # Backward-compatible aliases
+        "pruned_ensemble_bagging": bagging_result if bagging_result else None,
+        "pruned_ensemble_stacking": stacking_result if stacking_result else None,
     }
 
     results_path = DIRS["results"] / "experiment_3c_ensemble_results.json"
-    DIRS["results"].mkdir(parents=True, exist_ok=True)
     with open(results_path, "w") as f:
         json.dump(full_results, f, indent=2, cls=NpEncoder)
-    info(f"\n✓ Results saved to: {results_path}")
+    info(f"Saved ensemble evaluation results to: {results_path}")
 
-    # Save a dedicated comparison file
     comparison_path = DIRS["results"] / "experiment_3c_comparison.json"
     with open(comparison_path, "w") as f:
         json.dump(comparison_summary, f, indent=2, cls=NpEncoder)
-    info(f"✓ Comparison summary saved to: {comparison_path}")
-
-    # Single json with full results
+    info(f"Saved ensemble comparison summary to: {comparison_path}")
 
     info("=" * 80)
     info("EXPERIMENT 3C: EVALUATION COMPLETE")
@@ -1745,482 +1468,705 @@ def experiment_3c_evaluate_ensemble(
     return full_results
 
 
+# ============================================================================
+# 7. EXPERIMENT 3D: ENSEMBLE MPM HEATMAPS, PROTOTYPES & CONSISTENCY
+# ============================================================================
+
+
+def _load_stacking_weights_for_variant(
+    variant_idx: int,
+    ordered_models: Sequence[str],
+) -> np.ndarray | None:
+    """Load the fitted StackingMetaLearner weight vector for ``variant_idx``."""
+    num_models = len(ordered_models)
+    meta_path = DIRS["weights"] / f"stacking_exp3_variant{variant_idx}_meta.pth"
+    if meta_path.exists():
+        state_dict = torch.load(meta_path, map_location="cpu", weights_only=True)
+        weight_tensor = state_dict.get("fc.weight")
+        if weight_tensor is not None and weight_tensor.numel() == num_models:
+            return weight_tensor.detach().cpu().numpy().astype(np.float64).ravel()
+
+    coeff_path = DIRS["weights"] / "stacking_coefficients.json"
+    if coeff_path.exists():
+        try:
+            with open(coeff_path) as f:
+                coeff_data = json.load(f)
+            for entry in coeff_data.get("variants", []):
+                if int(entry.get("variant_idx", -1)) == variant_idx:
+                    by_model = entry.get("weights_by_model", {})
+                    if all(m in by_model for m in ordered_models):
+                        return np.array(
+                            [float(by_model[m]) for m in ordered_models],
+                            dtype=np.float64,
+                        )
+                    weights = entry.get("weights", [])
+                    if len(weights) == num_models:
+                        return np.asarray(weights, dtype=np.float64)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            warn(f"Could not read stacking_coefficients.json: {exc}")
+
+    legacy_path = DIRS["weights"] / "stacking_meta_weights.pth"
+    if legacy_path.exists():
+        state_dict = torch.load(legacy_path, map_location="cpu", weights_only=True)
+        weight_tensor = state_dict.get("fc.weight")
+        if weight_tensor is not None and weight_tensor.numel() == num_models:
+            return weight_tensor.detach().cpu().numpy().astype(np.float64).ravel()
+
+    return None
+
+
+def _normalize_3d_maps(raw_maps: np.ndarray) -> np.ndarray:
+    """Normalize each 2D slice of a 3D ``(N, H, W)`` array to ``[-1.0, 1.0]`` float32."""
+    n_images = raw_maps.shape[0]
+    normalized = np.empty(raw_maps.shape, dtype=np.float32)
+    for idx in range(n_images):
+        normalized[idx] = normalize_data(
+            raw_maps[idx].astype(np.float32), min_range=-1.0, max_range=1.0
+        ).astype(np.float32)
+    return normalized
+
+
+def _exp2_mpm_path(model_name: str, variant_idx: int) -> Path:
+    """Return the Experiment 2 MPM .npy path for ``(model_name, variant_idx)``."""
+    mpm_dir = DIRS.get("exp2_mpm", EXP2_MPM_DIR)
+    return mpm_dir / f"{model_name}_exp1a_variant{variant_idx}_maps.npy"
+
+
 def experiment_3d_plot_ensemble_heatmaps(
-    global_test_indices: Dict[str, List[int]] = None,
-    models_filter: List[str] = None,
+    global_test_indices: dict[str, list[int]] | None = None,
+    models_filter: list[str] | None = None,
     num_sample_images: int = 3,
     device: str = "cuda",
     save_plots: bool = True,
-    best_variant_per_arch: bool = True,
-    sigma_override: list = None,
-    pixel_batch_override: int = None,
-    modes: List[str] = ["stacking", "bagging"],
-) -> Dict[str, Any]:
-    """
-    Generate ensemble saliency heatmaps computing raw model heatmaps ONCE
-    and accumulating them for all requested modes simultaneously.
-    """
-    import gc
-    from main.Utils.explainability import MultiscalePixelMasking
-    from main.Utils.visualization import visualize_and_save_saliency
-    from main.Utils.config import get_xai_config
-    from main.Utils.normalization import normalize_data
+    best_variant_per_arch: bool = False,
+    sigma_override: list[int] | None = None,
+    pixel_batch_override: int | None = None,
+    modes: Sequence[str] = ("bagging", "stacking"),
+    variants: str | Sequence[int] | int | None = "all",
+    reuse_exp2_maps: bool = True,
+    live_mpm: bool = False,
+    target_resolution: tuple[int, int] = (224, 224),
+) -> dict[str, Any]:
+    """Generate per-variant and prototype 273-image MPM heatmaps for ensembles (Stage 3D).
 
-    XAI = get_xai_config()
-    sigma = sigma_override if sigma_override is not None else XAI["sigma"]
+    Supports two execution modes:
+    1. Map Reuse Mode (``reuse_exp2_maps=True``, default):
+       Loads the 7 precomputed Experiment 2 MPM arrays from
+       ``Outputs/Experiment_2_variants/XAI_Maps/Multiscale_Pixel_Masking/``,
+       bilinearly resizes DenseNet161 maps from 300x300 to 224x224 via
+       ``uniform_heatmaps``, computes the linear combination across all 273 test
+       images, and normalizes each 2D map to ``[-1.0, 1.0]``.
+    2. Live MPM Mode (``live_mpm=True`` or fallback when Exp 2 maps are missing):
+       Runs ``MultiscalePixelMasking(..., normalize=False)`` across the 7 base
+       models on the held-out test set and accumulates raw prediction drops.
+
+    Saves per-variant ``(273, 224, 224)`` arrays:
+    - ``{mode}_exp3_variant{1..10}_maps.npy``
+    and architectural prototype heatmaps:
+    - ``{mode}_exp3_prototype_maps.npy``
+    and evaluates Within-Ensemble Attribution Consistency and Prototype Agreement.
+
+    Args:
+        global_test_indices: Pre-computed test indices per dataset type.
+        models_filter: Optional list of model names to include (None = all 7).
+        num_sample_images: Number of quantile sample overlays to render.
+        device: Compute device for live MPM mode ('cuda' or 'cpu').
+        save_plots: Whether to save similarity matrices, distributions, and overlays.
+        best_variant_per_arch: Kept for backward signature compatibility (ignored).
+        sigma_override: Optional override for MPM occluder sizes.
+        pixel_batch_override: Optional override for MPM pixel batch size.
+        modes: Ensemble strategies to explain ('bagging', 'stacking').
+        variants: Variant indices to process ('all', '1,2,3', or sequence of ints).
+        reuse_exp2_maps: Whether to reuse precomputed Experiment 2 MPM maps.
+        live_mpm: Force live end-to-end MPM forward passes.
+        target_resolution: Spatial resolution ``(H, W)`` for output maps.
+
+    Returns:
+        Dictionary summarizing saved map paths, prototypes, and XAI consistency.
+    """
+    del best_variant_per_arch
+    xai_cfg = get_xai_config()
+    sigma = sigma_override if sigma_override is not None else xai_cfg["sigma"]
     px_batch = (
-        pixel_batch_override if pixel_batch_override is not None else XAI["px_batch"]
+        pixel_batch_override
+        if pixel_batch_override is not None
+        else xai_cfg["px_batch"]
     )
+    stride = xai_cfg.get("stride", 1)
+    mask_val = float(xai_cfg.get("mask_val", 0.0))
+
+    variant_indices = parse_variant_indices(variants)
+    ordered_models = get_ordered_models(models_filter)
+    active_modes = [m.lower() for m in modes if m.lower() in {"bagging", "stacking"}]
 
     info("=" * 80)
-    info(f"EXPERIMENT 3D: ENSEMBLE HEATMAPS FOR MODES: {modes}")
+    info(f"EXPERIMENT 3D: ENSEMBLE MPM ATTRIBUTION MAPS FOR MODES: {active_modes}")
     info("=" * 80)
-    info(
-        f"  sigma={sigma}, pixel_batch={px_batch}, "
-        f"best_variant_per_arch={best_variant_per_arch}"
-    )
 
-    # ------------------------------------------------------------------
-    # 1. DISCOVER PRUNED WEIGHTS
-    # ------------------------------------------------------------------
-    all_pruned_files = sorted(DIRS["weights"].glob("*_exp3b_*_greedy_pruned.pth"))
-    if not all_pruned_files:
-        error(f"No pruned weights found in {DIRS['weights']}")
+    mpm_out_dir = DIRS.get("mpm", OUTPUT_DIR / "XAI_Maps" / "Multiscale_Pixel_Masking")
+    plots_dir = DIRS.get("plots", OUTPUT_DIR / "Plots")
+    results_dir = DIRS["results"]
+    mpm_out_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Resolve ensemble weights per variant and mode
+    weights_by_mode: dict[str, dict[int, np.ndarray]] = defaultdict(dict)
+    num_models = len(ordered_models)
+    if num_models == 0:
+        error("No valid models selected for Stage 3D.")
         return {}
 
-    ordered_pairs: List[Tuple[str, Path]] = []
-    for p in all_pruned_files:
-        match = re.match(r"^([a-z0-9]+)_exp3b_variant(\d+)_greedy_pruned\.pth$", p.name)
-        if match:
-            model_name = match.group(1)
-            if models_filter is None or model_name in models_filter:
-                if model_name in MODEL_REGISTRY:
-                    ordered_pairs.append((model_name, p))
-
-    num_base_models = len(ordered_pairs)
-    if num_base_models == 0:
-        error("No valid pruned model weights found after filtering.")
-        return {}
-
-    info(f"Found {num_base_models} pruned model variants")
-
-    # ------------------------------------------------------------------
-    # 2. DETERMINE COEFFICIENTS FOR ALL REQUESTED MODES
-    # ------------------------------------------------------------------
-    raw_coeffs_by_mode = {}
-    for mode in modes:
-        if mode == "stacking":
-            meta_weights_path = DIRS["weights"] / "stacking_meta_weights.pth"
-            if not meta_weights_path.exists():
-                error(f"Meta-learner weights not found: {meta_weights_path}")
+    for var_idx in variant_indices:
+        if "bagging" in active_modes:
+            weights_by_mode["bagging"][var_idx] = np.ones(
+                num_models, dtype=np.float64
+            ) / float(num_models)
+        if "stacking" in active_modes:
+            stack_w = _load_stacking_weights_for_variant(var_idx, ordered_models)
+            if stack_w is None:
+                warn(
+                    f"Stacking weights for variant {var_idx} not found; "
+                    "running Stage 3C evaluation first to fit meta-learner..."
+                )
+                experiment_3c_evaluate_ensemble(
+                    models_filter=ordered_models,
+                    global_test_indices=global_test_indices,
+                    device=str(device),
+                    ensemble_mode=["stacking"],
+                    variants=[var_idx],
+                )
+                stack_w = _load_stacking_weights_for_variant(var_idx, ordered_models)
+            if stack_w is None:
+                error(
+                    f"Could not load or fit stacking meta-learner for variant {var_idx}."
+                )
                 return {}
-            meta = StackingMetaLearner(num_base_models)
-            meta.load_state_dict(
-                torch.load(meta_weights_path, map_location="cpu", weights_only=True)
+            weights_by_mode["stacking"][var_idx] = stack_w
+
+    # 2. Check whether Experiment 2 MPM maps are available for reuse
+    can_reuse_exp2 = bool(reuse_exp2_maps and not live_mpm)
+    if can_reuse_exp2:
+        missing_exp2 = [
+            _exp2_mpm_path(m_name, var_idx)
+            for var_idx in variant_indices
+            for m_name in ordered_models
+            if not _exp2_mpm_path(m_name, var_idx).exists()
+        ]
+        if missing_exp2:
+            warn(
+                f"{len(missing_exp2)} Experiment 2 MPM map files missing "
+                f"(e.g. {missing_exp2[0]}); falling back to live MPM mode."
             )
-            raw_coeffs_by_mode[mode] = meta.fc.weight.detach().squeeze().numpy()
-        elif mode == "bagging":
-            raw_coeffs_by_mode[mode] = (
-                np.ones(num_base_models, dtype=np.float64) / num_base_models
-            )
-        else:
-            error(f"Unknown mode '{mode}' - skipping coefficient generation.")
+            can_reuse_exp2 = False
 
-    # ------------------------------------------------------------------
-    # 3. OPTIONALLY REDUCE TO ONE VARIANT PER ARCHITECTURE
-    # ------------------------------------------------------------------
-    if best_variant_per_arch:
-        # Use stacking weights to find the "best" representative variant if available, else use bagging
-        selection_mode = "stacking" if "stacking" in modes else modes[0]
-        sel_coeffs = raw_coeffs_by_mode[selection_mode]
+    height, width = target_resolution
+    variant_maps_by_mode: dict[str, dict[int, np.ndarray]] = defaultdict(dict)
+    saved_variant_paths: dict[str, dict[int, str]] = defaultdict(dict)
 
-        arch_groups: Dict[str, List[Tuple[int, Path, float]]] = defaultdict(list)
-        for idx, (mname, wpath) in enumerate(ordered_pairs):
-            arch_groups[mname].append((idx, wpath, sel_coeffs[idx]))
-
-        reduced_pairs: List[Tuple[str, Path]] = []
-        reduced_coeffs_by_mode = {m: [] for m in modes}
-
-        for arch_name, variants in arch_groups.items():
-            best = max(variants, key=lambda t: abs(t[2]))
-            reduced_pairs.append((arch_name, best[1]))
-
-            # Sum all variant coefficients as an approximation for EACH mode
-            for m in modes:
-                arch_sum = sum(raw_coeffs_by_mode[m][v[0]] for v in variants)
-                reduced_coeffs_by_mode[m].append(arch_sum)
-
-            info(
-                f"  {arch_name}: best_variant={best[1].name} | sel_w={abs(best[2]):.4f}"
-            )
-
-        ordered_pairs = reduced_pairs
-        final_coeffs_by_mode = {
-            m: np.array(c) for m, c in reduced_coeffs_by_mode.items()
-        }
-        info(f"Reduced to {len(ordered_pairs)} models (one per architecture)")
-    else:
-        final_coeffs_by_mode = raw_coeffs_by_mode
-
-    # ------------------------------------------------------------------
-    # 4. SELECT SAMPLE IMAGES FROM TEST SET
-    # ------------------------------------------------------------------
-    if global_test_indices is None:
-        global_test_indices = {
-            "imagenet": create_global_test_indices(len(imageNet_dataset)),
-            "densenet": create_global_test_indices(len(denseNet_dataset)),
-        }
-
-    test_indices = global_test_indices["imagenet"]
-    scores = np.array([imageNet_dataset[idx][1].item() for idx in test_indices])
-
-    quantiles = (
-        [0.25, 0.50, 0.75]
-        if num_sample_images == 3
-        else np.linspace(0.1, 0.9, num_sample_images).tolist()
-    )
-    quantile_values = np.quantile(scores, quantiles)
-
-    selected: List[Dict[str, Any]] = []
-    used_positions = set()
-    for q, qval in zip(quantiles, quantile_values):
-        dists = np.abs(scores - qval)
-        order = np.argsort(dists)
-        for candidate in order:
-            if int(candidate) not in used_positions:
-                chosen = int(candidate)
-                used_positions.add(chosen)
-                break
-        dataset_idx = test_indices[chosen]
-        img_inet, label = imageNet_dataset[dataset_idx]
-        img_dnet, _ = denseNet_dataset[dataset_idx]
-        selected.append(
-            {
-                "quantile": q,
-                "score": float(label.item()),
-                "dataset_idx": dataset_idx,
-                "img_imagenet": img_inet,
-                "img_densenet": img_dnet,
-            }
-        )
-        info(f"  Q{q:.0%}: auth={label.item():.4f} (idx={dataset_idx})")
-
-    # ------------------------------------------------------------------
-    # 5. GENERATE MAPS
-    # ------------------------------------------------------------------
-    output_size = (224, 224)
-    heatmaps_dirs = {m: OUTPUT_DIR / "Heatmaps" / m for m in modes}
-    for d in heatmaps_dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
-
-    all_ensemble_maps = {m: [] for m in modes}
-    all_per_model_maps: List[Dict[str, np.ndarray]] = []
-    total_runs = len(selected) * len(ordered_pairs)
-    run_count = 0
-
-    for img_info in selected:
+    # 3A. Fast Map Reuse Execution
+    if can_reuse_exp2:
         info(
-            f"\n--- Generating saliency for Q{img_info['quantile']:.0%} (auth={img_info['score']:.4f}) ---"
+            f"Executing Stage 3D in Map Reuse Mode across {len(variant_indices)} "
+            f"variants and {num_models} architectures..."
+        )
+        for var_idx in variant_indices:
+            accumulators: dict[str, np.ndarray | None] = {m: None for m in active_modes}
+            for m_idx, model_name in enumerate(ordered_models):
+                map_path = _exp2_mpm_path(model_name, var_idx)
+                raw_arr = np.load(map_path)
+                resized_arr = uniform_heatmaps(
+                    raw_arr, height=height, width=width
+                ).astype(np.float64)
+
+                for mode in active_modes:
+                    w_val = float(weights_by_mode[mode][var_idx][m_idx])
+                    if accumulators[mode] is None:
+                        accumulators[mode] = w_val * resized_arr
+                    else:
+                        accumulators[mode] += w_val * resized_arr
+
+            for mode in active_modes:
+                combined_raw = accumulators[mode]
+                if combined_raw is None:
+                    continue
+                norm_maps = _normalize_3d_maps(combined_raw)
+                out_path = mpm_out_dir / f"{mode}_exp3_variant{var_idx}_maps.npy"
+                np.save(out_path, norm_maps)
+                variant_maps_by_mode[mode][var_idx] = norm_maps
+                saved_variant_paths[mode][var_idx] = str(out_path)
+                info(
+                    f"  Saved {out_path.name} with shape {norm_maps.shape} "
+                    f"(dtype={norm_maps.dtype})"
+                )
+
+    # 3B. Live MPM Execution
+    else:
+        info(
+            f"Executing Stage 3D in Live MPM Mode on device={device} "
+            f"(sigma={sigma}, px_batch={px_batch})..."
+        )
+        if global_test_indices is None:
+            global_test_indices = _build_default_global_test_indices()
+        else:
+            default_idx = next(iter(global_test_indices.values()))
+            global_test_indices.setdefault("imagenet", default_idx)
+            global_test_indices.setdefault("densenet", default_idx)
+            global_test_indices.setdefault("clip", default_idx)
+
+        checkpoints_by_model = discover_base_checkpoints(
+            models_filter=ordered_models,
+            variant_indices=variant_indices,
+        )
+        test_indices_inet = global_test_indices["imagenet"]
+        n_test = len(test_indices_inet)
+
+        datasets_by_key = {
+            "imagenet": imageNet_dataset,
+            "densenet": denseNet_dataset,
+            "clip": clip_dataset,
+        }
+
+        for var_idx in variant_indices:
+            accumulators_live: dict[str, np.ndarray] = {
+                mode: np.zeros((n_test, height, width), dtype=np.float64)
+                for mode in active_modes
+            }
+            for m_idx, model_name in enumerate(ordered_models):
+                if (
+                    model_name not in checkpoints_by_model
+                    or var_idx not in checkpoints_by_model[model_name]
+                ):
+                    error(f"Missing checkpoint for {model_name} variant {var_idx}")
+                    return {}
+                w_path = checkpoints_by_model[model_name][var_idx]
+                ds_key = _dataset_key_for_model(model_name)
+                ds_obj = datasets_by_key[ds_key]
+                test_indices_model = global_test_indices[ds_key]
+
+                info(
+                    f"  [Variant {var_idx}] Running live MPM on {w_path.name} "
+                    f"({n_test} images)..."
+                )
+                model = load_model_with_weights(
+                    model_name, w_path, device=str(device), freeze_backbone=False
+                )
+                mpm = MultiscalePixelMasking(
+                    model,
+                    sigma_list=sigma,
+                    pixel_batch_size=px_batch,
+                    mask_value=mask_val,
+                    use_tqdm=False,
+                    stride=stride,
+                )
+
+                model_maps = np.zeros((n_test, height, width), dtype=np.float32)
+                try:
+                    for img_i, dataset_idx in enumerate(test_indices_model):
+                        img_tensor, _ = ds_obj[dataset_idx]
+                        saliency = mpm.generate_map(
+                            img_tensor.unsqueeze(0),
+                            target_index=0,
+                            normalize=False,
+                        )
+                        if saliency.shape != (height, width):
+                            saliency = uniform_heatmaps(
+                                saliency[np.newaxis, ...].astype(np.float32),
+                                height=height,
+                                width=width,
+                            )[0]
+                        model_maps[img_i] = saliency.astype(np.float32)
+                finally:
+                    mpm.cleanup()
+                    del model, mpm
+                    clear_gpu_memory()
+                    gc.collect()
+
+                for mode in active_modes:
+                    w_val = float(weights_by_mode[mode][var_idx][m_idx])
+                    accumulators_live[mode] += w_val * model_maps.astype(np.float64)
+
+            for mode in active_modes:
+                norm_maps = _normalize_3d_maps(accumulators_live[mode])
+                out_path = mpm_out_dir / f"{mode}_exp3_variant{var_idx}_maps.npy"
+                np.save(out_path, norm_maps)
+                variant_maps_by_mode[mode][var_idx] = norm_maps
+                saved_variant_paths[mode][var_idx] = str(out_path)
+                info(f"  Saved {out_path.name} with shape {norm_maps.shape}")
+
+    # 4. Compute Architectural Prototype Heatmaps across variants
+    prototype_paths: dict[str, str] = {}
+    prototype_arrays: dict[str, np.ndarray] = {}
+
+    for mode in active_modes:
+        ordered_var_arrays = [
+            variant_maps_by_mode[mode][v]
+            for v in variant_indices
+            if v in variant_maps_by_mode[mode]
+        ]
+        if not ordered_var_arrays:
+            continue
+        proto_arr = np.mean(np.stack(ordered_var_arrays, axis=0), axis=0).astype(
+            np.float32
+        )
+        proto_path = mpm_out_dir / f"{mode}_exp3_prototype_maps.npy"
+        np.save(proto_path, proto_arr)
+        prototype_paths[mode] = str(proto_path)
+        prototype_arrays[mode] = proto_arr
+        info(
+            f"Saved {mode} prototype heatmap to {proto_path} (shape={proto_arr.shape})"
         )
 
-        # Accumulators for each mode
-        weighted_maps = {m: np.zeros(output_size, dtype=np.float64) for m in modes}
-        per_model: Dict[str, np.ndarray] = {}
+    # 5. Compute Within-Ensemble Attribution Consistency & Prototype Agreement
+    consistency_metrics = (
+        "correlation",
+        "ssim",
+        "top_percent_iou_5",
+        "top_percent_iou_15",
+        "top_percent_iou_25",
+    )
+    within_ensemble_consistency: dict[str, Any] = {}
 
-        for coeff_idx, (model_name, weight_path) in enumerate(ordered_pairs):
-            run_count += 1
-            config = MODEL_REGISTRY[model_name]
-            img_tensor = (
-                img_info["img_densenet"].unsqueeze(0)
-                if config["dataset"] is DENSENET_DATASET
-                else img_info["img_imagenet"].unsqueeze(0)
+    for mode in active_modes:
+        ordered_var_arrays = [
+            variant_maps_by_mode[mode][v]
+            for v in variant_indices
+            if v in variant_maps_by_mode[mode]
+        ]
+        var_labels = [
+            f"variant{v}" for v in variant_indices if v in variant_maps_by_mode[mode]
+        ]
+        if len(ordered_var_arrays) >= 2:
+            info(
+                f"Computing within-ensemble MPM consistency for {mode} "
+                f"across {len(ordered_var_arrays)} variants..."
             )
+            comp_res = compare_heatmaps(ordered_var_arrays, metrics=consistency_metrics)
+            comp_res["variants"] = var_labels  # type: ignore[typeddict-unknown-key]
 
-            info(f"  [{run_count}/{total_runs}] Running MPM on {weight_path.name}")
+            agg_summary: dict[str, dict[str, float]] = {}
+            for m_key in consistency_metrics:
+                pair_means = [
+                    d["mean"] for d in comp_res["summary"].get(m_key, {}).values()
+                ]
+                per_img_vals = list(comp_res["per_image"].get(m_key, {}).values())
+                if pair_means and per_img_vals:
+                    per_image_mean = np.mean(np.stack(per_img_vals, axis=0), axis=0)
+                    agg_summary[m_key] = {
+                        "mean": float(np.mean(per_image_mean)),
+                        "std": float(np.std(per_image_mean)),
+                        "min": float(np.min(per_image_mean)),
+                        "max": float(np.max(per_image_mean)),
+                        "median": float(np.median(per_image_mean)),
+                    }
+            within_ensemble_consistency[mode] = {
+                "aggregated": agg_summary,
+                "variants": var_labels,
+                "summary": comp_res["summary"],
+            }
 
-            # GENERATE ONCE
-            model = load_model_with_weights(
-                model_name, weight_path, device, freeze_backbone=False
+            if save_plots:
+                for m_key in ("correlation", "top_percent_iou_15"):
+                    if m_key not in comp_res["summary"]:
+                        continue
+                    try:
+                        fig_mat = visualize_similarity_matrix(
+                            comp_res, var_labels, metric=m_key, add_title=False
+                        )
+                        if fig_mat:
+                            fig_mat.savefig(
+                                plots_dir / f"mpm_within_{mode}_{m_key}_matrix.png",
+                                bbox_inches="tight",
+                                dpi=300,
+                            )
+                            plt.close(fig_mat)
+                        fig_dist = visualize_similarity_distribution(
+                            comp_res, metric=m_key, add_title=False
+                        )
+                        if fig_dist:
+                            fig_dist.savefig(
+                                plots_dir
+                                / f"mpm_within_{mode}_{m_key}_distribution.png",
+                                bbox_inches="tight",
+                                dpi=300,
+                            )
+                            plt.close(fig_dist)
+                    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                        warn(f"Could not save within-ensemble plot: {exc}")
+
+    # Compare ensemble prototypes against single-architecture prototypes if available
+    between_prototypes_agreement: dict[str, Any] = {}
+    if can_reuse_exp2 and prototype_arrays:
+        single_arch_protos: dict[str, np.ndarray] = {}
+        for model_name in ordered_models:
+            arch_vars = [
+                uniform_heatmaps(
+                    np.load(_exp2_mpm_path(model_name, v)),
+                    height=height,
+                    width=width,
+                ).astype(np.float32)
+                for v in variant_indices
+                if _exp2_mpm_path(model_name, v).exists()
+            ]
+            if arch_vars:
+                single_arch_protos[model_name] = np.mean(
+                    np.stack(arch_vars, axis=0), axis=0
+                ).astype(np.float32)
+
+        if single_arch_protos:
+            vis_order = [m for m in get_model_order() if m in single_arch_protos]
+            for m in single_arch_protos:
+                if m not in vis_order:
+                    vis_order.append(m)
+
+            all_proto_labels = vis_order + [
+                f"{m}_ensemble" for m in active_modes if m in prototype_arrays
+            ]
+            all_proto_list = [single_arch_protos[m] for m in vis_order] + [
+                prototype_arrays[m] for m in active_modes if m in prototype_arrays
+            ]
+
+            if len(all_proto_list) >= 2:
+                info(
+                    "Comparing Ensemble Prototype Heatmaps against "
+                    "Single-Architecture Prototypes..."
+                )
+                proto_comp = compare_heatmaps(
+                    all_proto_list, metrics=consistency_metrics
+                )
+                between_prototypes_agreement = {
+                    "models": all_proto_labels,
+                    "summary": proto_comp["summary"],
+                }
+                if save_plots:
+                    for m_key in ("correlation", "top_percent_iou_15"):
+                        if m_key not in proto_comp["summary"]:
+                            continue
+                        try:
+                            fig_mat = visualize_similarity_matrix(
+                                proto_comp,
+                                all_proto_labels,
+                                metric=m_key,
+                                add_title=False,
+                            )
+                            if fig_mat:
+                                fig_mat.savefig(
+                                    plots_dir
+                                    / f"mpm_prototypes_ensemble_vs_single_{m_key}_matrix.png",
+                                    bbox_inches="tight",
+                                    dpi=300,
+                                )
+                                plt.close(fig_mat)
+                        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                            warn(f"Could not save prototype matrix plot: {exc}")
+
+    # Save sample quantile overlay visualizations if requested
+    if save_plots and num_sample_images > 0 and prototype_arrays:
+        try:
+            if global_test_indices is None:
+                global_test_indices = _build_default_global_test_indices()
+            inet_indices = global_test_indices["imagenet"]
+            n_avail = min(
+                len(inet_indices),
+                next(iter(prototype_arrays.values())).shape[0],
             )
-            mpm = MultiscalePixelMasking(model, sigma, px_batch, 0.0, use_tqdm=True)
-            saliency = mpm.generate_map(img_tensor, target_index=0, normalize=False)
-
-            if saliency.shape != output_size:
-                s = (
-                    torch.tensor(saliency, dtype=torch.float32)
-                    .unsqueeze(0)
-                    .unsqueeze(0)
+            if n_avail > 0:
+                scores = np.array(
+                    [
+                        float(imageNet_dataset[inet_indices[i]][1].item())
+                        for i in range(n_avail)
+                    ]
                 )
-                s = F.interpolate(
-                    s, size=output_size, mode="bilinear", align_corners=False
+                quantiles = (
+                    [0.25, 0.50, 0.75]
+                    if num_sample_images == 3
+                    else np.linspace(0.1, 0.9, num_sample_images).tolist()
                 )
-                saliency = s.squeeze().numpy()
+                q_vals = np.quantile(scores, quantiles)
+                used_pos: set[int] = set()
+                for q, qval in zip(quantiles, q_vals, strict=False):
+                    order = np.argsort(np.abs(scores - qval))
+                    chosen = next(
+                        (int(c) for c in order if int(c) not in used_pos),
+                        int(order[0]),
+                    )
+                    used_pos.add(chosen)
+                    dataset_idx = inet_indices[chosen]
+                    img_inet, label = imageNet_dataset[dataset_idx]
+                    q_tag = f"q{q:.2f}_idx{dataset_idx}_auth{float(label.item()):.2f}"
+                    for mode, proto_map in prototype_arrays.items():
+                        map_01 = np.clip((proto_map[chosen] + 1.0) / 2.0, 0.0, 1.0)
+                        mode_plot_dir = plots_dir / "Sample_Overlays" / mode
+                        mode_plot_dir.mkdir(parents=True, exist_ok=True)
+                        visualize_and_save_saliency(
+                            image_tensor=img_inet,
+                            saliency_map=map_01.astype(np.float32),
+                            output_dir=str(mode_plot_dir),
+                            filename_prefix=f"{mode}_prototype_{q_tag}",
+                            cmap_name="bwr",
+                        )
+        except (OSError, RuntimeError, ValueError, IndexError) as exc:
+            warn(f"Could not render sample overlay plots: {exc}")
 
-            # APPLY TO ALL MODES
-            for m in modes:
-                w = final_coeffs_by_mode[m][coeff_idx]
-                weighted_maps[m] += w * saliency
+    xai_summary = {
+        "status": "success",
+        "execution_mode": "reuse_exp2_maps" if can_reuse_exp2 else "live_mpm",
+        "modes_processed": active_modes,
+        "variants_processed": variant_indices,
+        "models": ordered_models,
+        "target_resolution": list(target_resolution),
+        "variant_map_paths": {
+            mode: {str(k): v for k, v in paths.items()}
+            for mode, paths in saved_variant_paths.items()
+        },
+        "prototype_map_paths": prototype_paths,
+        "within_ensemble_consistency": within_ensemble_consistency,
+        "between_prototypes_agreement": between_prototypes_agreement,
+    }
 
-            per_model[f"{model_name}_{weight_path.stem}"] = saliency
-
-            del model, mpm
-            clear_gpu_memory()
-            gc.collect()
-
-        # Normalize the combined maps for each mode
-        for m in modes:
-            ensemble_map = normalize_data(
-                weighted_maps[m].astype(np.float32), min_range=-1, max_range=1
-            )
-            all_ensemble_maps[m].append(ensemble_map)
-
-        all_per_model_maps.append(per_model)
-
-    # ------------------------------------------------------------------
-    # 6. PLOT & SAVE
-    # ------------------------------------------------------------------
-    for idx, img_info in enumerate(selected):
-        q_tag = f"q{img_info['quantile']:.2f}"
-        idx_tag = f"idx{img_info['dataset_idx']}"
-        per_model = all_per_model_maps[idx]
-
-        if save_plots:
-            # Save the different ensemble heatmaps
-            for m in modes:
-                ens_map = all_ensemble_maps[m][idx]
-                ens_map_01 = np.clip((ens_map + 1.0) / 2.0, 0.0, 1.0)
-
-                prefix = f"ensemble_mpm_{q_tag}_{idx_tag}_auth{img_info['score']:.3f}"
-                visualize_and_save_saliency(
-                    image_tensor=img_info["img_imagenet"],
-                    saliency_map=ens_map_01,
-                    output_dir=str(heatmaps_dirs[m]),
-                    filename_prefix=prefix,
-                    cmap_name="bwr",
-                )
-                info(f"✓ Saved {m.upper()} ensemble heatmap -> {prefix}")
-
-            # Save per-model maps
-            per_model_dir = (
-                heatmaps_dirs[modes[0]].parent
-                / "shared_per_model"
-                / f"per_model_{q_tag}"
-            )
-            per_model_dir.mkdir(parents=True, exist_ok=True)
-            for tag, sal_map in per_model.items():
-                sal_min, sal_max = sal_map.min(), sal_map.max()
-                sal_01 = (
-                    (sal_map - sal_min) / (sal_max - sal_min)
-                    if sal_max - sal_min > 1e-8
-                    else np.zeros_like(sal_map)
-                )
-
-                visualize_and_save_saliency(
-                    image_tensor=img_info["img_imagenet"],
-                    saliency_map=sal_01.astype(np.float32),
-                    output_dir=str(per_model_dir),
-                    filename_prefix=f"{tag}_{q_tag}",
-                    cmap_name="bwr",
-                )
+    xai_results_path = results_dir / "experiment_3d_xai_consistency.json"
+    with open(xai_results_path, "w") as f:
+        json.dump(xai_summary, f, indent=2, cls=NpEncoder)
+    info(f"Saved Stage 3D XAI consistency results to: {xai_results_path}")
 
     info("=" * 80)
-    info("EXPERIMENT 3D: HEATMAP GENERATION COMPLETE")
+    info("EXPERIMENT 3D: HEATMAP GENERATION & CONSISTENCY COMPLETE")
     info("=" * 80)
 
-    return {"status": "success", "modes_processed": modes}
+    return xai_summary
 
 
 # ============================================================================
-# 7. COMPLETE PIPELINE
+# 8. COMPLETE EXPERIMENT 3 PIPELINE
 # ============================================================================
 
 
 def run_experiment_3(
-    models: List[str] = None,
-    run_training: bool = True,
-    run_pruning: bool = True,
+    models: list[str] | None = None,
+    run_training: bool = False,
+    run_pruning: bool = False,
     run_evaluation: bool = True,
-    run_heatmaps: bool = False,
+    run_heatmaps: bool = True,
     save_results: bool = True,
-    ensemble_mode: List[str] = ["bagging", "stacking"],
+    ensemble_mode: Sequence[str] = ("bagging", "stacking"),
+    variants: str | Sequence[int] | int | None = "all",
+    reuse_exp2_maps: bool = True,
+    live_mpm: bool = False,
+    device: str | None = None,
     stacking_cv_folds: int = 5,
     stacking_cv_repeats: int = 1,
-    heatmap_kwargs: Dict[str, Any] = None,
-) -> Dict[str, Any]:
-    """
-    Run the complete Experiment 3 pipeline.
+    heatmap_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the complete Experiment 3 pipeline (ADR-0005).
 
-    This experiment trains 10 variants per architecture and prunes them,
-    but with a key difference from Experiment 1:
-    - Training: train on train set, validate on val set
-    - Pruning: prune on val set (same val set used during training)
-    - Evaluation: ensemble evaluated on test set (completely unseen)
+    By default, skips legacy base training (3A) and channel pruning (3B), directly
+    reusing the 70 unpruned Experiment 1A checkpoints to evaluate the 10
+    variant-aligned 7-architecture Bagging and Stacking ensembles (Stage 3C) and
+    generate full-dataset 273-image MPM heatmaps and prototypes (Stage 3D).
 
     Args:
-        models: List of model names to process (None = all)
-        run_training: Whether to run training (Experiment 3A)
-        run_pruning: Whether to run pruning (Experiment 3B)
-        run_evaluation: Whether to run ensemble evaluation (Experiment 3C)
-        run_heatmaps: Whether to generate ensemble MPM heatmaps (Experiment 3D).
-            If True the function will call :func:`experiment_3d_plot_ensemble_heatmaps`
-            once for each mode listed in ``ensemble_mode`` (see below).
-        save_results: Whether to save results to JSON
-        ensemble_mode: List of ensemble modes to use (bagging, stacking, stacking_cv).
-            This list also drives which heatmap variants are created when
-            ``run_heatmaps`` is True.  For example ``["bagging"]`` will produce
-            an averaged heatmap while ``["stacking"]`` will use the learned
-            meta-learner coefficients.
-        stacking_cv_folds: Number of folds for stacking_cv
-        stacking_cv_repeats: Number of repeated CV rounds for stacking_cv
-        heatmap_kwargs: Extra keyword arguments forwarded to
-            :func:`experiment_3d_plot_ensemble_heatmaps` (common to all modes)
+        models: Optional list of model names to process (None = all 7 models).
+        run_training: Whether to run legacy base training (Stage 3A, default False).
+        run_pruning: Whether to run legacy validation pruning (Stage 3B, default False).
+        run_evaluation: Whether to run ensemble evaluation (Stage 3C, default True).
+        run_heatmaps: Whether to generate ensemble MPM heatmaps (Stage 3D, default True).
+        save_results: Whether to save combined results JSON.
+        ensemble_mode: Sequence of ensemble strategies ('bagging', 'stacking').
+        variants: Variant selector ('all', '1,2,3', or sequence of ints).
+        reuse_exp2_maps: Whether to reuse precomputed Experiment 2 MPM maps in Stage 3D.
+        live_mpm: Force live end-to-end MPM forward passes in Stage 3D.
+        device: Optional device override ('cuda' or 'cpu').
+        stacking_cv_folds: Kept for backward signature compatibility.
+        stacking_cv_repeats: Kept for backward signature compatibility.
+        heatmap_kwargs: Optional extra keyword arguments forwarded to Stage 3D.
+
     Returns:
-        Combined results from all stages
+        Dictionary aggregating outputs from all executed stages.
     """
     start = time.time()
     setup_directories()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    info(f"Device: {device}")
-    info(f"Models: {models if models else 'all'}")
-
+    resolved_device = (
+        device
+        if device is not None and device != "auto"
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
     if isinstance(models, str):
         models = [models]
 
-    # Create global test indices (shared across all stages)
-    global_test_indices = {
-        "imagenet": create_global_test_indices(len(imageNet_dataset)),
-        "densenet": create_global_test_indices(len(denseNet_dataset)),
-    }
-    info(f"Global test set size (ImageNet): {len(global_test_indices['imagenet'])}")
-    info(f"Global test set size (DenseNet): {len(global_test_indices['densenet'])}")
+    ordered_models = get_ordered_models(models)
+    variant_indices = parse_variant_indices(variants)
 
-    results = {}
-    variant_val_indices = None
+    info(f"Device: {resolved_device}")
+    info(f"Models ({len(ordered_models)}): {ordered_models}")
+    info(f"Variants ({len(variant_indices)}): {variant_indices}")
+    info(f"Strategies: {list(ensemble_mode)}")
 
-    # Stage 3A: Training
+    global_test_indices = _build_default_global_test_indices()
+    info(f"Global test set size: {len(global_test_indices['imagenet'])}")
+
+    results: dict[str, Any] = {}
+    variant_val_indices: dict[str, dict[int, list[int]]] | None = None
+
     if run_training:
         training_results, variant_val_indices = experiment_3a_train_all_variants(
-            models_to_train=models,
+            models_to_train=ordered_models,
             global_test_indices=global_test_indices,
             save_plots=True,
             verbose=True,
         )
         results["training"] = training_results
 
-    # Stage 3B: Pruning
     if run_pruning:
         pruning_results = experiment_3b_prune_all_variants(
-            models_to_prune=models,
+            models_to_prune=ordered_models,
             variant_val_indices=variant_val_indices,
             global_test_indices=global_test_indices,
             verbose=True,
         )
         results["pruning"] = pruning_results
 
-    # Stage 3C: Ensemble Evaluation
     if run_evaluation:
         eval_results = experiment_3c_evaluate_ensemble(
-            models_filter=models,
+            models_filter=ordered_models,
             global_test_indices=global_test_indices,
-            device=str(device),
+            device=str(resolved_device),
             ensemble_mode=ensemble_mode,
+            variants=variant_indices,
             stacking_cv_folds=stacking_cv_folds,
             stacking_cv_repeats=stacking_cv_repeats,
         )
         results["evaluation"] = eval_results
 
-    # Stage 3D: Heatmap Generation
     if run_heatmaps:
-        if heatmap_kwargs is None:
-            heatmap_kwargs = {}
-
-        # <-- CHANGED: Replaced the 'for' loop with a single unified call
-        info(f"Generating combined heatmaps for modes: {ensemble_mode}")
+        extra_kwargs = dict(heatmap_kwargs) if heatmap_kwargs else {}
         heatmap_results = experiment_3d_plot_ensemble_heatmaps(
             global_test_indices=global_test_indices,
-            models_filter=models,
-            device=device,
-            modes=ensemble_mode,  # Passes the whole list at once
-            **heatmap_kwargs,
+            models_filter=ordered_models,
+            device=str(resolved_device),
+            modes=ensemble_mode,
+            variants=variant_indices,
+            reuse_exp2_maps=reuse_exp2_maps,
+            live_mpm=live_mpm,
+            **extra_kwargs,
         )
         results["heatmaps"] = heatmap_results
 
-    # Save combined results
     if save_results and results:
         out_path = DIRS["results"] / "experiment_3_complete_results.json"
         DIRS["results"].mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
             json.dump(results, f, indent=2, cls=NpEncoder)
-        info(f"\n✓ Complete results saved to {out_path}")
+        info(f"Complete results saved to {out_path}")
 
     elapsed = time.time() - start
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
-    info(
-        f"\nExperiment 3 completed in {int(hours):02d}:{int(minutes):02d}:{seconds:.2f}"
-    )
+    info(f"Experiment 3 completed in {int(hours):02d}:{int(minutes):02d}:{seconds:.2f}")
 
     return results
 
 
-# ============================================================================
-# 8. MAIN EXECUTION
-# ============================================================================
-
 if __name__ == "__main__":
-    """
-    Experiment 3: Bagging Ensemble with Independent Training and Pruning
-    =====================================================================
-
-    This experiment trains 10 variants per architecture and prunes them,
-    with the key difference that:
-    - Training uses train/val splits (different per variant)
-    - Pruning uses the SAME validation set as training (not test!)
-    - Final ensemble is evaluated on test set (completely unseen)
-
-    Usage:
-    ------
-    cd Image_Authenticity_prediction/main/Experiments/
-    # Activate virtual environment
-    python experiment_three.py
-
-    Configuration Examples:
-    -----------------------
-    # Run complete pipeline for all models
+    set_level("INFO")
     run_experiment_3()
-
-    # Run only training
-    run_experiment_3(run_pruning=False, run_evaluation=False)
-
-    # Run only pruning (requires trained models)
-    run_experiment_3(run_training=False, run_evaluation=False)
-
-    # Run only evaluation (requires trained and pruned models)
-    run_experiment_3(run_training=False, run_pruning=False)
-
-    # Run for specific models only
-    run_experiment_3(models=['vgg16', 'resnet152'])
-    """
-
-    set_level("DEBUG")
-
-    # Configure which parts of the experiment to run
-    run_experiment_3(
-        models=[
-            "vgg16",
-            "vgg19",
-            "resnet152",
-            "densenet161",
-            "efficientnetb3",
-            "barlowtwins",
-        ],
-        run_training=False,
-        run_pruning=False,
-        run_evaluation=False,
-        run_heatmaps=True,
-        save_results=True,
-        ensemble_mode=["bagging", "stacking"],
-        stacking_cv_folds=5,
-        stacking_cv_repeats=1,
-    )

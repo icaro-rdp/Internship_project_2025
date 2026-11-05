@@ -24,7 +24,12 @@ class ImageAuthenticityDataset(Dataset):
 
         # Resolve project root based on this file's location so paths work regardless of CWD
         # .../Image_Authenticity_prediction/main/data.py -> project_root = .../Image_Authenticity_prediction
-        self.project_root: Path = Path(__file__).resolve().parent.parent
+        dataset_root_env = os.environ.get("DATASET_ROOT")
+        self.project_root: Path = (
+            Path(dataset_root_env).resolve()
+            if dataset_root_env
+            else Path(__file__).resolve().parent.parent
+        )
 
         # Dataset base dir (absolute)
         self.base_dir: Path = self.project_root / "Dataset" / "AIGCIQA2023"

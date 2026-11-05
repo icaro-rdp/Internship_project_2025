@@ -1,11 +1,12 @@
-import os
-import torch
-import torch.nn as nn
-import numpy as np
 import math
-from tqdm import tqdm
-from typing import Callable, Optional, Tuple, Dict, Any, List
+import os
+from collections.abc import Callable
+from typing import Any
 
+import numpy as np
+import torch
+from torch import nn
+from tqdm import tqdm
 
 
 class FeatureMapsPruner:
@@ -14,13 +15,15 @@ class FeatureMapsPruner:
     greedy pruning on a specified convolutional layer of a PyTorch model.
     """
 
-    def __init__(self,
-                 model: nn.Module,
-                 dataloader: torch.utils.data.DataLoader,
-                 layer_name: str,
-                 criterion: nn.Module,
-                 eval_function: Callable,
-                 device: torch.device):
+    def __init__(
+        self,
+        model: nn.Module,
+        dataloader: torch.utils.data.DataLoader,
+        layer_name: str,
+        criterion: nn.Module,
+        eval_function: Callable,
+        device: torch.device,
+    ):
         """
         Initializes the Pruner.
 
@@ -43,18 +46,28 @@ class FeatureMapsPruner:
 
         self.model.to(self.device)
         self.layer = self._get_layer()
-        if not isinstance(self.layer, (nn.Conv2d, nn.Conv1d, nn.Conv3d)):
-             print(f"Warning: Layer {layer_name} is not a standard Conv layer. "
-                   "Pruning targets .weight and .bias attributes.")
+        if not isinstance(self.layer, (nn.Conv2d, nn.Conv1d, nn.Conv3d, nn.Linear)):
+            print(
+                f"Warning: Layer {layer_name} is not a standard Conv or Linear layer. "
+                "Pruning targets .weight and .bias attributes."
+            )
 
         # Internal state
-        self.importance_scores: Optional[np.ndarray] = None
-        self.baseline_mse: Optional[float] = None
-        self.baseline_rmse: Optional[float] = None
+        self.importance_scores: np.ndarray | None = None
+        self.baseline_mse: float | None = None
+        self.baseline_rmse: float | None = None
         self._original_weights: torch.Tensor = self.layer.weight.clone().detach()
-        self._original_bias: Optional[torch.Tensor] = None
+        self._original_bias: torch.Tensor | None = None
         if self.layer.bias is not None:
             self._original_bias = self.layer.bias.clone().detach()
+
+    def _get_num_channels(self) -> int:
+        """Return the number of output channels/units in the target layer."""
+        if hasattr(self.layer, "out_channels"):
+            return int(self.layer.out_channels)
+        if hasattr(self.layer, "out_features"):
+            return int(self.layer.out_features)
+        return int(self.layer.weight.shape[0])
 
     def _get_layer(self) -> nn.Module:
         """Retrieves the layer module from the model using its name."""
@@ -62,19 +75,23 @@ class FeatureMapsPruner:
             dict_modules = dict(self.model.named_modules())
             return dict_modules[self.layer_name]
         except KeyError:
-            raise ValueError(f"Layer '{self.layer_name}' not found in model. "
-                             f"Available layers: {list(dict_modules.keys())}")
+            raise ValueError(
+                f"Layer '{self.layer_name}' not found in model. "
+                f"Available layers: {list(dict_modules.keys())}"
+            )
 
-    def _evaluate_model(self) -> Tuple[float, float]:
+    def _evaluate_model(self) -> tuple[float, float]:
         """
         Helper function to evaluate the model's current state.
-        
+
         Returns:
             Tuple of (MSE, RMSE)
         """
         self.model.eval()
         with torch.no_grad():
-            mse = self.eval_function(self.model, self.dataloader, self.criterion, self.device)
+            mse = self.eval_function(
+                self.model, self.dataloader, self.criterion, self.device
+            )
             rmse = math.sqrt(mse)
         return mse, rmse
 
@@ -93,13 +110,15 @@ class FeatureMapsPruner:
 
     def _restore_channel(self, channel_idx: int):
         """Restores a specific channel's weights and bias from backup."""
-        self.layer.weight.data[channel_idx, ...] = self._original_weights[channel_idx, ...]
+        self.layer.weight.data[channel_idx, ...] = self._original_weights[
+            channel_idx, ...
+        ]
         if self.layer.bias is not None:
             self.layer.bias.data[channel_idx] = self._original_bias[channel_idx]
 
-    def compute_importance_scores(self, 
-                                  save_path: Optional[str] = None,
-                                  force_recompute: bool = False) -> np.ndarray:
+    def compute_importance_scores(
+        self, save_path: str | None = None, force_recompute: bool = False
+    ) -> np.ndarray:
         """
         Computes the importance of each feature map in the layer.
 
@@ -119,7 +138,7 @@ class FeatureMapsPruner:
         if self.importance_scores is not None and not force_recompute:
             print("Using cached importance scores.")
             return self.importance_scores
-        
+
         if save_path and os.path.exists(save_path) and not force_recompute:
             print(f"Loading importance scores from {save_path}")
             self.importance_scores = np.load(save_path)
@@ -130,27 +149,31 @@ class FeatureMapsPruner:
         self.model.eval()
 
         self.baseline_mse, self.baseline_rmse = self._evaluate_model()
-        print(f'Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}')
+        print(
+            f"Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}"
+        )
 
         scores = []
-        num_channels = self.layer.out_channels
+        num_channels = self._get_num_channels()
 
-        for i in tqdm(range(num_channels), desc=f"Computing importance for {self.layer_name}"):
+        for i in tqdm(
+            range(num_channels), desc=f"Computing importance for {self.layer_name}"
+        ):
             self._zero_out_channel(i)
-            
-            pruned_mse, pruned_rmse = self._evaluate_model()
-            
+
+            pruned_mse, _ = self._evaluate_model()
+
             # Importance = baseline - pruned (using MSE)
             # positive = bad to remove (important)
             # negative = good to remove (noisy)
             importance_score = self.baseline_mse - pruned_mse
             scores.append([i, importance_score])
 
-            self._restore_channel(i) # Restore just this channel
+            self._restore_channel(i)  # Restore just this channel
 
         # Sort by importance score (descending, larger values first).
-        # Higher scores = more harmful to remove 
-        # Lower/negative scores = less important 
+        # Higher scores = more harmful to remove
+        # Lower/negative scores = less important
         sorted_scores = sorted(scores, key=lambda x: x[1], reverse=True)
         self.importance_scores = np.array(sorted_scores)
 
@@ -161,7 +184,7 @@ class FeatureMapsPruner:
 
         return self.importance_scores
 
-    def greedy_pruning(self, model_save_path: str) -> Dict[str, Any]:
+    def greedy_pruning(self, model_save_path: str) -> dict[str, Any]:
         """
         Iteratively removes feature maps, keeping a removal only if it
         improves (lowers) the MSE loss.
@@ -176,15 +199,19 @@ class FeatureMapsPruner:
             A dictionary with pruning results and performance metrics.
         """
         if self.importance_scores is None:
-            print("Importance scores not computed. Running compute_importance_scores first.")
+            print(
+                "Importance scores not computed. Running compute_importance_scores first."
+            )
             self.compute_importance_scores()
 
         self._restore_weights()  # Start from a clean slate
-        
-        if self.baseline_mse is None:
-             self.baseline_mse, self.baseline_rmse = self._evaluate_model()
 
-        print(f"Starting greedy pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}")
+        if self.baseline_mse is None:
+            self.baseline_mse, self.baseline_rmse = self._evaluate_model()
+
+        print(
+            f"Starting greedy pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}"
+        )
         print("------------------")
 
         removed_features = []
@@ -193,29 +220,37 @@ class FeatureMapsPruner:
         current_best_rmse = self.baseline_rmse
 
         # Iterate from most noisy (lowest score) to most important (highest score)
-        for (channel_idx, importance_score) in tqdm(self.importance_scores, desc=f"Greedy pruning {self.layer_name}"):
+        for channel_idx, importance_score in tqdm(
+            self.importance_scores, desc=f"Greedy pruning {self.layer_name}"
+        ):
             channel_idx = int(channel_idx)
-            
+
             self._zero_out_channel(channel_idx)
-            
+
             pruned_mse, pruned_rmse = self._evaluate_model()
 
-            print(f"Testing removal of channel {channel_idx}, "
-                  f"Importance: {importance_score:.4f}, "
-                  f"New MSE: {pruned_mse:.4f}, RMSE: {pruned_rmse:.4f}")
+            print(
+                f"Testing removal of channel {channel_idx}, "
+                f"Importance: {importance_score:.4f}, "
+                f"New MSE: {pruned_mse:.4f}, RMSE: {pruned_rmse:.4f}"
+            )
 
             # If MSE improved (got smaller), keep the channel zeroed out
             if pruned_mse < current_best_mse:
                 current_best_mse = pruned_mse
                 current_best_rmse = pruned_rmse
                 removed_features.append(channel_idx)
-                mse_history.append((removed_features.copy(), current_best_mse, current_best_rmse))
-                print(f"  ✓ IMPROVING: Keeping channel {channel_idx} zeroed. New best MSE: {current_best_mse:.4f}, RMSE: {current_best_rmse:.4f}")
+                mse_history.append(
+                    (removed_features.copy(), current_best_mse, current_best_rmse)
+                )
+                print(
+                    f"  ✓ IMPROVING: Keeping channel {channel_idx} zeroed. New best MSE: {current_best_mse:.4f}, RMSE: {current_best_rmse:.4f}"
+                )
             else:
                 # Restore this channel
                 self._restore_channel(channel_idx)
                 print(f"  ✗ NOT IMPROVING: Restoring channel {channel_idx}.")
-            
+
             print("------------------")
 
         # Save the pruned model (which is the current state of self.model)
@@ -231,29 +266,33 @@ class FeatureMapsPruner:
         final_rmse = current_best_rmse
         improvement_mse = self.baseline_mse - final_mse
         improvement_rmse = self.baseline_rmse - final_rmse
-        reduction_pct = (len(removed_features) / self.layer.out_channels) * 100
+        reduction_pct = (len(removed_features) / self._get_num_channels()) * 100
 
         print("------------------")
-        print(f"Final MSE: {final_mse:.4f}, RMSE: {final_rmse:.4f} after removing {len(removed_features)} feature maps")
+        print(
+            f"Final MSE: {final_mse:.4f}, RMSE: {final_rmse:.4f} after removing {len(removed_features)} feature maps"
+        )
         print(f"Improvement - MSE: {improvement_mse:.4f}, RMSE: {improvement_rmse:.4f}")
         print(f"Feature reduction: {reduction_pct:.1f}%")
 
         return {
-            'removed_features': removed_features,
-            'baseline_mse': self.baseline_mse,
-            'baseline_rmse': self.baseline_rmse,
-            'final_mse': final_mse,
-            'final_rmse': final_rmse,
-            'improvement_mse': improvement_mse,
-            'improvement_rmse': improvement_rmse,
-            'reduction_percentage': reduction_pct,
-            'mse_history': mse_history
+            "removed_features": removed_features,
+            "baseline_mse": self.baseline_mse,
+            "baseline_rmse": self.baseline_rmse,
+            "final_mse": final_mse,
+            "final_rmse": final_rmse,
+            "improvement_mse": improvement_mse,
+            "improvement_rmse": improvement_rmse,
+            "reduction_percentage": reduction_pct,
+            "mse_history": mse_history,
         }
 
-    def negative_impact_pruning(self, model_save_path: str, threshold: float = 0.0) -> Dict[str, Any]:
+    def negative_impact_pruning(
+        self, model_save_path: str, threshold: float = 0.0
+    ) -> dict[str, Any]:
         """
         Removes all feature maps with an importance score above a threshold (> threshold).
-        
+
 
         Args:
             model_save_path: Path to save the final pruned model state_dict.
@@ -264,23 +303,29 @@ class FeatureMapsPruner:
             A dictionary with pruning results.
         """
         if self.importance_scores is None:
-            print("Importance scores not computed. Running compute_importance_scores first.")
+            print(
+                "Importance scores not computed. Running compute_importance_scores first."
+            )
             self.compute_importance_scores()
 
         self._restore_weights()  # Start from a clean slate
-        
-        if self.baseline_mse is None:
-             self.baseline_mse, self.baseline_rmse = self._evaluate_model()
 
-        print(f"Starting negative impact pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}")
-        
+        if self.baseline_mse is None:
+            self.baseline_mse, self.baseline_rmse = self._evaluate_model()
+
+        print(
+            f"Starting negative impact pruning. Baseline - MSE: {self.baseline_mse:.4f}, RMSE: {self.baseline_rmse:.4f}"
+        )
+
         removed_features = []
-        for (channel_idx, importance_score) in tqdm(self.importance_scores, desc=f"Pruning negative impact features"):
+        for channel_idx, importance_score in tqdm(
+            self.importance_scores, desc="Pruning negative impact features"
+        ):
             if importance_score > threshold:
                 channel_idx = int(channel_idx)
                 self._zero_out_channel(channel_idx)
                 removed_features.append(channel_idx)
-        
+
         print(f"Removed {len(removed_features)} features with score > {threshold}.")
 
         # Evaluate the final pruned model
@@ -298,23 +343,23 @@ class FeatureMapsPruner:
         # Final stats
         improvement_mse = self.baseline_mse - final_mse
         improvement_rmse = self.baseline_rmse - final_rmse
-        reduction_pct = (len(removed_features) / self.layer.out_channels) * 100
+        reduction_pct = (len(removed_features) / self._get_num_channels()) * 100
 
         return {
-            'removed_features': removed_features,
-            'baseline_mse': self.baseline_mse,
-            'baseline_rmse': self.baseline_rmse,
-            'final_mse': final_mse,
-            'final_rmse': final_rmse,
-            'improvement_mse': improvement_mse,
-            'improvement_rmse': improvement_rmse,
-            'reduction_percentage': reduction_pct
+            "removed_features": removed_features,
+            "baseline_mse": self.baseline_mse,
+            "baseline_rmse": self.baseline_rmse,
+            "final_mse": final_mse,
+            "final_rmse": final_rmse,
+            "improvement_mse": improvement_mse,
+            "improvement_rmse": improvement_rmse,
+            "reduction_percentage": reduction_pct,
         }
-    
+
     def plot_importance_scores(self, save_path=None):
         """
         Plots the importance scores as a bar chart.
-        
+
         Args:
             save_path (str, optional): Path to save the plot. If None, only displays the plot.
         """
@@ -322,31 +367,34 @@ class FeatureMapsPruner:
         import matplotlib.pyplot as plt
 
         if self.importance_scores is None:
-            raise ValueError("Importance scores not computed. Run compute_importance_scores first.")
+            raise ValueError(
+                "Importance scores not computed. Run compute_importance_scores first."
+            )
 
         channels = self.importance_scores[:, 0]
         scores = self.importance_scores[:, 1]
 
         # Use non-interactive backend if saving
         if save_path:
-            matplotlib.use('Agg')
-        
+            matplotlib.use("Agg")
+
         plt.figure(figsize=(12, 6))
-        plt.bar(channels, scores, color='skyblue')
-        plt.xlabel('Channel Index')
-        plt.ylabel('Importance Score (Baseline MSE - Pruned MSE)')
-        plt.title(f'Feature Map Importance Scores for Layer: {self.layer_name}')
-        plt.axhline(0, color='red', linestyle='--')
-        
+        plt.bar(channels, scores, color="skyblue")
+        plt.xlabel("Channel Index")
+        plt.ylabel("Importance Score (Baseline MSE - Pruned MSE)")
+        plt.title(f"Feature Map Importance Scores for Layer: {self.layer_name}")
+        plt.axhline(0, color="red", linestyle="--")
+
         if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
             plt.close()
         else:
             plt.show()
 
-def check_pruning_statistics(original_model: nn.Module,
-                             pruned_model: nn.Module,
-                             layer_name: str, save_json=True) -> Dict[str, Any]:
+
+def check_pruning_statistics(
+    original_model: nn.Module, pruned_model: nn.Module, layer_name: str, save_json=True
+) -> dict[str, Any]:
     """
     Compares the original and pruned models to report on the number of
     non-zero parameters in the specified layer.
@@ -366,38 +414,42 @@ def check_pruning_statistics(original_model: nn.Module,
         raise ValueError(f"Layer '{layer_name}' not found in one of the models.")
     layer_orig = dict_modules_orig[layer_name]
     layer_pruned = dict_modules_pruned[layer_name]
+
     def count_nonzero_params(layer: nn.Module) -> int:
         nonzero = 0
         for param in layer.parameters():
             nonzero += torch.count_nonzero(param).item()
         return nonzero
+
     orig_nonzero = count_nonzero_params(layer_orig)
     pruned_nonzero = count_nonzero_params(layer_pruned)
     total_params = sum(p.numel() for p in layer_orig.parameters())
     reduction = orig_nonzero - pruned_nonzero
     reduction_pct = (reduction / total_params) * 100 if total_params > 0 else 0.0
     stats = {
-        'layer_name': layer_name,
-        'original_nonzero_params': orig_nonzero,
-        'pruned_nonzero_params': pruned_nonzero,
-        'total_params': total_params,
-        'reduction_in_nonzero_params': reduction,
-        'reduction_percentage': reduction_pct
+        "layer_name": layer_name,
+        "original_nonzero_params": orig_nonzero,
+        "pruned_nonzero_params": pruned_nonzero,
+        "total_params": total_params,
+        "reduction_in_nonzero_params": reduction,
+        "reduction_percentage": reduction_pct,
     }
     if save_json:
         import json
-        save_path = f'pruning_statistics_{layer_name.replace(".", "_")}.json'
-        with open(save_path, 'w') as f:
+
+        save_path = f"pruning_statistics_{layer_name.replace('.', '_')}.json"
+        with open(save_path, "w") as f:
             json.dump(stats, f, indent=4)
         print(f"Pruning statistics saved to {save_path}")
     return stats
 
-#! Example usage:
+
+# Example usage:
 # import torch
 # import torch.nn as nn
 # from torch.utils.data import DataLoader, TensorDataset
 
-#! --- 1. Define external dependencies (as in your project) ---
+# --- 1. Define external dependencies (as in your project) ---
 
 # Placeholder for your test_model function
 # def test_model(model, dataloader, criterion, device):
@@ -414,7 +466,7 @@ def check_pruning_statistics(original_model: nn.Module,
 #     rmse = (total_se / total_count) ** 0.5
 #     return rmse
 
-#! --- 2. Create a dummy model and data for demonstration ---
+# --- 2. Create a dummy model and data for demonstration ---
 
 # A simple CNN
 # class SimpleCNN(nn.Module):
@@ -441,7 +493,7 @@ def check_pruning_statistics(original_model: nn.Module,
 # dataset = TensorDataset(X, Y)
 # dataloader = DataLoader(dataset, batch_size=16)
 
-#! --- 3. Setup and run the pruner ---
+# --- 3. Setup and run the pruner ---
 
 # Define components
 # my_model = SimpleCNN()
@@ -463,7 +515,7 @@ def check_pruning_statistics(original_model: nn.Module,
 #     device=my_device
 # )
 
-#! --- 4. Run the pruning methods ---
+# --- 4. Run the pruning methods ---
 
 # Compute importance scores
 # Note: The original file names are used for compatibility

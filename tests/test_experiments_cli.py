@@ -69,18 +69,34 @@ class TestExperimentsCLI:
         exp3_parser.add_argument(
             "--strategy",
             type=str,
-            default="both",
-            choices=["bagging", "stacking", "both"],
+            default="all",
+            choices=["all", "both", "bagging", "stacking"],
         )
-        exp3_parser.add_argument("--train", action="store_true", default=True)
+        exp3_parser.add_argument("--variants", type=str, default="all")
+        exp3_parser.add_argument("--train", action="store_true", default=False)
         exp3_parser.add_argument("--no-train", dest="train", action="store_false")
+        exp3_parser.add_argument("--prune", action="store_true", default=False)
+        exp3_parser.add_argument("--no-prune", dest="prune", action="store_false")
         exp3_parser.add_argument("--evaluate", action="store_true", default=True)
         exp3_parser.add_argument("--no-evaluate", dest="evaluate", action="store_false")
         exp3_parser.add_argument("--save-results", action="store_true", default=True)
         exp3_parser.add_argument(
             "--no-save-results", dest="save_results", action="store_false"
         )
-        exp3_parser.add_argument("--heatmaps", action="store_true")
+        exp3_parser.add_argument("--heatmaps", action="store_true", default=True)
+        exp3_parser.add_argument("--no-heatmaps", dest="heatmaps", action="store_false")
+        exp3_parser.add_argument("--skip-heatmaps", action="store_true", default=False)
+        exp3_parser.add_argument("--reuse-exp2-maps", action="store_true", default=True)
+        exp3_parser.add_argument(
+            "--no-reuse-exp2-maps", dest="reuse_exp2_maps", action="store_false"
+        )
+        exp3_parser.add_argument("--live-mpm", action="store_true", default=False)
+        exp3_parser.add_argument(
+            "--device",
+            type=str,
+            default="auto",
+            choices=["auto", "cuda", "cpu"],
+        )
 
         return parser
 
@@ -152,7 +168,7 @@ class TestExperimentsCLI:
     def test_parse_experiment_three_flags(
         self, cli_parser: argparse.ArgumentParser
     ) -> None:
-        """Verify experiment-three command parses strategy, execution flags, and heatmap options."""
+        """Verify experiment-three command parses strategy, variants, execution flags, and XAI options."""
         args = cli_parser.parse_args(
             [
                 "experiment-three",
@@ -160,18 +176,39 @@ class TestExperimentsCLI:
                 "vgg16",
                 "--strategy",
                 "bagging",
+                "--variants",
+                "1,2",
                 "--no-train",
                 "--evaluate",
                 "--heatmaps",
+                "--reuse-exp2-maps",
+                "--device",
+                "cpu",
             ]
         )
 
         assert args.command == "experiment-three"
         assert args.models == ["vgg16"]
         assert args.strategy == "bagging"
+        assert args.variants == "1,2"
         assert args.train is False
+        assert args.prune is False
         assert args.evaluate is True
         assert args.heatmaps is True
+        assert args.reuse_exp2_maps is True
+        assert args.live_mpm is False
+        assert args.device == "cpu"
+
+        default_args = cli_parser.parse_args(["experiment-three"])
+        assert default_args.strategy == "all"
+        assert default_args.variants == "all"
+        assert default_args.train is False
+        assert default_args.prune is False
+        assert default_args.evaluate is True
+        assert default_args.heatmaps is True
+        assert default_args.reuse_exp2_maps is True
+        assert default_args.live_mpm is False
+        assert default_args.skip_heatmaps is False
 
     def test_dispatch_experiment_one_command(self) -> None:
         """Verify experiment_one_command dispatches parsed args to run_experiment_one_complete."""
@@ -246,10 +283,16 @@ class TestExperimentsCLI:
         """Verify experiment_three_command dispatches parsed args to run_experiment_3."""
         mock_args = MagicMock(
             models=["vgg16"],
-            strategy="both",
-            train=True,
+            strategy="all",
+            variants="1,2",
+            train=False,
+            prune=False,
             evaluate=True,
-            heatmaps=False,
+            heatmaps=True,
+            skip_heatmaps=False,
+            reuse_exp2_maps=True,
+            live_mpm=False,
+            device="cpu",
             save_results=True,
         )
 
@@ -263,10 +306,14 @@ class TestExperimentsCLI:
             cli_entry.experiment_three_command(mock_args)
             mock_run.assert_called_once_with(
                 models=["vgg16"],
-                run_training=True,
-                run_pruning=True,
+                run_training=False,
+                run_pruning=False,
                 run_evaluation=True,
-                run_heatmaps=False,
+                run_heatmaps=True,
                 save_results=True,
                 ensemble_mode=["bagging", "stacking"],
+                variants="1,2",
+                reuse_exp2_maps=True,
+                live_mpm=False,
+                device="cpu",
             )
