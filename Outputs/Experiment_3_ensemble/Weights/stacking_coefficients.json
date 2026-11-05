@@ -1,0 +1,374 @@
+{
+  "ridge_alpha": 1.0,
+  "model_order": [
+    "vgg16",
+    "vgg19",
+    "resnet152",
+    "densenet161",
+    "efficientnetb3",
+    "barlowtwins",
+    "clip_vit_b16"
+  ],
+  "variants": [
+    {
+      "variant_idx": 1,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.06280424508709005,
+        0.06362244233070162,
+        0.11385129864088153,
+        0.31295199738297247,
+        -0.003605555679981531,
+        0.17531704569337606,
+        0.30913305337828234
+      ],
+      "weights_by_model": {
+        "vgg16": 0.06280424508709005,
+        "vgg19": 0.06362244233070162,
+        "resnet152": 0.11385129864088153,
+        "densenet161": 0.31295199738297247,
+        "efficientnetb3": -0.003605555679981531,
+        "barlowtwins": 0.17531704569337606,
+        "clip_vit_b16": 0.30913305337828234
+      },
+      "intercept": -0.7267843621985961,
+      "val_mse": 22.054195220912746,
+      "val_r2": 0.6661854692944502,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant1_meta.pth"
+    },
+    {
+      "variant_idx": 2,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.05695788567652149,
+        0.013616903822810947,
+        0.11782078311999135,
+        0.19584433924309783,
+        0.07495312278441481,
+        0.23850484454919355,
+        0.37621943762907734
+      ],
+      "weights_by_model": {
+        "vgg16": 0.05695788567652149,
+        "vgg19": 0.013616903822810947,
+        "resnet152": 0.11782078311999135,
+        "densenet161": 0.19584433924309783,
+        "efficientnetb3": 0.07495312278441481,
+        "barlowtwins": 0.23850484454919355,
+        "clip_vit_b16": 0.37621943762907734
+      },
+      "intercept": -2.748158268579356,
+      "val_mse": 28.173931633181788,
+      "val_r2": 0.6197749248129492,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant2_meta.pth"
+    },
+    {
+      "variant_idx": 3,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        -0.25404045383082474,
+        0.28418655013503163,
+        0.07336502390594415,
+        0.12660205540693956,
+        0.13516514500203997,
+        0.27657571166823985,
+        0.3993524669304231
+      ],
+      "weights_by_model": {
+        "vgg16": -0.25404045383082474,
+        "vgg19": 0.28418655013503163,
+        "resnet152": 0.07336502390594415,
+        "densenet161": 0.12660205540693956,
+        "efficientnetb3": 0.13516514500203997,
+        "barlowtwins": 0.27657571166823985,
+        "clip_vit_b16": 0.3993524669304231
+      },
+      "intercept": -1.6476878485462894,
+      "val_mse": 31.86653099547817,
+      "val_r2": 0.6189143397997795,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant3_meta.pth"
+    },
+    {
+      "variant_idx": 4,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        -0.0086554211350985,
+        0.2047195742887409,
+        -0.01187466858612757,
+        0.22439427547888482,
+        0.0660346124200514,
+        0.12234921718917727,
+        0.3888062122911266
+      ],
+      "weights_by_model": {
+        "vgg16": -0.0086554211350985,
+        "vgg19": 0.2047195742887409,
+        "resnet152": -0.01187466858612757,
+        "densenet161": 0.22439427547888482,
+        "efficientnetb3": 0.0660346124200514,
+        "barlowtwins": 0.12234921718917727,
+        "clip_vit_b16": 0.3888062122911266
+      },
+      "intercept": 1.2895402530868934,
+      "val_mse": 28.827890285836563,
+      "val_r2": 0.5442075101410939,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant4_meta.pth"
+    },
+    {
+      "variant_idx": 5,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.09713356239494574,
+        0.16579931333766199,
+        0.035005803048742186,
+        0.12921016945852531,
+        0.05061677440884117,
+        0.21780224733615083,
+        0.3604534838526021
+      ],
+      "weights_by_model": {
+        "vgg16": 0.09713356239494574,
+        "vgg19": 0.16579931333766199,
+        "resnet152": 0.035005803048742186,
+        "densenet161": 0.12921016945852531,
+        "efficientnetb3": 0.05061677440884117,
+        "barlowtwins": 0.21780224733615083,
+        "clip_vit_b16": 0.3604534838526021
+      },
+      "intercept": -2.2163417179522042,
+      "val_mse": 21.403684854289825,
+      "val_r2": 0.6764580566595428,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant5_meta.pth"
+    },
+    {
+      "variant_idx": 6,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.027566026553647014,
+        -0.019807927540005505,
+        0.04616326817766286,
+        0.1084239831466391,
+        0.03212807025923809,
+        0.23696831145365674,
+        0.49760339066231163
+      ],
+      "weights_by_model": {
+        "vgg16": 0.027566026553647014,
+        "vgg19": -0.019807927540005505,
+        "resnet152": 0.04616326817766286,
+        "densenet161": 0.1084239831466391,
+        "efficientnetb3": 0.03212807025923809,
+        "barlowtwins": 0.23696831145365674,
+        "clip_vit_b16": 0.49760339066231163
+      },
+      "intercept": 4.555327894285467,
+      "val_mse": 33.01932579115697,
+      "val_r2": 0.4940543981165162,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant6_meta.pth"
+    },
+    {
+      "variant_idx": 7,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.0959380804410055,
+        0.09494760512734575,
+        0.09745274357397304,
+        0.0847771678865857,
+        0.05821141102914825,
+        0.24225867831448927,
+        0.3795652872925621
+      ],
+      "weights_by_model": {
+        "vgg16": 0.0959380804410055,
+        "vgg19": 0.09494760512734575,
+        "resnet152": 0.09745274357397304,
+        "densenet161": 0.0847771678865857,
+        "efficientnetb3": 0.05821141102914825,
+        "barlowtwins": 0.24225867831448927,
+        "clip_vit_b16": 0.3795652872925621
+      },
+      "intercept": -1.8040139045940145,
+      "val_mse": 30.42480268850919,
+      "val_r2": 0.5409508673649511,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant7_meta.pth"
+    },
+    {
+      "variant_idx": 8,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.026125513281721312,
+        -0.057277896546807365,
+        -0.042217917152371325,
+        0.15624248403224833,
+        0.20210267973888174,
+        0.2220991101488788,
+        0.4791892004245605
+      ],
+      "weights_by_model": {
+        "vgg16": 0.026125513281721312,
+        "vgg19": -0.057277896546807365,
+        "resnet152": -0.042217917152371325,
+        "densenet161": 0.15624248403224833,
+        "efficientnetb3": 0.20210267973888174,
+        "barlowtwins": 0.2220991101488788,
+        "clip_vit_b16": 0.4791892004245605
+      },
+      "intercept": 1.8812535575696105,
+      "val_mse": 31.069424075635464,
+      "val_r2": 0.5574425177192411,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant8_meta.pth"
+    },
+    {
+      "variant_idx": 9,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.04421404247011624,
+        0.059587987739923846,
+        0.09522919249348044,
+        0.14031676375769045,
+        0.07333536170863629,
+        0.2140346005593835,
+        0.42191831415923964
+      ],
+      "weights_by_model": {
+        "vgg16": 0.04421404247011624,
+        "vgg19": 0.059587987739923846,
+        "resnet152": 0.09522919249348044,
+        "densenet161": 0.14031676375769045,
+        "efficientnetb3": 0.07333536170863629,
+        "barlowtwins": 0.2140346005593835,
+        "clip_vit_b16": 0.42191831415923964
+      },
+      "intercept": -1.6029559648337304,
+      "val_mse": 30.234347006425985,
+      "val_r2": 0.5878383064410533,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant9_meta.pth"
+    },
+    {
+      "variant_idx": 10,
+      "models": [
+        "vgg16",
+        "vgg19",
+        "resnet152",
+        "densenet161",
+        "efficientnetb3",
+        "barlowtwins",
+        "clip_vit_b16"
+      ],
+      "weights": [
+        0.15998665838599263,
+        0.019884696628748776,
+        0.07047881635333285,
+        0.20417978442442364,
+        0.04974277539618851,
+        0.16915258886148754,
+        0.31644848242099827
+      ],
+      "weights_by_model": {
+        "vgg16": 0.15998665838599263,
+        "vgg19": 0.019884696628748776,
+        "resnet152": 0.07047881635333285,
+        "densenet161": 0.20417978442442364,
+        "efficientnetb3": 0.04974277539618851,
+        "barlowtwins": 0.16915258886148754,
+        "clip_vit_b16": 0.31644848242099827
+      },
+      "intercept": 1.3484633376714856,
+      "val_mse": 30.91091792554388,
+      "val_r2": 0.5593751948184678,
+      "meta_weights_path": "Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant10_meta.pth"
+    }
+  ],
+  "mean_weights": {
+    "vgg16": 0.030803013932511676,
+    "vgg19": 0.08292792493241527,
+    "resnet152": 0.05952743435755096,
+    "densenet161": 0.1682943020218007,
+    "efficientnetb3": 0.07386843970674586,
+    "barlowtwins": 0.21150623557740333,
+    "clip_vit_b16": 0.39286893290411834
+  },
+  "std_weights": {
+    "vgg16": 0.10485412279234621,
+    "vgg19": 0.10112300834544058,
+    "resnet152": 0.05060023834359314,
+    "densenet161": 0.06393214905962344,
+    "efficientnetb3": 0.05420004107334798,
+    "barlowtwins": 0.0421517447030204,
+    "clip_vit_b16": 0.0580341627655208
+  },
+  "mean_intercept": -0.16713570240907344,
+  "std_intercept": 2.214127828467586
+}
