@@ -13,7 +13,7 @@
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
-2. [Motivation & Methodological Fixes](#2-motivation--methodological-fixes)
+2. [Key Design Principles](#2-key-design-principles)
 3. [Model Suite & Canonical Ordering](#3-model-suite--canonical-ordering)
 4. [Data Splitting Strategy & Leakage Prevention](#4-data-splitting-strategy--leakage-prevention)
 5. [Ensemble Methods (Stage 3C)](#5-ensemble-methods-stage-3c)
@@ -29,25 +29,23 @@
 
 Experiment 3 evaluates multi-architecture ensemble methods for predicting human judgments of visual authenticity in AI-generated imagery. 
 
-Under ADR-0005, the pipeline was completely overhauled from the legacy implementation:
-- **7 Architectures Included:** Incorporates the Vision Transformer backbone `clip_vit_b16` (`CLIPViTAuthenticityPredictor`) alongside all 6 convolutional networks (`vgg16`, `vgg19`, `resnet152`, `densenet161`, `efficientnetb3`, `barlowtwins`).
-- **No Channel Pruning:** Completely skips lossy Sequential Backward Selection (SBS) channel pruning, reusing all 70 unpruned checkpoints from Experiment 1A directly.
-- **Matched 10-Variant Ensembles:** Builds 10 independent ensembles ($k = 1 \dots 10$) where all 7 models share the exact same training split and separate validation split ($\text{val}_k$).
+The pipeline is organized around five core components:
+- **7 Architectures Included:** Incorporates the Vision Transformer backbone `clip_vit_b16` (`CLIPViTAuthenticityPredictor`) alongside 6 distinct convolutional networks (`vgg16`, `vgg19`, `resnet152`, `densenet161`, `efficientnetb3`, `barlowtwins`).
+- **Unpruned Representations:** Directly reuses the 70 unpruned checkpoints from Experiment 1A across 10 random seeds, evaluating the full learned feature representations.
+- **Matched 10-Variant Ensembles:** Evaluates 10 independent ensembles ($k = 1 \dots 10$) where all 7 models share the exact same training split and separate validation split ($\text{val}_k$).
 - **Clean Validation Stacking:** Stacking weights are learned strictly on the separate validation sets ($136$ images each) using closed-form Ridge regression ($\alpha = 1.0$), with zero test data leakage.
 - **Full-Dataset Attribution Maps (MPM):** Generates $(273, 224, 224)$ Multiscale Pixel Masking attribution heatmaps for all 273 test images across all 10 runs, producing ensemble prototype heatmaps and evaluating pairwise consistency across all 45 run pairs.
 
 ---
 
-## 2. Motivation & Methodological Fixes
+## 2. Key Design Principles
 
-The redesign addressed four major issues in the original version:
-
-| Area | Legacy Experiment 3 | Redesigned Experiment 3 (ADR-0005) |
-| :--- | :--- | :--- |
-| **Architectures** | 6 CNN architectures (60 models). | **7 architectures** (70 models), adding `clip_vit_b16`. |
-| **Model Weights** | Required retraining base models (3A) and channel pruning on validation (3B). | **Direct reuse of 70 unpruned Experiment 1A checkpoints**, skipping redundant training and preserving full features. |
-| **Stacking Meta-Learner** | Split the test set 50/50 or ran 5-fold CV on test data, leaking test labels into weights. | **Closed-form Ridge regression ($\alpha=1.0$) fitted strictly on separate validation splits ($\text{val}_k$)**, tested on all 273 unseen test images. |
-| **Explainability (XAI)** | Only 3 example test images, saving small PNG overlays without systematic numbers. | **Full-test-set MPM heatmaps ($273 \times 224 \times 224$) saved as `.npy`**, with prototype maps and full pairwise consistency across all 45 run pairs. |
+| Design Dimension | Implementation Details |
+| :--- | :--- |
+| **Model Architectures** | 7 architectures (70 total models across 10 random seeds), spanning supervised CNNs, self-supervised contrastive learning, and a multimodal vision-language transformer. |
+| **Model Weights** | Direct reuse of unpruned Experiment 1A checkpoints (`Outputs/Experiment_1_variants/Weights/`), avoiding redundant training and preserving full representations. |
+| **Validation Stacking** | Closed-form regularized Ridge regression ($\alpha = 1.0$) fitted strictly on held-out validation splits ($\text{val}_k$, $N = 136$), evaluated on all 273 unseen test images. |
+| **Attribution & Consistency** | Full-test-set MPM heatmaps ($273 \times 224 \times 224$) saved as float32 `.npy` arrays, with prototype heatmaps and systematic consistency metrics across all 45 run pairs. |
 
 ---
 
@@ -307,8 +305,8 @@ from main.Experiments.experiment_three import run_experiment_3
 
 results = run_experiment_3(
     models=None,                      # Use all 7 registered models
-    run_training=False,               # Skip legacy 3A training (reuses Exp 1A weights)
-    run_pruning=False,                # Skip legacy 3B channel pruning
+    run_training=False,               # Directly reuses trained Exp 1A weights
+    run_pruning=False,                # Evaluates full unpruned representations
     run_evaluation=True,              # Run Stage 3C ensemble evaluation
     run_heatmaps=True,                # Run Stage 3D MPM attribution
     ensemble_mode=["bagging", "stacking"],
