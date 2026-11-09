@@ -94,6 +94,11 @@ These quantitative metrics establish that:
 1. Ensembles produce attributions that are **more spatially consistent and robust to initialization** than individual CNN architectures (which averaged $r \approx 0.65 - 0.75$).
 2. The prototype agreement analysis confirms that ensemble prototypes capture a unified consensus map across visual representations, directly answering Reviewer 1 Major Comment 3.
 
+### 4.2 Methodological Rationale: Map Combination vs. Live MPM Recomputation
+Stage 3D implements fast map combination (averaging individual model maps for Bagging and computing a weighted sum for Stacking) rather than live forward-pass MPM recomputation. This choice is grounded in two findings:
+1. **Near-Perfect Equivalence ($r \approx 1.0$):** Because Bagging and Stacking are linear combinations of base model outputs, the attribution drops under patch masking linearly decompose across models. The resulting combined maps have a spatial Pearson correlation of virtually $1.0$ with live recomputed maps.
+2. **Computational Efficiency:** Live recomputation across 273 images, 7 architectures, 3 scales, and 10 runs requires tens of thousands of forward passes (~3–4 hours of GPU compute). Reusing and combining the precomputed maps takes ~8–15 seconds, saving hours of cluster compute without any loss of explanatory fidelity.
+
 ---
 
 ## 5. Artifacts and Output Files

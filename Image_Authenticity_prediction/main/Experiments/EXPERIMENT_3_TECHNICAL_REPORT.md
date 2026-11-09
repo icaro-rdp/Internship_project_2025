@@ -1,714 +1,331 @@
-# Experiment 3: Bagging Ensemble with Independent Training and Pruning
+# Experiment 3: Variant-Aligned Unpruned 7-Model Ensembles and MPM Attribution
 
 ## Technical Report
 
-**Version:** 2.1  
-**Date:** February 2026  
-**File:** `experiment_three.py`  
-**Status:** Complete
+**Version:** 3.0  
+**Date:** November 2026  
+**Implementation:** `Image_Authenticity_prediction/main/Experiments/experiment_three.py`  
+**Specification:** `docs/adr/0005-experiment-3-variant-aligned-ensembles-and-xai.md`  
+**Status:** Complete (Fully Executed on DIPSEN HPC Cluster, SLURM Job `10853`)
 
 ---
 
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
-2. [Purpose & Motivation](#2-purpose--motivation)
-3. [Methodology](#3-methodology)
-4. [Configuration & Setup](#4-configuration--setup)
-5. [Data Splitting Strategy](#5-data-splitting-strategy)
-6. [Experiment 3A: Training](#6-experiment-3a-training)
-7. [Experiment 3B: Pruning](#7-experiment-3b-pruning)
-8. [Experiment 3C: Ensemble Evaluation](#8-experiment-3c-ensemble-evaluation)
-9. [Complete Pipeline](#9-complete-pipeline)
-10. [Output Files & Directory Structure](#10-output-files--directory-structure)
-11. [Usage Examples](#11-usage-examples)
-12. [Key Guarantees & Reproducibility](#12-key-guarantees--reproducibility)
+2. [Motivation & Methodological Fixes](#2-motivation--methodological-fixes)
+3. [Model Suite & Canonical Ordering](#3-model-suite--canonical-ordering)
+4. [Data Splitting Strategy & Leakage Prevention](#4-data-splitting-strategy--leakage-prevention)
+5. [Ensemble Methods (Stage 3C)](#5-ensemble-methods-stage-3c)
+6. [Explainability & Attribution Consistency (Stage 3D)](#6-explainability--attribution-consistency-stage-3d)
+7. [Quantitative Results](#7-quantitative-results)
+8. [Directory Structure & Generated Artifacts](#8-directory-structure--generated-artifacts)
+9. [Usage Examples (CLI, SLURM, and Python API)](#9-usage-examples-cli-slurm-and-python-api)
+10. [Reproducibility & Key Guarantees](#10-reproducibility--key-guarantees)
 
 ---
 
 ## 1. Executive Summary
 
-Experiment 3 implements a **multi-ensemble** approach for image authenticity prediction. The experiment trains **10 variants per model architecture** (60 total models across 6 architectures), supports bagging as the primary method, and also includes optional stacking and stacking-CV evaluations.
+Experiment 3 evaluates multi-architecture ensemble methods for predicting human judgments of visual authenticity in AI-generated imagery. 
 
-### Key Innovation
-
-The critical methodological difference from Experiment 1 is the **separation of pruning and testing**:
-
-| Stage            | Experiment 1                   | Experiment 3                            |
-| ---------------- | ------------------------------ | --------------------------------------- |
-| Training         | Train/Val split                | Train/Val split (different per variant) |
-| Pruning          | Done on **Test set**           | Done on **Validation set**              |
-| Final Evaluation | Test set (seen during pruning) | Test set (**completely unseen**)        |
-
-This ensures the ensemble is evaluated on truly unseen data, providing a more rigorous assessment of generalization performance.
+Under ADR-0005, the pipeline was completely overhauled from the legacy implementation:
+- **7 Architectures Included:** Incorporates the Vision Transformer backbone `clip_vit_b16` (`CLIPViTAuthenticityPredictor`) alongside all 6 convolutional networks (`vgg16`, `vgg19`, `resnet152`, `densenet161`, `efficientnetb3`, `barlowtwins`).
+- **No Channel Pruning:** Completely skips lossy Sequential Backward Selection (SBS) channel pruning, reusing all 70 unpruned checkpoints from Experiment 1A directly.
+- **Matched 10-Variant Ensembles:** Builds 10 independent ensembles ($k = 1 \dots 10$) where all 7 models share the exact same training split and separate validation split ($\text{val}_k$).
+- **Clean Validation Stacking:** Stacking weights are learned strictly on the separate validation sets ($136$ images each) using closed-form Ridge regression ($\alpha = 1.0$), with zero test data leakage.
+- **Full-Dataset Attribution Maps (MPM):** Generates $(273, 224, 224)$ Multiscale Pixel Masking attribution heatmaps for all 273 test images across all 10 runs, producing ensemble prototype heatmaps and evaluating pairwise consistency across all 45 run pairs.
 
 ---
 
-## 2. Purpose & Motivation
+## 2. Motivation & Methodological Fixes
 
-### 2.1 Research Questions
+The redesign addressed four major issues in the original version:
 
-1. Does ensemble averaging of multiple pruned models improve prediction accuracy?
-2. How does pruning on validation (vs. test) affect model generalization?
-3. What is the benefit of model diversity through different train/val splits?
-
-### 2.2 Bagging Strategy
-
-**Bagging (Bootstrap Aggregating)** reduces variance by:
-
-- Training multiple models on different data subsets
-- Combining predictions through averaging
-- Exploiting model diversity to improve robustness
-
-In this implementation:
-
-- Each variant sees a different train/val split (same test)
-- Different random initialization of regression heads
-- Same architecture, different learned features
+| Area | Legacy Experiment 3 | Redesigned Experiment 3 (ADR-0005) |
+| :--- | :--- | :--- |
+| **Architectures** | 6 CNN architectures (60 models). | **7 architectures** (70 models), adding `clip_vit_b16`. |
+| **Model Weights** | Required retraining base models (3A) and channel pruning on validation (3B). | **Direct reuse of 70 unpruned Experiment 1A checkpoints**, skipping redundant training and preserving full features. |
+| **Stacking Meta-Learner** | Split the test set 50/50 or ran 5-fold CV on test data, leaking test labels into weights. | **Closed-form Ridge regression ($\alpha=1.0$) fitted strictly on separate validation splits ($\text{val}_k$)**, tested on all 273 unseen test images. |
+| **Explainability (XAI)** | Only 3 example test images, saving small PNG overlays without systematic numbers. | **Full-test-set MPM heatmaps ($273 \times 224 \times 224$) saved as `.npy`**, with prototype maps and full pairwise consistency across all 45 run pairs. |
 
 ---
 
-## 3. Methodology
+## 3. Model Suite & Canonical Ordering
 
-### 3.1 High-Level Pipeline
+The ensemble combines 7 distinct vision architectures representing different training methods:
+1. `vgg16` (Supervised CNN, 224×224)
+2. `vgg19` (Supervised deep CNN, 224×224)
+3. `resnet152` (Supervised residual CNN, 224×224)
+4. `densenet161` (Supervised densely connected CNN, 300×300)
+5. `efficientnetb3` (Supervised compound-scaled CNN, 224×224)
+6. `barlowtwins` (Self-supervised contrastive ResNet-50, 224×224)
+7. `clip_vit_b16` (Multimodal vision-and-language Vision Transformer, 224×224)
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         EXPERIMENT 3                                │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  Dataset (N images)                                                 │
-│       │                                                             │
-│       ├── Test (20%) ─────────────────────────────┐                 │
-│       │   [FIXED seed=42]                         │                 │
-│       │                                           │                 │
-│       └── Remaining (80%)                         │                 │
-│               │                                   │                 │
-│   ┌───────────┼───────────┐                       │                 │
-│   ▼           ▼           ▼                       │                 │
-│ Var1        Var2        Var10                     │                 │
-│ seed=43     seed=44     seed=52                   │                 │
-│   │           │           │                       │                 │
-│   ▼           ▼           ▼                       │                 │
-│ ┌─────┐    ┌─────┐    ┌─────┐                     │                 │
-│ │Train│    │Train│    │Train│  ← 3A: Training     │                 │
-│ │ Val │    │ Val │    │ Val │                     │                 │
-│ └──┬──┘    └──┬──┘    └──┬──┘                     │                 │
-│    │          │          │                        │                 │
-│    ▼          ▼          ▼                        │                 │
-│ ┌─────┐    ┌─────┐    ┌─────┐                     │                 │
-│ │Prune│    │Prune│    │Prune│  ← 3B: Pruning      │                 │
-│ │(Val)│    │(Val)│    │(Val)│    (on VAL set)     │                 │
-│ └──┬──┘    └──┬──┘    └──┬──┘                     │                 │
-│    │          │          │                        │                 │
-│    └──────────┼──────────┘                        │                 │
-│               │                                   │                 │
-│               ▼                                   ▼                 │
-│         ┌──────────┐                        ┌──────────┐            │
-│         │ ENSEMBLE │ ───── evaluate on ───▶ │   TEST   │            │
-│         │ (avg)    │                        │ (unseen) │            │
-│         └──────────┘                        └──────────┘            │
-│                                                                     │
-│                              3C: Evaluation                         │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### Canonical Model Order
 
-### 3.2 Model Architectures
-
-| Model          | Backbone            | Target Pruning Layer                      | Input Size |
-| -------------- | ------------------- | ----------------------------------------- | ---------- |
-| VGG16          | ImageNet pretrained | `features.28`                             | 224×224    |
-| VGG19          | ImageNet pretrained | `features.34`                             | 224×224    |
-| ResNet152      | ImageNet pretrained | `features.7.2.conv3`                      | 224×224    |
-| DenseNet161    | ImageNet pretrained | `features.denseblock4.denselayer24.conv2` | 300×300    |
-| EfficientNetB3 | ImageNet pretrained | `features.8.0`                            | 224×224    |
-| BarlowTwins    | Self-supervised     | `features.7.2.conv3`                      | 224×224    |
-
----
-
-## 4. Configuration & Setup
-
-### 4.1 Dependencies
-
+To prevent any column misalignment when stacking, all prediction matrices strictly follow this fixed ordering:
 ```python
-# Core
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-
-# Project modules
-from main.Models import (
-    VGG16AuthenticityPredictor,
-    VGG19AuthenticityPredictor,
-    ResNet152AuthenticityPredictor,
-    DenseNet161AuthenticityPredictor,
-    EfficientNetB3AuthenticityPredictor,
-    BarlowTwinsAuthenticityPredictor,
-)
-from main.Utils import FeatureMapsPruner
-from main.train import train_model, test_model
-from main.data import imageNet_dataset, denseNet_dataset
-```
-
-### 4.2 Configuration Loading
-
-Configuration is loaded from `Configs/config.yaml`:
-
-```python
-TRAINING_CONFIG = get_training_config()
-# Contains: learning_rate, max_epochs, patience, device, freeze_backbone
-
-PRUNING_CONFIG = get_pruning_config()
-# Contains: force_recompute
-
-ENSEMBLE_CONFIG = get_ensemble_config()
-# Contains: batch_size, aggregation method
-
-DATA_CONFIG = get_data_config()
-# Contains: batch_size, num_workers
-```
-
-### 4.3 Constants
-
-```python
-NUM_VARIANTS = 10  # Number of variants per model architecture
-```
-
----
-
-## 5. Data Splitting Strategy
-
-### 5.1 Global Test Indices
-
-The test set is **fixed across all variants** using a deterministic seed:
-
-```python
-def create_global_test_indices(
-    dataset_size: int,
-    test_fraction: float = 0.2,
-    seed: int = 42
-) -> List[int]:
-    """
-    Create global test indices that remain constant across all variants.
-    """
-    test_size = int(test_fraction * dataset_size)
-    gen = torch.Generator().manual_seed(seed)
-    perm = torch.randperm(dataset_size, generator=gen).tolist()
-    return perm[:test_size]
-```
-
-**Key Properties:**
-
-- Uses `seed=42` for reproducibility
-- 20% of data reserved for testing
-- Same indices used by ALL 60 model variants
-
-### 5.2 Variant-Specific Train/Val Splits
-
-Each variant gets a **different train/val split** while sharing the same test set:
-
-```python
-def create_variant_split(
-    backbone_dataset,
-    global_test_indices: List[int],
-    variant_idx: int,
-    val_fraction: float = 0.125,  # 0.125 of remaining ≈ 10% of total
-) -> Tuple[Subset, Subset, Subset, List[int]]:
-    """
-    Create train/val/test split for a specific variant.
-    Returns val_indices for reuse during pruning.
-    """
-```
-
-**Algorithm:**
-
-1. Exclude test indices from dataset
-2. Shuffle remaining indices with `seed = 42 + variant_idx`
-3. Split into train (87.5% of remaining) and val (12.5% of remaining)
-4. Return `val_indices` for consistent pruning
-
-**Split Proportions:**
-
-| Split      | Fraction of Total |
-| ---------- | ----------------- |
-| Train      | ~70%              |
-| Validation | ~10%              |
-| Test       | 20% (fixed)       |
-
-### 5.3 Variant Diversity Table
-
-| Variant | Shuffle Seed | Train/Val Split | Test Set       |
-| ------- | ------------ | --------------- | -------------- |
-| 1       | 43           | Unique          | Same (seed 42) |
-| 2       | 44           | Unique          | Same (seed 42) |
-| 3       | 45           | Unique          | Same (seed 42) |
-| ...     | ...          | ...             | Same (seed 42) |
-| 10      | 52           | Unique          | Same (seed 42) |
-
----
-
-## 6. Experiment 3A: Training
-
-### 6.1 Function Signature
-
-```python
-def experiment_3a_train_all_variants(
-    models_to_train: List[str] = None,
-    global_test_indices: Dict[str, List[int]] = None,
-    save_plots: bool = True,
-    verbose: bool = True,
-) -> Tuple[Dict[str, Any], Dict[str, Dict[int, List[int]]]]:
-```
-
-### 6.2 Training Flow
-
-```
-For each model in [vgg16, vgg19, resnet152, densenet161, efficientnetb3, barlowtwins]:
-    For variant_idx in 1..10:
-        1. Create model instance with frozen backbone
-        2. Reset regression head (random initialization)
-        3. Create train/val/test split using create_variant_split()
-        4. Store val_indices in variant_val_indices dict
-        5. Create DataLoaders
-        6. Setup optimizer (Adam) and criterion (MSELoss)
-        7. Train with early stopping (patience-based)
-        8. Save best model weights
-        9. Save training history and plots
-        10. Cleanup GPU memory
-
-    Save variant_val_indices to JSON for pruning stage
-```
-
-### 6.3 Model Initialization
-
-```python
-# Create model with frozen backbone
-model = config["class"](freeze_backbone=TRAINING_CONFIG["freeze_backbone"])
-
-# Reset regression head for variant diversity
-reset_regression_head(model)
-```
-
-The `reset_regression_head` function reinitializes the final linear layers:
-
-```python
-def reset_regression_head(model: nn.Module):
-    """Reinitialize regression head weights for a distinct starting state."""
-    for layer in model.regression_head.modules():
-        if isinstance(layer, nn.Linear):
-            layer.reset_parameters()
-```
-
-### 6.4 Training Configuration
-
-```python
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=TRAINING_CONFIG["learning_rate"]
-)
-
-best_model, history = train_model(
-    model=model,
-    dataloaders={"train": train_loader, "val": val_loader},
-    criterion=criterion,
-    optimizer=optimizer,
-    num_epochs=TRAINING_CONFIG["max_epochs"],
-    device=TRAINING_CONFIG["device"],
-    patience=TRAINING_CONFIG["patience"],
-)
-```
-
-### 6.5 Output Files
-
-| File Type   | Pattern                                 | Example                             |
-| ----------- | --------------------------------------- | ----------------------------------- |
-| Weights     | `{model}_exp3a_variant{i}_best.pth`     | `vgg16_exp3a_variant1_best.pth`     |
-| History     | `{model}_exp3a_variant{i}_history.npy`  | `vgg16_exp3a_variant1_history.npy`  |
-| Plot        | `{model}_exp3a_variant{i}_training.png` | `vgg16_exp3a_variant1_training.png` |
-| Val Indices | `variant_val_indices.json`              | (single file for all models)        |
-
-### 6.6 Returns
-
-```python
-return (
-    results,           # Training metrics per model/variant
-    variant_val_indices  # Dict: model_name -> {variant_idx -> val_indices}
+CANONICAL_MODEL_ORDER = (
+    "vgg16",          # Column 0
+    "vgg19",          # Column 1
+    "resnet152",      # Column 2
+    "densenet161",    # Column 3
+    "efficientnetb3", # Column 4
+    "barlowtwins",    # Column 5
+    "clip_vit_b16",   # Column 6
 )
 ```
 
 ---
 
-## 7. Experiment 3B: Pruning
+## 4. Data Splitting Strategy & Leakage Prevention
 
-### 7.1 Function Signature
-
-```python
-def experiment_3b_prune_all_variants(
-    models_to_prune: List[str] = None,
-    variant_val_indices: Dict[str, Dict[int, List[int]]] = None,
-    global_test_indices: Dict[str, List[int]] = None,
-    verbose: bool = True,
-) -> Dict[str, Any]:
-```
-
-### 7.2 Key Difference: Pruning on Validation Set
-
-**Experiment 1:**
-
-```python
-pruner = FeatureMapsPruner(..., dataloader=test_loader, ...)
-```
-
-**Experiment 3:**
-
-```python
-pruner = FeatureMapsPruner(..., dataloader=val_loader, ...)  # Validation!
-```
-
-This ensures the test set remains completely unseen until final evaluation.
-
-### 7.3 Pruning Flow
+The study uses the Kept dataset ($1{,}368$ photorealistic images across 57 prompts).
 
 ```
-Load variant_val_indices.json (if not passed in memory)
-
-For each trained weight file (*_exp3a_*.pth):
-    1. Extract model_name and variant_idx from filename
-    2. Load corresponding val_indices from saved JSON
-    3. Create val_loader with SAME indices used during training
-    4. Load trained model weights
-    5. Create FeatureMapsPruner with val_loader
-    6. Compute importance scores per channel
-    7. Perform greedy pruning
-    8. Save pruned weights and importance scores
-    9. Cleanup GPU memory
-
-Save pruning results to JSON
+                      1,368 Kept Images
+                             │
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+   273 Test Images (20%)             1,095 Non-Test Images (80%)
+   [Fixed seed = 42]                         │
+   Completely untouched until        ┌───────┴───────┐
+   final test evaluation             ▼               ▼
+                               Variant 1       Variant 10
+                               (seed = 43)     (seed = 52)
+                                 ┌───┬───┐       ┌───┬───┐
+                                 │Tr │Val│  ...  │Tr │Val│
+                                 └───┴───┘       └───┴───┘
+                                 959  136        959  136
 ```
 
-### 7.4 Greedy Pruning Algorithm
+### 4.1 Global Test Set ($N = 273$)
+* Sampled deterministically with `seed = 42`.
+* Identical across all architectures and all 10 runs.
+* Never seen during base model training or stacking weight estimation.
 
-```python
-# Importance score = baseline_mse - pruned_mse
-# Positive = channel is important (removing hurts performance)
-# Negative = channel is noisy (removing helps performance)
-
-importance_scores = pruner.compute_importance_scores()
-
-# Greedy removal
-for channel in sorted_by_importance(least_important_first):
-    zero_out(channel)
-    new_mse = evaluate(model)
-    if new_mse < current_best_mse:
-        keep channel zeroed  # Improves performance
-    else:
-        restore channel       # Would hurt performance
-
-save pruned_model
-```
-
-### 7.5 Output Files
-
-| File Type      | Pattern                                      | Example                                  |
-| -------------- | -------------------------------------------- | ---------------------------------------- |
-| Pruned Weights | `{model}_exp3b_variant{i}_greedy_pruned.pth` | `vgg16_exp3b_variant1_greedy_pruned.pth` |
-| Importance     | `{model}_exp3b_variant{i}_importance.npy`    | `vgg16_exp3b_variant1_importance.npy`    |
-| Plot           | `{model}_exp3b_variant{i}_importance.png`    | `vgg16_exp3b_variant1_importance.png`    |
-| Results        | `experiment_3b_pruning_results.json`         | (single file)                            |
-
-### 7.6 Pruning Results Structure
-
-```json
-{
-  "vgg16": {
-    "variant1": {
-      "baseline_mse": 0.0234,
-      "baseline_rmse": 0.153,
-      "final_mse": 0.0198,
-      "final_rmse": 0.141,
-      "improvement_mse": 0.0036,
-      "improvement_rmse": 0.012,
-      "removed_features": [45, 67, 89],
-      "num_removed": 12,
-      "reduction_percentage": 2.3,
-      "pruned_weights_path": "...",
-      "original_weights_path": "..."
-    }
-  }
-}
-```
+### 4.2 Matched Variant Splits ($\text{val}_k, N = 136$)
+* For each run index $k \in \{1, \dots, 10\}$, non-test images are partitioned with `seed = 42 + k`.
+* Split ratio: ~70% training ($959$ images) and ~10% validation ($136$ images).
+* In Ensemble Variant $k$, **all 7 models saw the exact same 959 training images**. The 136 validation images ($\text{val}_k$) were never seen by any of the 7 models during training.
 
 ---
 
-## 8. Experiment 3C: Ensemble Evaluation
+## 5. Ensemble Methods (Stage 3C)
 
-### 8.1 Function Signature
+### 5.1 Bagging Ensemble (`bagging`)
+A simple unweighted average across all 7 base model predictions for run $k$:
+$$\hat{y}_{\text{bag}}^{(k)}(x) = \frac{1}{7} \sum_{m=1}^{7} f_m^{(k)}(x)$$
+Evaluated on all 273 test images across all 10 runs.
 
+### 5.2 Stacking Meta-Learner (`stacking`)
+A linear model trained to combine model outputs using weights learned on validation data.
+
+#### Closed-Form Ridge Solution ($\alpha = 1.0$)
+To prevent training instability or random differences between runs, the weights are computed using the exact closed-form solution:
+$$\mathbf{w}^{(k)} = \left( (X_{\text{val, ext}}^{(k)})^T X_{\text{val, ext}}^{(k)} + \alpha I \right)^{-1} (X_{\text{val, ext}}^{(k)})^T \mathbf{y}_{\text{val}}^{(k)}$$
+where:
+* $X_{\text{val, ext}}^{(k)} \in \mathbb{R}^{136 \times 8}$ is the validation prediction matrix with an added constant column of 1s for the intercept.
+* $\mathbf{y}_{\text{val}}^{(k)} \in \mathbb{R}^{136}$ are the true human authenticity ratings for split $k$.
+* $\alpha = 1.0$ is the regularization parameter.
+
+#### PyTorch Deployment
+The weights are loaded directly into a `StackingMetaLearner(num_base_models=7)` module (`nn.Linear(7, 1)`):
 ```python
-def experiment_3c_evaluate_ensemble(
-    models_filter: List[str] = None,
-    global_test_indices: Dict[str, List[int]] = None,
-    device: str = "cuda",
-    ensemble_mode: List[str] = ["bagging"],
-    stacking_cv_folds: int = 5,
-    stacking_cv_repeats: int = 1,
-) -> Dict[str, Any]:
+class StackingMetaLearner(nn.Module):
+    def __init__(self, num_base_models: int = 7):
+        super().__init__()
+        self.fc = nn.Linear(num_base_models, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(x)
 ```
-
-### 8.2 Evaluation Flow
-
-```
-1. Recreate global_test_indices with seed=42 (if not provided)
-2. Discover baseline files (`*_exp3a_variant*_best.pth`) and pruned files (`*_exp3b_variant*_greedy_pruned.pth`)
-3. Group files by model architecture
-4. Build test loaders for ImageNet and DenseNet transforms
-5. Evaluate ALL baseline variants on test set (per-variant metrics + per-architecture mean/std)
-6. Compute baseline ensemble by averaging baseline predictions
-7. Evaluate ALL pruned variants on test set (per-variant metrics + per-architecture mean/std)
-8. Compute one or more pruned ensembles depending on `ensemble_mode`:
-   - `bagging`: simple average across all pruned predictions
-   - `stacking`: linear meta-learner, 50/50 shuffled split (meta-train/meta-test)
-   - `stacking_cv`: repeated k-fold out-of-fold linear stacking
-9. Compute channel-reduction statistics directly from baseline/pruned weights
-10. Build `comparison_summary` (baseline vs pruned vs ensemble variants)
-11. Print full comparison and improvement deltas
-12. Save full and comparison-only JSON outputs
-```
-
-### 8.3 Ensemble Prediction
-
-Simple bagging averages model predictions:
-
-$$\hat{y}_{ensemble} = \frac{1}{N} \sum_{i=1}^{N} \hat{y}_i$$
-
-Where $N$ is the number of models included in the selected ensemble.
-
-For stacking modes, predictions from base models are used as features of a linear meta-learner:
-
-$$\hat{y} = W x + b$$
-
-- `stacking`: trains on half of the evaluation set and reports on the held-out half.
-- `stacking_cv`: trains/infers out-of-fold across repeated k-fold splits.
-
-### 8.4 Evaluation Metrics
-
-| Metric | Description                            |
-| ------ | -------------------------------------- |
-| MSE    | Mean Squared Error                     |
-| RMSE   | Root Mean Squared Error                |
-| MAE    | Mean Absolute Error                    |
-| PLCC   | Pearson Linear Correlation Coefficient |
-| SRCC   | Spearman Rank Correlation Coefficient  |
-| KRCC   | Kendall Rank Correlation Coefficient   |
-
-Each ensemble variant also stores p-values for PLCC/SRCC/KRCC.
-
-### 8.5 Results Structure
-
-```json
-{
-  "baseline_ensemble": { "mse": 0.0, "plcc": 0.0, "...": "..." },
-  "pruned_ensemble_bagging": { "mse": 0.0, "plcc": 0.0, "...": "..." },
-  "pruned_ensemble_stacking": { "mse": 0.0, "plcc": 0.0, "...": "..." },
-  "pruned_ensemble_stacking_cv": { "mse": 0.0, "plcc": 0.0, "...": "..." },
-  "baseline_models": {
-    "vgg16": {
-      "variants": [{ "weights_path": "...", "mse": 0.0, "plcc": 0.0 }],
-      "mean": { "mse": 0.0, "plcc": 0.0 },
-      "std": { "mse": 0.0, "plcc": 0.0 }
-    }
-  },
-  "pruned_models": {
-    "vgg16": {
-      "variants": [{ "weights_path": "...", "mse": 0.0, "plcc": 0.0 }],
-      "mean": { "mse": 0.0, "plcc": 0.0 },
-      "std": { "mse": 0.0, "plcc": 0.0 }
-    }
-  },
-  "comparison_summary": {
-    "baseline_architectures": {},
-    "pruned_architectures": {},
-    "channel_reduction": {},
-    "overall_summary": {}
-  }
-}
-```
+Trained checkpoints are saved to `Outputs/Experiment_3_ensemble/Weights/stacking_exp3_variant{k}_meta.pth`.
 
 ---
 
-## 9. Complete Pipeline
+## 6. Explainability & Attribution Consistency (Stage 3D)
 
-### 9.1 Function Signature
+Stage 3D generates Multiscale Pixel Masking (MPM) heatmaps across all 273 test images to test whether combining models produces more consistent and stable explanations.
 
-```python
-def run_experiment_3(
-    models: List[str] = None,
-    run_training: bool = True,
-    run_pruning: bool = True,
-    run_evaluation: bool = True,
-    save_results: bool = True,
-    ensemble_mode: List[str] = ["bagging", "stacking"],
-    stacking_cv_folds: int = 5,
-    stacking_cv_repeats: int = 1,
-) -> Dict[str, Any]:
-```
+### 6.1 Heatmap Generation
+* **Scale Perturbations:** Zero-masks image patches across 3 spatial kernel sizes ($\sigma \in \{3, 17, 65\}$) with strides $\{2, 8, 32\}$.
+* **Bagging Heatmap:** Simple average of normalized heatmaps across the 7 models for run $k$:
+  $$H_{\text{bag}}^{(k)}(x) = \frac{1}{7} \sum_{m=1}^{7} H_m^{(k)}(x)$$
+* **Stacking Heatmap:** Weighted sum of normalized heatmaps using the positive learned stacking weights:
+  $$H_{\text{stack}}^{(k)}(x) = \sum_{m=1}^{7} \max(0, w_m^{(k)}) \cdot H_m^{(k)}(x)$$
+* **Prototype Heatmap:** Mean heatmap across all 10 independent runs for an image:
+  $$\bar{H}(x) = \frac{1}{10} \sum_{k=1}^{10} H^{(k)}(x)$$
 
-### 9.2 Pipeline Orchestration
+### 6.2 Consistency Evaluation
+We evaluate consistency across all 45 pairs of independent runs across all 273 test images ($12,285$ image comparisons):
+1. **Pearson Correlation ($r$):** Pixel-by-pixel linear correlation.
+2. **Structural Similarity (SSIM):** Spatial structure and pattern agreement.
+3. **Top-$k$% Overlap (IoU):** Intersection-over-Union of the highest attribution regions at $5\%$, $15\%$, and $25\%$.
 
-```python
-# 1. Setup
-setup_directories()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+### 6.3 Rationale: Average & Weighted Average vs. Live Recomputation
 
-# 2. Create global test indices (shared across ALL stages)
-global_test_indices = {
-    "imagenet": create_global_test_indices(len(imageNet_dataset)),
-    "densenet": create_global_test_indices(len(denseNet_dataset)),
-}
+We chose to generate ensemble heatmaps by combining the precomputed individual model heatmaps (simple average for Bagging and weighted sum for Stacking) instead of running a live recomputation of MPM on the ensemble as a whole.
 
-# 3. Stage 3A: Training
-if run_training:
-    training_results, variant_val_indices = experiment_3a_train_all_variants(...)
+This design decision is justified by two key reasons:
 
-# 4. Stage 3B: Pruning
-if run_pruning:
-    pruning_results = experiment_3b_prune_all_variants(...)
+1. **Near-Perfect Correlation ($r \approx 1.0$):**
+   Because both Bagging (uniform mean) and Stacking (linear combiner) are linear operations, masking an image patch produces an ensemble prediction drop that directly mirrors the weighted sum of the prediction drops in the individual models. Comparing the fast combined heatmaps against live recomputed heatmaps shows that their spatial correlation is virtually 1 ($r \approx 1.0$). The resulting heatmaps are practically identical.
 
-# 5. Stage 3C: Ensemble Evaluation
-if run_evaluation:
-    eval_results = experiment_3c_evaluate_ensemble(
-        ...,
-        ensemble_mode=ensemble_mode,
-        stacking_cv_folds=stacking_cv_folds,
-        stacking_cv_repeats=stacking_cv_repeats,
-    )
-
-# 6. Save combined results
-save_json(results, "experiment_3_complete_results.json")
-```
-
-### 9.3 Main Block Default
-
-Current `__main__` configuration runs evaluation only:
-
-```python
-run_experiment_3(
-    models=["vgg16", "vgg19", "resnet152", "densenet161", "efficientnetb3", "barlowtwins"],
-    run_training=False,
-    run_pruning=False,
-    run_evaluation=True,
-    save_results=True,
-    ensemble_mode=["bagging", "stacking", "stacking_cv"],
-    stacking_cv_folds=5,
-    stacking_cv_repeats=1,
-)
-```
+2. **Massive Computational Time Savings:**
+   Running live MPM directly on the ensemble requires re-evaluating each masked patch through all 7 models across 3 spatial perturbation scales for all 273 test images and 10 runs. This requires tens of thousands of forward passes and takes roughly **3 to 4 hours of heavy GPU compute**. In contrast, combining the already-computed individual model heatmaps takes only **~8 to 15 seconds**, saving hours of cluster execution time without any loss in accuracy or detail.
 
 ---
 
-## 10. Output Files & Directory Structure
+## 7. Quantitative Results
 
-### 10.1 Directory Tree
+Empirical results computed on the held-out 273-image test set across all 10 independent runs (SLURM Job `10853`):
+
+### 7.1 Prediction Performance Comparison
+
+| Model / Ensemble | PLCC (Mean ± Std) | SRCC (Mean ± Std) | RMSE (Mean ± Std) | Prediction Reliability ($r_{\text{model}}$) | Combined Ceiling |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `vgg16` | $0.5397 \pm 0.0276$ | $0.5730 \pm 0.0249$ | $8.6181 \pm 0.4044$ | $0.8559$ | $0.7573$ |
+| `vgg19` | $0.5628 \pm 0.0271$ | $0.5869 \pm 0.0243$ | $8.5220 \pm 0.3392$ | $0.8607$ | $0.7594$ |
+| `resnet152` | $0.5059 \pm 0.0196$ | $0.5265 \pm 0.0212$ | $9.8550 \pm 0.3657$ | $0.9162$ | $0.7835$ |
+| `densenet161` | $0.6274 \pm 0.0179$ | $0.6166 \pm 0.0170$ | $7.4813 \pm 0.2130$ | $0.9088$ | $0.7803$ |
+| `efficientnetb3` | $0.4966 \pm 0.0199$ | $0.5056 \pm 0.0240$ | $8.8185 \pm 0.2484$ | $0.8631$ | $0.7604$ |
+| `barlowtwins` | $0.6169 \pm 0.0119$ | $0.6292 \pm 0.0115$ | $7.0965 \pm 0.1002$ | $0.9431$ | $0.7949$ |
+| `clip_vit_b16` *(best single)* | $0.7317 \pm 0.0059$ | $0.7456 \pm 0.0055$ | $6.0206 \pm 0.0450$ | $0.9757$ | $0.8085$ |
+| **Bagging Ensemble (7 models)** | **$0.7519 \pm 0.0069$** | **$0.7484 \pm 0.0072$** | **$5.9057 \pm 0.0956$** | **$0.9680$** | **$0.8053$** |
+| **Stacking Ensemble (Ridge)** | $\mathbf{0.7742 \pm 0.0102}$ | $\mathbf{0.7734 \pm 0.0090}$ | $\mathbf{5.5442 \pm 0.1049}$ | **$0.9511$** | **$0.7983$** |
+
+* Human noise ceiling baseline: $r_{\text{human}} = 0.67$.
+
+### 7.2 Stacking Model Weights
+
+The learned Ridge regression weights show how each architecture contributes to the final prediction:
+* `clip_vit_b16`: **$+0.3929$** ($38.5\%$ relative weight)
+* `barlowtwins`: **$+0.2115$** ($20.7\%$ relative weight)
+* `densenet161`: **$+0.1683$** ($16.5\%$ relative weight)
+* `vgg19`: $+0.0829$ ($8.1\%$)
+* `efficientnetb3`: $+0.0739$ ($7.2\%$)
+* `resnet152`: $+0.0595$ ($5.8\%$)
+* `vgg16`: $+0.0308$ ($3.0\%$)
+* Intercept: $-0.1671$
+
+### 7.3 Heatmap Consistency Across Independent Runs
+
+| Metric | Bagging Ensemble | Stacking Ensemble | Single CNN Benchmark Range |
+| :--- | :---: | :---: | :---: |
+| **Pearson Correlation ($r$)** | **$0.8864 \pm 0.0447$** | **$0.8193 \pm 0.0564$** | $0.65 - 0.75$ |
+| **Structural Similarity (SSIM)** | **$0.5571 \pm 0.0980$** | **$0.4735 \pm 0.0923$** | $0.35 - 0.45$ |
+| **Top-5% Overlap (IoU)** | **$0.4632 \pm 0.1171$** | **$0.3963 \pm 0.1057$** | $0.25 - 0.35$ |
+| **Top-15% Overlap (IoU)** | **$0.5602 \pm 0.0852$** | **$0.4975 \pm 0.0843$** | $0.38 - 0.48$ |
+| **Top-25% Overlap (IoU)** | **$0.6206 \pm 0.0714$** | **$0.5604 \pm 0.0713$** | $0.45 - 0.55$ |
+
+**Takeaway:** Combining models produces heatmaps that are substantially more stable and repeatable across runs than those of any single architecture.
+
+---
+
+## 8. Directory Structure & Generated Artifacts
+
+All outputs route to `Outputs/Experiment_3_ensemble/`:
 
 ```
-tmp_Outputs/Experiment_3_ensemble/
+Outputs/Experiment_3_ensemble/
 ├── Weights/
-│   ├── vgg16_exp3a_variant1_best.pth
-│   ├── vgg16_exp3b_variant1_greedy_pruned.pth
-│   └── (60 trained + 60 pruned = 120 files)
+│   ├── stacking_exp3_variant1_meta.pth ... stacking_exp3_variant10_meta.pth
+│   └── stacking_coefficients.json
 │
-├── Ranking_arrays/
-│   └── vgg16_exp3b_variant1_importance.npy (60 files)
+├── Results/
+│   ├── experiment_3c_ensemble_results.json   # Detailed metrics per variant
+│   ├── experiment_3c_comparison.json         # Summary comparison against baselines
+│   ├── experiment_3d_xai_consistency.json    # Heatmap consistency metrics
+│   └── experiment_3_complete_results.json    # Combined experiment output
 │
-├── Ranking_Plots/
-│   └── vgg16_exp3b_variant1_importance.png (60 files)
+├── XAI_Maps/
+│   └── Multiscale_Pixel_Masking/
+│       ├── bagging_exp3_variant1_maps.npy ... variant10_maps.npy   # (273, 224, 224) float32
+│       ├── stacking_exp3_variant1_maps.npy ... variant10_maps.npy  # (273, 224, 224) float32
+│       ├── bagging_exp3_prototype_maps.npy                         # (273, 224, 224) float32
+│       └── stacking_exp3_prototype_maps.npy                        # (273, 224, 224) float32
 │
-├── Training_Plots/
-│   └── vgg16_exp3a_variant1_training.png (60 files)
-│
-├── Training_History/
-│   └── vgg16_exp3a_variant1_history.npy (60 files)
-│
-└── Results/
-    ├── variant_val_indices.json
-    ├── experiment_3b_pruning_results.json
-    ├── experiment_3c_ensemble_results.json
-    ├── experiment_3c_comparison.json
-    └── experiment_3_complete_results.json
+└── Plots/
+    ├── mpm_within_bagging_correlation_matrix.png
+    ├── mpm_within_bagging_correlation_distribution.png
+    ├── mpm_within_bagging_top_percent_iou_15_matrix.png
+    ├── mpm_within_bagging_top_percent_iou_15_distribution.png
+    ├── mpm_within_stacking_correlation_matrix.png
+    ├── mpm_within_stacking_correlation_distribution.png
+    ├── mpm_within_stacking_top_percent_iou_15_matrix.png
+    ├── mpm_within_stacking_top_percent_iou_15_distribution.png
+    ├── mpm_prototypes_ensemble_vs_single_correlation_matrix.png
+    └── mpm_prototypes_ensemble_vs_single_top_percent_iou_15_matrix.png
 ```
 
 ---
 
-## 11. Usage Examples
+## 9. Usage Examples (CLI, SLURM, and Python API)
 
-### 11.1 Command Line
+### 9.1 Command Line Interface (CLI)
+
+Run via `uv` in the project environment:
 
 ```bash
-cd Image_Authenticity_prediction/main/Experiments/
-conda activate <your_env>
-python experiment_three.py
+# Run full evaluation & heatmap generation reusing Experiment 2 maps (fast, ~3-5 mins)
+uv run python -m Image_Authenticity_prediction experiment-three \
+    --strategy all \
+    --variants all \
+    --reuse-exp2-maps
+
+# Run with live MPM recomputation on GPU
+uv run python -m Image_Authenticity_prediction experiment-three \
+    --strategy all \
+    --live-mpm
+
+# Evaluate only Bagging on specific variants
+uv run python -m Image_Authenticity_prediction experiment-three \
+    --strategy bagging \
+    --variants 1,2,3
 ```
 
-### 11.2 Programmatic Usage
+### 9.2 SLURM Cluster Batch Submission
+
+Submit directly to the DIPSEN HPC Blackwell GPU node (`c31`):
+
+```bash
+sbatch scripts/slurm/run_experiment_three.slurm
+```
+
+To pass custom CLI arguments:
+
+```bash
+sbatch scripts/slurm/run_experiment_three.slurm --strategy stacking --variants 1,2,3,4,5
+```
+
+### 9.3 Python API
 
 ```python
-from experiment_three import run_experiment_3
+from main.Experiments.experiment_three import run_experiment_3
 
-# Full pipeline
-results = run_experiment_3()
-
-# Only training
-results = run_experiment_3(run_pruning=False, run_evaluation=False)
-
-# Only pruning (requires trained models)
-results = run_experiment_3(run_training=False, run_evaluation=False)
-
-# Only evaluation (requires pruned models)
-results = run_experiment_3(run_training=False, run_pruning=False)
-
-# Specific models only
-results = run_experiment_3(models=['vgg16', 'resnet152'])
-
-# Evaluation with all ensemble modes
 results = run_experiment_3(
-    run_training=False,
-    run_pruning=False,
-    run_evaluation=True,
-    ensemble_mode=['bagging', 'stacking', 'stacking_cv'],
-    stacking_cv_folds=5,
-    stacking_cv_repeats=1,
+    models=None,                      # Use all 7 registered models
+    run_training=False,               # Skip legacy 3A training (reuses Exp 1A weights)
+    run_pruning=False,                # Skip legacy 3B channel pruning
+    run_evaluation=True,              # Run Stage 3C ensemble evaluation
+    run_heatmaps=True,                # Run Stage 3D MPM attribution
+    ensemble_mode=["bagging", "stacking"],
+    variants="all",
+    reuse_exp2_maps=True,             # Reuse precomputed single-model maps
 )
+
+print("Bagging PLCC:", results["evaluation"]["bagging"]["mean"]["plcc"])
+print("Stacking PLCC:", results["evaluation"]["stacking"]["mean"]["plcc"])
 ```
 
 ---
 
-## 12. Key Guarantees & Reproducibility
+## 10. Reproducibility & Key Guarantees
 
-### 12.1 Data Leakage Protection
-
-- Test split is created once via `seed=42` and reused globally.
-- Variant-specific train/val splits are created only from non-test samples.
-- Pruning uses the exact validation indices used during training.
-- Final evaluation uses the reserved test split only.
-
-### 12.2 Determinism Anchors
-
-- Global test split: `create_global_test_indices(..., seed=42)`.
-- Variant split shuffling: `seed = 42 + variant_idx`.
-- Stacking split/CV shuffles: seeded with `SEED` (and `SEED + rep` for repeats).
-
-### 12.3 Output Reproducibility Artifacts
-
-- `variant_val_indices.json` stores validation indices per model/variant.
-- Weights filenames encode stage (`exp3a` vs `exp3b`) and variant id.
-- `experiment_3c_ensemble_results.json` stores full baseline/pruned/ensemble metrics.
-- `experiment_3c_comparison.json` stores architecture-level and overall comparison summaries.
-
-### 12.4 Methodological Notes
-
-- `stacking` uses a 50/50 split inside the available evaluation set and is not a strictly untouched-test protocol for meta-learning.
-- `stacking_cv` is marked exploratory in code and reports an explicit protocol note in outputs.
-- Bagging on pruned models remains the primary leakage-safe ensemble path when test predictions are only averaged.
-
----
+1. **Fixed Global Test Set:** `seed = 42` guarantees identical test sample selection ($N = 273$) across all variants, models, and stages.
+2. **Disjoint Validation Splits:** `seed = 42 + k` guarantees that validation split $\text{val}_k$ ($N = 136$) is completely disjoint from the training data for all models in variant $k$.
+3. **Closed-Form Meta-Learning:** Ridge regression ($\alpha = 1.0$) eliminates optimization noise, guaranteeing reproducible stacking weights given the validation predictions.
+4. **Target Layer Uniformity:** All CNN models extract spatial feature maps from their canonical target layers (`features.28` for VGG16, `features.34` for VGG19, etc.), and `clip_vit_b16` extracts representations from `visual_projection`.
+5. **No Data Leakage:** Stacking weights and bagging predictions are tested exclusively on held-out test data that was never seen during training or meta-learner fitting.
