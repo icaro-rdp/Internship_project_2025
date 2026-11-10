@@ -522,17 +522,17 @@ def render_overlay_rgb(
     saliency_2d: np.ndarray,
     cmap_name: str = "bwr",
     alpha: float = 0.5,
-    symmetric: bool = False,
+    symmetric: bool = True,
 ) -> np.ndarray:
     """Create a colored heatmap overlay on a desaturated grayscale base image.
 
     Args:
         img_rgb: Float RGB image array in range [0, 1] of shape (H, W, 3).
-        saliency_2d: Float 2D saliency heatmap of shape (H', W').
+        saliency_2d: Float 2D saliency heatmap of shape (H', W') in range [-1, 1].
         cmap_name: Matplotlib colormap name (e.g. 'bwr', 'coolwarm', 'seismic').
         alpha: Blending opacity between 0.0 (image only) and 1.0 (heatmap only).
-        symmetric: If True, scales symmetrically around 0.0 so that 0.0 maps to
-            0.5 (neutral midpoint of diverging colormaps).
+        symmetric: If True, scales symmetrically around 0.0 in [-1.0, 1.0] so that 0.0
+            maps to 0.5 (neutral midpoint of diverging colormaps).
 
     Returns:
         Blended RGB uint8 image array of shape (H, W, 3).
@@ -547,13 +547,10 @@ def render_overlay_rgb(
     else:
         saliency_resized = saliency_2d.astype(np.float32)
 
-    # Normalize saliency to [0, 1] for colormap lookup
+    # Normalize saliency to [0, 1] for colormap lookup (saliency maps are in [-1, 1])
     if symmetric:
-        max_abs = float(np.max(np.abs(saliency_resized)))
-        if max_abs > 1e-8:
-            norm_saliency = 0.5 + 0.5 * (saliency_resized / max_abs)
-        else:
-            norm_saliency = np.full_like(saliency_resized, 0.5)
+        max_abs = max(1.0, float(np.max(np.abs(saliency_resized))))
+        norm_saliency = np.clip(0.5 + 0.5 * (saliency_resized / max_abs), 0.0, 1.0)
     else:
         s_min, s_max = float(saliency_resized.min()), float(saliency_resized.max())
         denom = s_max - s_min
@@ -769,7 +766,7 @@ def visualize_and_save_saliency(
         )
         return
 
-    saliency_map = np.clip(saliency_map, 0.0, 1.0)
+    saliency_map = np.clip(saliency_map, -1.0, 1.0)
 
     numpy_dir = os.path.join(output_dir, "numpy_saliency_maps")
     os.makedirs(numpy_dir, exist_ok=True)
@@ -817,7 +814,9 @@ def visualize_and_save_saliency(
         warn(f"Colormap '{cmap_name}' not found. Using default 'coolwarm'.")
         cmap = plt.get_cmap("coolwarm")
 
-    heatmap_rgba = cmap(saliency_map)
+    # Saliency maps are in [-1.0, 1.0]; scale to [0.0, 1.0] for colormap lookup
+    norm_saliency = np.clip((saliency_map + 1.0) / 2.0, 0.0, 1.0)
+    heatmap_rgba = cmap(norm_saliency)
     heatmap_rgb = (heatmap_rgba[:, :, :3] * 255.0).astype(np.uint8)
     heatmap_bgr = cv2.cvtColor(heatmap_rgb, cv2.COLOR_RGB2BGR)
 

@@ -349,18 +349,15 @@ def test_pipeline_end_to_end_all_methods(
         assert pdf_path.is_file()
         assert png_path.is_file()
 
-        csv_file = out_dir / f"{method}_across_architecture_agreement_ranking.csv"
+        target_dir = pdf_path.parent
+        csv_file = target_dir / f"{method}_across_architecture_agreement_ranking.csv"
         assert csv_file.is_file()
 
-        # Verify top-K and bottom-K overview panels and candidate pairs
-        top_pdf = out_dir / f"{method}_top_2_high_agreement.pdf"
-        bottom_pdf = out_dir / f"{method}_bottom_2_low_agreement.pdf"
-        assert top_pdf.is_file()
-        assert bottom_pdf.is_file()
-
-        cand_dir = out_dir / f"candidates_{method}"
-        cand_files = list(cand_dir.glob("candidate_pair_*.pdf"))
-        assert len(cand_files) == 2
+        # Verify K agreement pair figures in method subfolder
+        pair_01_pdf = target_dir / "pair_01.pdf"
+        pair_02_pdf = target_dir / "pair_02.pdf"
+        assert pair_01_pdf.is_file()
+        assert pair_02_pdf.is_file()
 
 
 def test_missing_maps_dir_informative_error(tmp_path: Path) -> None:
