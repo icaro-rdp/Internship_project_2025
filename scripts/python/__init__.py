@@ -1,2 +1,1 @@
 """Python scripts package."""
-
