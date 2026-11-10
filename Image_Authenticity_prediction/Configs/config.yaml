@@ -96,10 +96,10 @@ ensemble:
 # =============================================================================
 models:
   vgg16:
-    target_layer: "features.28"
+    target_layer: "features.30"
     input_size: 224
   vgg19:
-    target_layer: "features.34"
+    target_layer: "features.36"
     input_size: 224
   resnet152:
     target_layer: "features.7.2.conv3"

@@ -74,12 +74,12 @@ MODEL_REGISTRY = {
     "vgg16": {
         "class": VGG16AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
-        "target_layer": "features.28",
+        "target_layer": "features.30",
     },
     "vgg19": {
         "class": VGG19AuthenticityPredictor,
         "dataset": IMAGENET_DATASET,
-        "target_layer": "features.34",
+        "target_layer": "features.36",
     },
     "resnet152": {
         "class": ResNet152AuthenticityPredictor,
