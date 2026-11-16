@@ -10,7 +10,7 @@
 
 Experiment 1 implements a comprehensive pipeline for training and pruning deep learning models for image authenticity prediction. The experiment consists of three main phases:
 
-1. **Experiment 1A**: Train multiple independent variants of each model architecture (10 Monte Carlo variants per architecture)
+1. **Experiment 1A**: Train multiple independent variants of each model architecture (10 random-seed baseline variants per architecture)
 2. **Experiment 1B**: Prune trained models using feature importance analysis (greedy unit pruning and negative impact pruning)
 3. **Testing Phase**: Evaluate all trained baseline and pruned models on a held-out, globally fixed test set
 
@@ -882,14 +882,14 @@ Experiment 2 (Explainability Pipeline)
     │
     └── Experiment 2B: Quantitative Attribution Comparison
         ├── Inter-Model Prototypes: Average variants into architecture-level prototypes
-        ├── Intra-Model Variant Stability: Monte Carlo seed stability & pruning shift
+        ├── Intra-Model Variant Stability: Random seed stability & pruning shift
         ├── LIME Superpixel Consistency: 1D beta vector correlations across variants
         └── Cross-Method Consensus: 3-way alignment (GradCAM vs MPM vs LIME)
 ```
 
 ### Downstream Utility of Experiment 1 Outputs in Experiment 2:
 
-1. **Unpruned Variant Attribution Stability (Monte Carlo Baseline)**:
+1. **Unpruned Variant Attribution Stability (Random-Seed Baseline)**:
    - The 10 independent baseline variants (`exp1a_variant1` ... `exp1a_variant10`) per architecture isolate how head initialization and train/val split variation influence visual explanations.
    - Evaluated via pairwise Pearson correlation, Spearman rank correlation, and top-$K$ IoU distributions (visualized via cross-architecture violin plots).
 

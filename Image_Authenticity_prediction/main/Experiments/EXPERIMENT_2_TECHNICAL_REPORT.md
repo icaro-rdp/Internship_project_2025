@@ -16,7 +16,7 @@ Experiment 2 implements a comprehensive explainability analysis pipeline for ima
    - **LIME** (GPU-vectorized superpixel perturbation and local Ridge surrogate modeling)
 2. **Experiment 2B**: Comparative analysis of explainability across models, variants, and methods:
    - Inter-model prototype analysis across diverse neural architectures (CNNs and Vision Transformers)
-   - Intra-model variant stability across Monte Carlo random seeds and pruning strategies
+   - Intra-model variant stability across random seeds and pruning strategies
    - LIME-specific surrogate fidelity ($R^2$) diagnostics and 1D superpixel coefficient ($\beta$) consistency
    - Cross-method alignment evaluating attribution consensus across different explainability mechanisms
 
@@ -72,7 +72,7 @@ The pipeline incorporates a novel **prototype-based comparison** framework, high
 **Variant Support:**
 Each model can have multiple variants evaluated:
 - `orig`: Original unpruned model
-- `exp1a_variantN`: Unpruned Monte Carlo baseline variants from Experiment 1A (variants 1–10)
+- `exp1a_variantN`: Unpruned baseline variants from Experiment 1A (variants 1–10)
 - `exp1b_variantN_greedy_pruned`: Greedy-pruned variants from Experiment 1B
 - `exp1b_variantN_negative_pruned`: Negative-impact pruned variants from Experiment 1B
 
@@ -115,7 +115,7 @@ Compute Pearson correlation, Spearman rank correlation, and top/bottom-K IoU bet
 
 ##### B. **Intra-Model Comparison (Within-Model Variants)**
 Evaluates attribution stability within the same architecture:
-1. **Monte Carlo Random-Seed Stability:** Pairwise comparison across 10 unpruned baseline variants (`exp1a_variant1` ... `exp1a_variant10`) to quantify attribution sensitivity to initialization and training stochasticity.
+1. **Random-Seed Stability:** Pairwise comparison across 10 unpruned baseline variants (`exp1a_variant1` ... `exp1a_variant10`) to quantify attribution sensitivity to initialization and training stochasticity.
 2. **Pruning Saliency Shift:** Comparing unpruned vs. greedy-pruned vs. negative-pruned models to assess feature reorganization under structured unit removal.
 3. **1D Superpixel Beta Consistency (`lime_superpixel_within_model_variants`):** Direct vector similarity on LIME $\beta$ coefficients across variants, yielding Pearson, Spearman, and top/bottom-$K$ IoU metrics.
 4. **Violin Distribution Visualizations:** Aggregates intra-model pairwise similarities into distribution plots per architecture to visualize attribution robustness.
@@ -216,7 +216,7 @@ run_experiment_2(
         "vgg16", "vgg19", "resnet152", "densenet161",
         "efficientnetb3", "barlowtwins", "clip_vit_b16"
     ],
-    variants="unpruned",       # Target 10 Monte Carlo unpruned variants (exp1a_variant1...10)
+    variants="unpruned",       # Target 10 unpruned baseline variants (exp1a_variant1...10)
     xai_methods="all",         # Supported: 'gradcam', 'mpm', 'lime', 'both' (GC+MPM), 'all' (GC+MPM+LIME)
     save_maps=True,            # Persist generated attribution arrays to disk
     comparison_only=False,     # False: generate maps + compare, True: skip generation

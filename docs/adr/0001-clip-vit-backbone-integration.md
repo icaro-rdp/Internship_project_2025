@@ -26,7 +26,7 @@ To minimize complexity and validate behavioral performance early, we establish a
   `nn.Sequential(nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.5), nn.Linear(128, 1))`.
 - **Forward Contract**: Returns `(predictions, features)` where `predictions` has shape `(B, 1)` and `features` has shape `(B, 512)`, fulfilling the contract expected by training loops, evaluation functions, and explainers.
 - **Preprocessing & Crop Geometry**: Maintain the ImageNet crop geometry (`Resize((256, 256))` $\to$ `CenterCrop(224)`) and apply CLIP normalization (`mean=[0.48145466, 0.4578275, 0.40821073]`, `std=[0.26862954, 0.26130258, 0.27577711]`). This preserves identical pixel spatial coordinates across CNNs and ViT for cross-architecture map comparisons.
-- **Evaluation Gate**: Train 10 Monte Carlo variants (Exp 1A) to measure Pearson $r$, Spearman $\rho$, and RMSE against human MOS ratings. Verify that the CLIP visual features achieve competitive behavioral prediction before proceeding to attribution or pruning.
+- **Evaluation Gate**: Train 10 random-seed baseline variants (Exp 1A) to measure Pearson $r$, Spearman $\rho$, and RMSE against human MOS ratings. Verify that the CLIP visual features achieve competitive behavioral prediction before proceeding to attribution or pruning.
 
 ### Step 2: Explainability Adaptation (Grad-CAM & Attributions on ViT Regression)
 

@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-This report documents the empirical training and evaluation of 10 independent Monte Carlo variants of the **CLIP Vision Transformer (`clip_vit_b16`)** on subjective human authenticity ratings (Mean Opinion Scores, MOS) from the Kept AIGCIQA2023 dataset (1,368 photorealistic natural-scene images).
+This report documents the empirical training and evaluation of 10 independent random-seed baseline variants of the **CLIP Vision Transformer (`clip_vit_b16`)** on subjective human authenticity ratings (Mean Opinion Scores, MOS) from the Kept AIGCIQA2023 dataset (1,368 photorealistic natural-scene images).
 
 Across all 10 trained variants, the frozen CLIP ViT-B/16 representations demonstrate strong and stable predictive alignment with human authenticity judgments:
 - **Mean Pearson Linear Correlation (PLCC, r):** 0.7316 ± 0.0059
@@ -35,7 +35,7 @@ The standard deviation across variants is ≤ 0.006 for all correlation metrics,
 | **Downstream Head** | 2-layer MLP: `Linear(512, 128) -> ReLU() -> Dropout(0.5) -> Linear(128, 1)` |
 | **Forward Contract** | Returns tuple `(predictions, features)` of shapes `((B, 1), (B, 512))` |
 
-### 2.2 Data Partitioning & Monte Carlo Variants
+### 2.2 Data Partitioning & Random-Seed Variants
 
 - **Total Kept Dataset:** 1,368 photorealistic images (57 prompts × 6 generative models × 4 images).
 - **Global Test Set:** 273 images (20% of dataset), partitioned with fixed global seed 42. Shared identically across all models and variants to ensure zero test-set leakage.
