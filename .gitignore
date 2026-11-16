@@ -109,3 +109,7 @@ tmp_Outputs
 
 # Documentations
 /Documentation/wip
+
+# Local export folders
+Image Authenciticy paper/
+paper_figures/

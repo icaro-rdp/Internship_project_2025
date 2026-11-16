@@ -489,10 +489,11 @@ def plot_condensed_6panel(
     cohort_data: dict[str, dict],
     output_path: Path,
     bin_strategy: str = "quantile",
+    dpi: int = 300,
 ) -> None:
     """Generate 3x2 condensed figure (Rows: Kept, Excluded, Combined)."""
     _setup_plot_theme()
-    fig, axes = plt.subplots(3, 2, figsize=(15, 18), dpi=300)
+    fig, axes = plt.subplots(3, 2, figsize=(15, 18), dpi=dpi)
 
     panel_letters = [("A", "B"), ("C", "D"), ("E", "F")]
     bin_type_name = "Decile" if bin_strategy == "quantile" else "Equal-Width Bin"
@@ -544,7 +545,8 @@ def plot_condensed_6panel(
     )
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.975])
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path)
+    fig.savefig(output_path, dpi=dpi)
+    fig.savefig(output_path.with_suffix(".pdf"))
     plt.close(fig)
 
 
@@ -552,10 +554,11 @@ def plot_bidirectional_9panel(
     cohort_data: dict[str, dict],
     output_path: Path,
     bin_strategy: str = "quantile",
+    dpi: int = 300,
 ) -> None:
     """Generate 3x3 bidirectional figure (Rows: Kept, Excluded, Combined)."""
     _setup_plot_theme()
-    fig, axes = plt.subplots(3, 3, figsize=(22, 18), dpi=300)
+    fig, axes = plt.subplots(3, 3, figsize=(22, 18), dpi=dpi)
 
     panel_letters = [("A", "B", "C"), ("D", "E", "F"), ("G", "H", "I")]
     bin_type_name = "Decile" if bin_strategy == "quantile" else "Equal-Width Bin"
@@ -618,7 +621,8 @@ def plot_bidirectional_9panel(
     )
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.975])
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path)
+    fig.savefig(output_path, dpi=dpi)
+    fig.savefig(output_path.with_suffix(".pdf"))
     plt.close(fig)
 
 
@@ -626,10 +630,11 @@ def plot_comparative_joint_heatmaps(
     cohort_data: dict[str, dict],
     output_path: Path,
     bin_strategy: str = "quantile",
+    dpi: int = 300,
 ) -> None:
     """Plot 1x3 side-by-side 10x10 joint contingency heatmaps in percentages (X=Authenticity, Y=Quality)."""
     _setup_plot_theme()
-    fig, axes = plt.subplots(1, 3, figsize=(26, 7.5), dpi=300)
+    fig, axes = plt.subplots(1, 3, figsize=(26, 7.5), dpi=dpi)
 
     panel_letters = ["A", "B", "C"]
     a_label = (
@@ -696,7 +701,8 @@ def plot_comparative_joint_heatmaps(
     )
     fig.tight_layout(rect=[0.01, 0.0, 0.99, 0.95], w_pad=6.0)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path)
+    fig.savefig(output_path, dpi=dpi)
+    fig.savefig(output_path.with_suffix(".pdf"))
     plt.close(fig)
 
 
@@ -710,6 +716,7 @@ def run_descriptive_analysis(
     output_dir: Path | None = None,
     top_k: int = 20,
     bin_strategy: str = "quantile",
+    dpi: int = 300,
 ) -> dict:
     """Execute Quality vs Authenticity analysis across Kept, Excluded, and Combined cohorts."""
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -779,21 +786,37 @@ def run_descriptive_analysis(
     )
 
     logger.info("Generating multi-panel figures (%s)...", bin_strategy)
+    condensed_png = plots_panel_dir / f"figure_qa_condensed_4panel{suffix}.png"
+    bidirectional_png = plots_panel_dir / f"figure_qa_bidirectional_6panel{suffix}.png"
+    joint_png = plots_panel_dir / f"figure_joint_10x10_heatmaps{suffix}.png"
+
     plot_condensed_6panel(
         cohort_data,
-        output_path=plots_panel_dir / f"figure_qa_condensed_4panel{suffix}.png",
+        output_path=condensed_png,
         bin_strategy=bin_strategy,
+        dpi=dpi,
     )
     plot_bidirectional_9panel(
         cohort_data,
-        output_path=plots_panel_dir / f"figure_qa_bidirectional_6panel{suffix}.png",
+        output_path=bidirectional_png,
         bin_strategy=bin_strategy,
+        dpi=dpi,
     )
     plot_comparative_joint_heatmaps(
         cohort_data,
-        output_path=plots_panel_dir / f"figure_joint_10x10_heatmaps{suffix}.png",
+        output_path=joint_png,
         bin_strategy=bin_strategy,
+        dpi=dpi,
     )
+
+    # Sync plots to out_base / "Plots"
+    plots_dir = out_base / "Plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    for p in [condensed_png, bidirectional_png, joint_png]:
+        (plots_dir / p.name).write_bytes(p.read_bytes())
+        pdf_p = p.with_suffix(".pdf")
+        if pdf_p.exists():
+            (plots_dir / pdf_p.name).write_bytes(pdf_p.read_bytes())
 
     logger.info("Descriptive analysis complete! Outputs saved to %s", out_base)
     return {
@@ -821,6 +844,12 @@ def main() -> None:
         default="both",
         help="Binning strategy: 'quantile' (equal-frequency), 'equal_width' (equal-interval), or 'both' (default: both)",
     )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=600,
+        help="DPI for raster PNG output (default: 600)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -835,6 +864,7 @@ def main() -> None:
             output_dir=args.output_dir,
             top_k=args.top_k,
             bin_strategy=strategy,
+            dpi=args.dpi,
         )
 
 

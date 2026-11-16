@@ -1,8 +1,8 @@
 # Experiment 2: Explainability Analysis - Technical Report
 
-**Date:** November 19, 2025  
+**Date:** November 2026  
 **File:** `main/Experiments/experiment_two.py`  
-**Utilities:** `main/Utils/comparisons.py`
+**Utilities:** `main/Utils/comparisons.py`, `main/Utils/explainability.py`, `main/Utils/visualization.py`
 
 ---
 
@@ -10,10 +10,17 @@
 
 Experiment 2 implements a comprehensive explainability analysis pipeline for image authenticity prediction models. The experiment consists of two main phases:
 
-1. **Experiment 2A**: Generation of explainability maps using XAI (Explainable AI) methods
-2. **Experiment 2B**: Comparative analysis of explainability maps across models and methods
+1. **Experiment 2A**: Generation of explainability maps and attribution representations using three distinct XAI (Explainable AI) paradigms:
+   - **GradCAM** (gradient-based spatial activation mapping)
+   - **Multiscale Pixel Masking (MPM)** (multi-scale Gaussian pixel-occlusion attribution)
+   - **LIME** (GPU-vectorized superpixel perturbation and local Ridge surrogate modeling)
+2. **Experiment 2B**: Comparative analysis of explainability across models, variants, and methods:
+   - Inter-model prototype analysis across diverse neural architectures (CNNs and Vision Transformers)
+   - Intra-model variant stability across Monte Carlo random seeds and pruning strategies
+   - LIME-specific surrogate fidelity ($R^2$) diagnostics and 1D superpixel coefficient ($\beta$) consistency
+   - Cross-method alignment evaluating attribution consensus across different explainability mechanisms
 
-The code has been enhanced with a novel **prototype-based comparison** approach for inter-model analysis and advanced **distribution visualization** capabilities.
+The pipeline incorporates a novel **prototype-based comparison** framework, high-throughput GPU batching with Automatic Mixed Precision (AMP), shared canonical superpixel tessellations, and advanced **distribution visualization** capabilities.
 
 ---
 
@@ -21,198 +28,179 @@ The code has been enhanced with a novel **prototype-based comparison** approach 
 
 ### Core Components
 
-#### 1. **Explainability Map Generation (Experiment 2A)**
+#### 1. **Explainability Attribution Generation (Experiment 2A)**
 
-**Purpose:** Generate visual explanations of model predictions using two XAI methods.
+**Purpose:** Generate quantitative visual explanations and feature attributions of model predictions using three complementary XAI methods.
 
 **Supported XAI Methods:**
+
 - **GradCAM (Gradient-weighted Class Activation Mapping)**
-  - Generates heatmaps showing important regions for predictions
-  - Uses gradient information from target layers
-  - Output: Spatial attention maps (N × H × W)
+  - Generates spatial heatmaps identifying critical latent feature regions influencing predictions
+  - Backpropagates gradients from the scalar continuous authenticity prediction $\hat{y}$ to target feature layers
+  - Output: Spatial attention heatmaps ($N \times H \times W$), normalized to $[0, 1]$
 
 - **Multiscale Pixel Masking (MPM)**
-  - Occlusion-based method using Gaussian masks at multiple scales
-  - Measures prediction change when regions are masked
-  - Scales tested: σ = [3, 17, 65]
-  - Output: Importance maps (N × H × W)
+  - Model-agnostic perturbation method evaluating prediction sensitivity under Gaussian pixel occlusion
+  - Masks input regions at multiple spatial scales ($\sigma \in [3, 17, 65]$) with configurable stride and batching
+  - Measures delta prediction changes: $|\hat{y}_{\text{orig}} - \hat{y}_{\text{masked}}|$
+  - Output: Multi-scale importance heatmaps ($N \times H \times W$), normalized to $[0, 1]$
+
+- **LIME (Local Interpretable Model-agnostic Explanations)** ✨ NEW
+  - GPU-vectorized superpixel perturbation explainer tailored for continuous regression tasks
+  - **Canonical Superpixel Tessellation**: Precomputes and caches a canonical $224 \times 224$ SLIC superpixel segmentation (`slic_segments.npy`, $N = 138$ test images, $K \approx 150$ segments, compactness = 10.0) with execution metadata in `tessellation_manifest.json`
+  - **Vectorized Perturbation Sampling**: Generates $M = 1200$ binary superpixel retention masks via Bernoulli sampling ($p_{\text{keep}} = 0.7$, seed = 0, first sample unperturbed)
+  - **Occlusion & Imputation**: Perturbed superpixels are imputed using per-image spatial-mean RGB background values
+  - **Locality-Weighted Ridge Surrogate**: Fits a weighted Ridge linear regression surrogate ($\alpha = 1.0$) with exponential distance kernel weighting ($\sigma = 0.25$) on perturbed model outputs
+  - **Multi-Faceted Outputs**:
+    1. *2D Attribution Heatmaps* ($N \times H \times W$): Projected superpixel weights symmetrically normalized by $\max(|\text{heat}|) + 10^{-8}$ into $[-1.0, 1.0]$
+    2. *Surrogate Fidelity ($R^2$)* ($N \times 1$): Per-image weighted $R^2$ scores tracking local surrogate goodness-of-fit (`.npy`)
+    3. *1D Superpixel Beta Vectors* ($\beta \in \mathbb{R}^K$): Compressed per-image Ridge coefficient vectors stored in compressed archives (`.npz`)
 
 **Model Support:**
-- VGG16, VGG19
-- ResNet152
-- DenseNet161
-- EfficientNetB3
-- BarlowTwins
-- **CLIP ViT-B/16 (Vision Transformer)** ✨ NEW
+- **VGG16, VGG19**: Target layer `features.28` (or final convolutional block)
+- **ResNet152**: Target layer `layer4.2`
+- **DenseNet161**: Target layer `features.denseblock4`; automatically handles $300 \times 300$ input resolution adaptation during LIME forward passes
+- **EfficientNetB3**: Target layer `features.7`
+- **BarlowTwins**: Target layer `network.conv5`
+- **CLIP ViT-B/16 (Vision Transformer)**:
   - Backbone: `openai/clip-vit-base-patch16` with frozen weights and trained regression head
   - Target Layer for Grad-CAM: `vision_model.encoder.layers.11.layer_norm1`
-  - Spatial Reshaping: Drops `[CLS]` token (index 0) from 197 tokens -> reshapes 196 patch tokens to (14, 14) grid -> permutes to (B, 768, 14, 14) -> interpolates to target resolution (224, 224)
+  - Spatial Reshaping: Drops `[CLS]` token (index 0) from 197 tokens $\to$ reshapes 196 patch tokens to $(14, 14)$ grid $\to$ permutes to $(B, 768, 14, 14)$ $\to$ interpolates to target resolution $(224, 224)$
   - Attribution Flow: Backpropagated directly from scalar continuous prediction $\hat{y}$
-  - MPM Support: Model-agnostic perturbation evaluation on (predictions, features) contract
+  - LIME & MPM Support: Model-agnostic perturbation evaluated with custom CLIP normalization `mean=(0.48145466, 0.4578275, 0.40821073)`, `std=(0.26862954, 0.26130258, 0.27577711)` on canonical test images
 
 **Variant Support:**
-Each model can have multiple variants:
+Each model can have multiple variants evaluated:
 - `orig`: Original unpruned model
-- `exp1a_variantN`: Unpruned Monte Carlo baseline variants from Experiment 1A (variants 1-10)
+- `exp1a_variantN`: Unpruned Monte Carlo baseline variants from Experiment 1A (variants 1–10)
 - `exp1b_variantN_greedy_pruned`: Greedy-pruned variants from Experiment 1B
 - `exp1b_variantN_negative_pruned`: Negative-impact pruned variants from Experiment 1B
 
-#### 2. **Explainability Map Comparison (Experiment 2B)**
+---
 
-**Purpose:** Quantitatively compare explainability maps to understand model behavior agreement.
+#### 2. **Explainability Map & Coefficient Comparison (Experiment 2B)**
 
-**Comparison Types:**
+**Purpose:** Quantitatively compare explainability attributions across architectures, training runs, pruning conditions, and attribution methodologies.
 
-##### A. **Inter-Model Comparison (Prototype-Based)** ✨ NEW
-Creates a **prototype heatmap** for each model by averaging across all variants, then compares these prototypes.
+**Comparison Paradigms:**
 
-**Algorithm:**
+##### A. **Inter-Model Comparison (Between-Model Architectures / Prototype-Based)**
+Creates a **prototype representation** for each architecture by averaging attributions across all its variants, then performs pairwise inter-architecture comparisons.
+
+**1. 2D Spatial Heatmap Prototype Comparison (GradCAM, MPM, LIME):**
 ```
-For each model M:
-  1. Load all variant heatmaps: V₁, V₂, ..., Vₙ (each shape: 138 × H × W)
-  2. Stack along new axis: (n_variants, 138, H, W)
-  3. Average across axis=0: prototype = mean(V₁, V₂, ..., Vₙ)
-  4. Result: One prototype per model (138 × H × W)
+For each architecture M:
+  1. Load variant heatmaps: V₁, V₂, ..., Vₙ (each shape: N_images × H × W)
+  2. Resample / uniform to target resolution (224 × 224)
+  3. Average across variants: Prototype_M = mean(V₁, V₂, ..., Vₙ)
+  4. Result: One canonical prototype map per architecture (N_images × 224 × 224)
 
-Compare all model prototypes pairwise using correlation metric
+Compute pairwise similarity metrics (Pearson correlation, SSIM, IoU) between prototypes.
 ```
 
-**Example:**
-- Input: 10 variants of BarlowTwins, 10 variants of CLIP ViT-B/16, etc.
-- Output: BarlowTwins-prototype vs CLIP-prototype comparison
+**2. 1D Superpixel Beta Prototype Comparison (`lime_superpixel_between_model_architectures`):**
+```
+For each architecture M:
+  1. Load 1D superpixel beta vectors across variants: {img_key: β_v}
+  2. Average beta vectors across variants: β_proto = mean(β₁, ..., βₙ)
+  3. Result: One canonical superpixel vector per test image per architecture
 
-**Advantages:**
-- Reduces noise from variant-specific artifacts
-- Provides model-level behavior comparison
-- Reveals architectural differences in attention patterns (e.g. CNN local receptive fields vs. ViT global self-attention)
+Compute Pearson correlation, Spearman rank correlation, and top/bottom-K IoU between model prototypes.
+```
 
-##### B. **Intra-Model Comparison (Variant Analysis)**
-Compares different variants of the **same model** to evaluate:
-1. **Unpruned Variant Attribution Stability:** Pairwise comparison across the 10 Monte Carlo baseline variants (`exp1a_variant1` ... `exp1a_variant10`) to assess how random head initialization and training dynamics alter visual explanations.
-2. **Pruning Effects:** Comparing unpruned vs. greedy-pruned vs. negative-pruned models to reveal how unit removal alters visual saliency.
+**Key Advantages:**
+- Filters out idiosyncratic initialization noise of individual runs
+- Isolates fundamental inductive bias differences between architectures (e.g. CNN local receptive fields vs. ViT global self-attention)
+- Directly connects 2D spatial alignment with 1D superpixel coefficient consistency on shared tessellations
 
-**Example:**
-- Compare `clip_vit_b16_exp1a_variant1` through `clip_vit_b16_exp1a_variant10`
-- Generates pairwise correlation matrix and violin distribution of intra-model agreement
+##### B. **Intra-Model Comparison (Within-Model Variants)**
+Evaluates attribution stability within the same architecture:
+1. **Monte Carlo Random-Seed Stability:** Pairwise comparison across 10 unpruned baseline variants (`exp1a_variant1` ... `exp1a_variant10`) to quantify attribution sensitivity to initialization and training stochasticity.
+2. **Pruning Saliency Shift:** Comparing unpruned vs. greedy-pruned vs. negative-pruned models to assess feature reorganization under structured unit removal.
+3. **1D Superpixel Beta Consistency (`lime_superpixel_within_model_variants`):** Direct vector similarity on LIME $\beta$ coefficients across variants, yielding Pearson, Spearman, and top/bottom-$K$ IoU metrics.
+4. **Violin Distribution Visualizations:** Aggregates intra-model pairwise similarities into distribution plots per architecture to visualize attribution robustness.
+
+##### C. **LIME Surrogate Fidelity Diagnostics ($R^2$)**
+Evaluates whether the local linear surrogate accurately captures model behavior:
+- Compiles weighted $R^2$ across all test images and variants per architecture
+- Produces statistical summaries: mean, standard deviation, median, minimum, maximum, and total successful fits
+- Generates publication-ready diagnostic plots:
+  - Pooled $R^2$ histogram across all fits (`lime_r2_pooled_hist.png`)
+  - Per-architecture small-multiples histograms (`lime_r2_by_arch_hist.png`)
+  - Cross-architecture boxplots (`lime_r2_by_arch_boxplot.png`)
+
+##### D. **Cross-Method Comparison (`cross_methods`)**
+Compares attributions generated by different XAI paradigms on the same model variant:
+- Pairwise comparisons: `gradcam_vs_mpm`, `gradcam_vs_lime`, `mpm_vs_lime`
+- Highlights agreement and divergence between gradient-based attention, pixel-level occlusion, and superpixel surrogate attributions
 
 ---
 
 ## Key Functions
 
-### 1. `_create_prototype_heatmap(variant_paths: Dict[str, Path]) -> np.ndarray`
+### 1. `prepare_or_load_slic_segments(n_segments, compactness) -> np.ndarray`
 
-**Purpose:** Create averaged prototype heatmap from multiple model variants.
+**Purpose:** Precomputes or loads the shared canonical $224 \times 224$ SLIC superpixel tessellation across the test dataset.
 
 **Process:**
-1. Load all variant heatmaps (shapes may vary in image count)
-2. Find minimum image count across variants
-3. Trim all arrays to same length
-4. Stack: (n_variants, n_images, H, W)
-5. Average across variants: mean(axis=0)
-6. Return: (n_images, H, W)
+1. Checks for existing `slic_segments.npy` and `tessellation_manifest.json` in `Outputs/Experiment_2_variants/XAI_Maps/LIME/`
+2. If absent, loads ImageNet test images, applies canonical `Resize(256) + CenterCrop(224)`, and executes `skimage.segmentation.slic`
+3. Saves canonical segmentation store ($N_{\text{test}} \times 224 \times 224$, `int16`) and metadata manifest
+4. Returns 3D segmentation tensor ensuring all models and variants operate on identical superpixel boundaries
 
-**Example:**
-```python
-variant_paths = {
-    'orig': Path('vgg16_orig_maps.npy'),
-    'greedy_pruned': Path('vgg16_exp1b_variant1_greedy_pruned_maps.npy'),
-    'negative_pruned': Path('vgg16_exp1b_variant1_negative_pruned_maps.npy')
-}
-prototype = _create_prototype_heatmap(variant_paths)
-# Output shape: (138, 224, 224) - averaged across 3 variants
-```
+### 2. `_create_prototype_heatmap(variant_paths: Dict[str, Path]) -> np.ndarray`
 
-### 2. `compare_heatmaps(heatmap_arrays, metrics) -> ComparisonResults`
+**Purpose:** Create an averaged prototype heatmap from multiple model variants.
 
-**Purpose:** Compute pairwise similarity metrics between multiple heatmap collections.
+**Process:**
+1. Loads all variant heatmaps
+2. Trims arrays to the common minimum image count
+3. Stacks arrays: $(n_{\text{variants}}, n_{\text{images}}, H, W)$
+4. Computes mean across axis 0: $\text{prototype} = \frac{1}{n} \sum_{i=1}^n V_i$
+5. Returns shape: $(n_{\text{images}}, H, W)$
 
-**Metrics Available:**
-- **Correlation (Pearson)**: Linear relationship [-1, 1]
-- **Cosine Similarity**: Angular similarity [-1, 1]
-- **SSIM**: Structural similarity [-1, 1]
-- **MSE**: Mean squared error [0, ∞)
-- **EMD**: Earth Mover's Distance [0, ∞)
+### 3. `compare_heatmaps(heatmap_arrays, metrics) -> ComparisonResults`
 
-**Current Configuration:** Only **correlation** is computed (default).
+**Purpose:** Compute pairwise similarity metrics between multiple 2D heatmap collections.
 
-**Output Structure:**
-```python
-{
-  "per_image": {
-    "correlation": {
-      "0_vs_1": array([0.92, 0.88, ...]),  # 138 values
-      "0_vs_2": array([0.75, 0.78, ...]),  # 138 values
-      # ... all pairwise comparisons
-    }
-  },
-  "summary": {
-    "correlation": {
-      "0_vs_1": {
-        "mean": 0.85,
-        "std": 0.04,
-        "min": 0.75,
-        "max": 0.92,
-        "median": 0.86
-      }
-      # ... statistics for all pairs
-    }
-  }
-}
-```
+**Available Metrics:**
+- **Correlation (Pearson)**: Linear spatial correlation $[-1, 1]$
+- **Cosine Similarity**: Angular similarity $[-1, 1]$
+- **SSIM**: Structural similarity index $[-1, 1]$
+- **Top-$K$ IoU**: Intersection-over-Union of top $K\%$ salient pixels (`top_percent_iou_5`, `top_percent_iou_15`, `top_percent_iou_25`)
+- **MSE / EMD**: Mean squared error and Earth Mover's Distance
 
-**For N models:**
-- Number of pairs: C(N, 2) = N × (N-1) / 2
-- Example: 6 models → 15 pairwise comparisons
-- Each comparison has 138 per-image correlation values
+### 4. `compare_lime_betas(beta1, beta2, k_list) -> dict[str, float]` & `compare_lime_beta_collections(...)`
 
-### 3. `visualize_similarity_matrix(results, model_names, metric, stat) -> Figure`
+**Purpose:** Compare 1D superpixel Ridge coefficient vectors $\beta \in \mathbb{R}^K$ on shared tessellations.
 
-**Purpose:** Create heatmap matrix showing pairwise model similarities.
+**Metrics Computed:**
+- **Pearson Correlation**: Linear coefficient alignment
+- **Spearman Rank Correlation**: Monotonic ranking agreement of superpixel importance
+- **Top-$K$ & Bottom-$K$ IoU**: Jaccard similarity of top-$K$ positive (authenticity-promoting) and bottom-$K$ negative (authenticity-demoting) superpixels for $K \in \{5, 15, 25\}$
 
-**Output:** N×N matrix where:
-- Diagonal = 1.0 (self-similarity for correlation)
-- Off-diagonal = mean/median/etc. of 138 per-image comparisons
+### 5. `plot_lime_r2_distributions(r2_by_model, save_dir, dpi) -> None`
 
-**Example Visualization:**
-```
-              VGG16  ResNet152  DenseNet  ...
-VGG16          1.00      0.85      0.72
-ResNet152      0.85      1.00      0.79
-DenseNet       0.72      0.79      1.00
-...
-```
+**Purpose:** Generate diagnostic visualizations assessing local surrogate fidelity across architectures.
 
-### 4. `visualize_similarity_distribution(results, metric) -> Figure` ✨ NEW
+**Output Figures:**
+- `lime_r2_pooled_hist.png`: Overall distribution of weighted $R^2$ across all evaluated instances
+- `lime_r2_by_arch_hist.png`: Faceted subplots comparing fidelity across model backbones
+- `lime_r2_by_arch_boxplot.png`: Distribution percentiles and outliers by architecture
 
-**Purpose:** Visualize distribution of inter-model agreement across images.
+### 6. `visualize_similarity_matrix(results, model_names, metric, stat) -> Figure`
 
-**Two-Panel Visualization:**
+**Purpose:** Render an $N \times N$ matrix displaying pairwise similarity values across models or variants.
 
-**Panel 1: Histogram of Agreement**
-- X-axis: Average correlation per image (across all model pairs)
-- Y-axis: Number of images
-- Shows distribution: Which images have high vs low model agreement?
+### 7. `visualize_similarity_distribution(results, metric) -> Figure`
 
-**Panel 2: Consensus vs. Controversy Scatter**
-- X-axis: Mean agreement per image
-- Y-axis: Standard deviation (controversy)
-- Reveals: Images where models strongly agree vs. disagree
+**Purpose:** Analyze consensus versus controversy across images via a two-panel figure:
+- **Panel 1 (Histogram of Agreement)**: Mean correlation across all model pairs per image
+- **Panel 2 (Consensus vs. Controversy Scatter)**: Mean agreement versus standard deviation across images
 
-**Computation:**
-```python
-For each of 138 images:
-  1. Collect correlation values from all model pairs (e.g., 15 values for 6 models)
-  2. Compute mean: agreement_score
-  3. Compute std: controversy_score
+### 8. `visualize_violin_distribution(model_data, metric, ...) -> Figure`
 
-Plot histogram of 138 agreement_scores
-Plot scatter of (agreement, controversy) for 138 images
-```
-
-**Interpretation:**
-- **High mean, low std**: Models unanimously agree on this image
-- **Low mean, high std**: Models strongly disagree on this image
-- Useful for identifying easy vs. difficult images for explanation
+**Purpose:** Render violin plots displaying intra-model variant agreement distributions for each architecture.
 
 ---
 
@@ -221,16 +209,34 @@ Plot scatter of (agreement, controversy) for 138 images
 ### Complete Pipeline (Python API)
 
 ```python
+from main.Experiments.experiment_two import run_experiment_2
+
 run_experiment_2(
-    models=['clip_vit_b16'],  # Or full set of models
-    variants='unpruned',      # Target 10 Monte Carlo unpruned variants (exp1a_variant1...10)
-    xai_methods='both',       # Run both GradCAM and MPM
-    comparison_only=False,    # False: generate maps, True: skip generation
-    run_comparison=True,      # Run comparison immediately after map generation
-    comparison_kinds=["within_model_variants"], # Intra-model variant stability analysis
-    comparison_metrics=["correlation", "top_percent_iou_5", "top_percent_iou_15", "top_percent_iou_25"],
-    show_comparison_plots=True,
+    models=[
+        "vgg16", "vgg19", "resnet152", "densenet161",
+        "efficientnetb3", "barlowtwins", "clip_vit_b16"
+    ],
+    variants="unpruned",       # Target 10 Monte Carlo unpruned variants (exp1a_variant1...10)
+    xai_methods="all",         # Supported: 'gradcam', 'mpm', 'lime', 'both' (GC+MPM), 'all' (GC+MPM+LIME)
+    save_maps=True,            # Persist generated attribution arrays to disk
+    comparison_only=False,     # False: generate maps + compare, True: skip generation
+    run_comparison=True,       # Run comparative analysis
+    comparison_kinds=[
+        "within_model_variants",
+        "between_model_architectures",
+        "cross_methods",
+    ],
+    comparison_metrics=[
+        "correlation",
+        "ssim",
+        "top_percent_iou_5",
+        "top_percent_iou_15",
+        "top_percent_iou_25",
+    ],
+    show_comparison_plots=False,
+    save_plots=True,
     save_comparison_json=True,
+    cluster_computing=False,   # Set True when executing on HPC / large GPU nodes
 )
 ```
 
@@ -239,279 +245,170 @@ run_experiment_2(
 The experiment can be launched directly through the package CLI runner:
 
 ```bash
+# Run full pipeline with all three XAI methods and comprehensive comparisons
+uv run python -m Image_Authenticity_prediction experiment-two \
+    --models clip_vit_b16 vgg16 resnet152 \
+    --variants unpruned \
+    --xai-methods all \
+    --run-comparison \
+    --comparison-kinds within_model_variants between_model_architectures cross_methods \
+    --comparison-metrics correlation ssim top_percent_iou_5 top_percent_iou_15 top_percent_iou_25 \
+    --save-plots
+
+# Generate only LIME maps and superpixel statistics
 uv run python -m Image_Authenticity_prediction experiment-two \
     --models clip_vit_b16 \
     --variants unpruned \
-    --xai-methods both \
-    --run-comparison \
-    --comparison-kinds within_model_variants \
-    --comparison-metrics correlation top_percent_iou_5 top_percent_iou_15 top_percent_iou_25
+    --xai-methods lime \
+    --save-maps
+
+# Run comparison only on pre-existing maps
+uv run python -m Image_Authenticity_prediction experiment-two \
+    --xai-methods all \
+    --comparison-only \
+    --comparison-kinds within_model_variants between_model_architectures cross_methods \
+    --save-plots
 ```
+
+### HPC Cluster / SLURM Batch Execution
+
+For large-scale map generation across 10 variants $\times$ 7 architectures $\times$ 3 methods, use the SLURM submission script (`scripts/slurm/run_experiment_two.slurm`):
+
+```bash
+# Submit automated two-step job (LIME map generation on NVMe /scratch -> full comparison)
+sbatch scripts/slurm/run_experiment_two.slurm
+```
+
+The batch runner automatically stages inputs to fast node-local `/scratch`, activates CUDA Automatic Mixed Precision (AMP), scales batch sizes to 512, copies outputs back to persistent shared storage upon completion, and cleans temporary scratch directories via traps.
 
 ### SSH-Resilient Background Execution (`tmux` / `nohup`)
 
-Because generating high-resolution Multiscale Pixel Masking maps across 138 test images per variant is computationally demanding, long sessions over SSH can be dropped if network connections drop. To ensure uninterrupted execution:
-
 #### Recommended: Detached `tmux` Session
 ```bash
-# 1. Start a persistent tmux session named "exp2"
 tmux new -s exp2
 
-# 2. Inside the tmux session, execute the experiment command:
 uv run python -m Image_Authenticity_prediction experiment-two \
-    --models clip_vit_b16 \
     --variants unpruned \
-    --xai-methods both \
+    --xai-methods all \
     --run-comparison \
-    --comparison-kinds within_model_variants
+    --comparison-kinds within_model_variants between_model_architectures cross_methods \
+    --save-plots
 
-# 3. Detach safely from the session:
-#    Press: Ctrl + b, then release and press: d
-```
-
-When reconnecting to the server over SSH:
-```bash
-# Reattach to check progress
-tmux attach -t exp2
-
-# If needed, kill the session when fully complete:
-tmux kill-session -t exp2
+# Detach: Ctrl + b, then d
+# Reattach: tmux attach -t exp2
 ```
 
 #### Alternative: Background with `nohup`
 ```bash
 nohup uv run python -m Image_Authenticity_prediction experiment-two \
-    --models clip_vit_b16 \
     --variants unpruned \
-    --xai-methods both \
-    --run-comparison \
-    --comparison-kinds within_model_variants > experiment_2.log 2>&1 &
+    --xai-methods all \
+    --run-comparison > experiment_2.log 2>&1 &
 
-# Follow progress live
 tail -f experiment_2.log
 ```
-
-### Execution Flow
-
-#### Phase 1: Map Generation (if `comparison_only=False`)
-1. Load trained model weights from `Outputs/Experiment_1_variants/Weights/`
-2. For each model variant:
-   - Load test dataset (138 images)
-   - Generate GradCAM maps → save to `Outputs/Experiment_2_variants/XAI_Maps/GradCAM/`
-   - Generate MPM maps → save to `Outputs/Experiment_2_variants/XAI_Maps/Multiscale_Pixel_Masking/`
-3. Memory cleanup after each model
-
-#### Phase 2: Comparison Analysis
-1. **Scan directories** for saved heatmap files (`*_maps.npy`)
-2. **Group by model and variant**: 
-   - Parse filenames: `vgg16_exp1b_variant1_greedy_pruned_maps.npy`
-   - Extract: model=`vgg16`, variant=`exp1b_variant1_greedy_pruned`
-
-3. **Inter-Model Comparison:**
-   - For each XAI method (GradCAM, MPM):
-     - Create prototypes by averaging all variants per model
-     - Align prototypes to common resolution (224×224)
-     - Compute pairwise correlations
-     - Generate similarity matrix plot
-     - Generate distribution histogram plot
-     - Save plots to `Outputs/Experiment_2_variants/Plots/`
-
-4. **Intra-Model Comparison:**
-   - For each XAI method and each model:
-     - Compare all variants of that model
-     - Compute pairwise correlations
-     - Generate similarity matrix (variants × variants)
-     - Save plots
-
-5. **Save JSON results** to `Outputs/Experiment_2_variants/experiment_2b_comparison.json`
 
 ---
 
 ## Output Files
 
-### Generated Heatmap Files
+### Generated Attribution Files
 ```
 Outputs/Experiment_2_variants/XAI_Maps/
 ├── GradCAM/
-│   ├── vgg16_orig_maps.npy                            # (138, 224, 224)
-│   ├── vgg16_exp1b_variant1_greedy_pruned_maps.npy   # (138, 224, 224)
-│   ├── resnet152_orig_maps.npy
+│   ├── vgg16_orig_maps.npy                            # (138, 224, 224) float32
+│   ├── vgg16_exp1a_variant1_maps.npy
+│   ├── clip_vit_b16_orig_maps.npy
 │   └── ...
-└── Multiscale_Pixel_Masking/
-    ├── vgg16_orig_maps.npy
-    ├── vgg16_exp1b_variant1_greedy_pruned_maps.npy
+├── Multiscale_Pixel_Masking/
+│   ├── vgg16_orig_maps.npy                            # (138, 224, 224) float32
+│   ├── clip_vit_b16_orig_maps.npy
+│   └── ...
+└── LIME/
+    ├── slic_segments.npy                              # Canonical test SLIC tessellation (138, 224, 224) int16
+    ├── tessellation_manifest.json                     # Metadata on superpixel segmentation & image indices
+    ├── vgg16_orig_maps.npy                            # 2D superpixel saliency heatmaps (138, 224, 224) float32
+    ├── vgg16_orig_r2.npy                              # Weighted R² surrogate fidelity scores (138,) float32
+    ├── vgg16_orig_betas.npz                           # 1D Ridge regression beta vectors (img_0000: K-dim vector)
+    ├── clip_vit_b16_exp1a_variant1_maps.npy
+    ├── clip_vit_b16_exp1a_variant1_r2.npy
+    ├── clip_vit_b16_exp1a_variant1_betas.npz
     └── ...
 ```
 
-### Comparison Plots
+### Visualizations and Diagnostic Plots
 ```
 Outputs/Experiment_2_variants/Plots/
-├── inter_model_gradcam_correlation_matrix.png         # N×N similarity matrix
-├── inter_model_gradcam_correlation_distribution.png   # Histogram + scatter
-├── inter_model_multiscale_pixel_masking_correlation_matrix.png
-├── inter_model_multiscale_pixel_masking_correlation_distribution.png
-├── intra_model_gradcam_correlation_matrix.png
-└── intra_model_multiscale_pixel_masking_correlation_matrix.png
+├── lime_r2_pooled_hist.png                            # Diagnostic: pooled R² histogram across all fits
+├── lime_r2_by_arch_hist.png                          # Diagnostic: per-architecture R² subplots
+├── lime_r2_by_arch_boxplot.png                       # Diagnostic: R² boxplots by architecture
+├── lime_within_model_correlation_violin.png           # Intra-model variant stability violin plot
+├── lime_within_model_correlation_violin.svg
+├── inter_model_gradcam_correlation_matrix.png         # Pairwise prototype similarity matrices
+├── inter_model_mpm_correlation_matrix.png
+├── inter_model_lime_correlation_matrix.png
+├── inter_model_lime_correlation_distribution.png      # Consensus vs controversy scatter/histogram
+├── lime_superpixel_between_model_architectures_correlation_matrix.png
+├── lime_superpixel_between_model_architectures_spearman_matrix.png
+└── ...
 ```
 
-### JSON Results
+### JSON Results Structure (`experiment_2b_comparison.json`)
 ```json
 {
-  "inter_model": {
-    "gradcam": {
-      "overall": {
-        "correlation": {
-          "vgg16_vs_resnet152": {
-            "mean": 0.82,
-            "std": 0.06,
-            "min": 0.65,
-            "max": 0.93,
-            "median": 0.83
-          },
-          ...
-        }
-      },
-      "models_compared": ["vgg16", "resnet152", "vgg19", ...],
-      "n_variants_per_model": {
-        "vgg16": 3,
-        "resnet152": 5,
-        ...
-      },
-      "prototype_shapes": {
-        "vgg16": [138, 224, 224],
-        ...
-      }
+  "lime_r2_summary": {
+    "vgg16": {
+      "mean": 0.812,
+      "std": 0.054,
+      "median": 0.825,
+      "min": 0.583,
+      "max": 0.941,
+      "n_variants": 10,
+      "n_fits": 1380
     },
-    "multiscale_pixel_masking": { ... }
-  },
-  "intra_model_variants": {
-    "gradcam": {
-      "per_model": {
-        "vgg16": {
-          "summary": {
-            "correlation": {
-              "orig_vs_greedy_pruned": {
-                "mean": 0.94,
-                ...
-              }
-            }
-          }
-        }
-      }
+    "clip_vit_b16": {
+      "mean": 0.795,
+      "std": 0.061,
+      "median": 0.804,
+      "min": 0.521,
+      "max": 0.932,
+      "n_variants": 10,
+      "n_fits": 1380
     }
+  },
+  "lime_within_model_variants": {
+    "vgg16": {
+      "per_image": { "correlation": { ... } },
+      "summary": { "correlation": { ... } },
+      "variants": ["exp1a_variant1", "exp1a_variant2", "..."]
+    }
+  },
+  "lime_between_model_architectures": {
+    "per_image": { "correlation": { ... } },
+    "summary": { "correlation": { ... } },
+    "models": ["vgg16", "vgg19", "resnet152", "densenet161", "efficientnetb3", "barlowtwins", "clip_vit_b16"]
+  },
+  "lime_superpixel_within_model_variants": {
+    "vgg16": {
+      "per_image": { "correlation": { ... }, "spearman": { ... }, "top_percent_iou_5": { ... } },
+      "summary": { ... },
+      "variants": ["exp1a_variant1", "..."]
+    }
+  },
+  "lime_superpixel_between_model_architectures": {
+    "summary": {
+      "correlation": { ... },
+      "spearman": { ... },
+      "top_percent_iou_5": { ... }
+    },
+    "models": ["vgg16", "vgg19", "resnet152", "densenet161", "efficientnetb3", "barlowtwins", "clip_vit_b16"]
+  },
+  "cross_methods": {
+    "gradcam_vs_mpm": { ... },
+    "gradcam_vs_lime": { ... },
+    "mpm_vs_lime": { ... }
   }
 }
-```
-
----
-
-## Statistical Analysis
-
-### Inter-Model Agreement Interpretation
-
-For 6 models (e.g., VGG16, VGG19, ResNet152, DenseNet161, EfficientNetB3, BarlowTwins):
-
-**Similarity Matrix:**
-- 15 pairwise comparisons (6 choose 2)
-- Each cell = average correlation across 138 images
-- **High values (>0.8)**: Models have similar attention patterns
-- **Low values (<0.5)**: Models focus on different regions
-
-**Distribution Histogram:**
-- 138 data points (one per image)
-- Each point = average correlation across all 15 model pairs
-- **Interpretation:**
-  - Right-skewed distribution → most images have high inter-model agreement
-  - Left-skewed distribution → models generally disagree
-  - Bimodal distribution → some images are easy (high agreement), others difficult
-
-**Consensus vs. Controversy:**
-- **High consensus images** (mean ≈ 1, std ≈ 0): All models focus on same regions
-- **Controversial images** (low mean, high std): Models disagree on important regions
-- Useful for dataset curation and model debugging
-
----
-
-## Code Quality Features
-
-### ✅ Implemented Best Practices
-
-1. **Type Hints:** All functions have complete type annotations
-2. **Documentation:** Comprehensive docstrings with Args/Returns
-3. **Error Handling:** 
-   - Validates input shapes and parameters
-   - Graceful degradation with warning messages
-   - Try-except blocks for file operations
-4. **Memory Management:**
-   - Explicit GPU memory cleanup after each model
-   - Garbage collection triggers
-5. **Modularity:** 
-   - Separate functions for each logical step
-   - Reusable utility functions in `comparisons.py`
-6. **Flexibility:**
-   - Configurable metrics, resolutions, and comparison types
-   - Support for selective model/variant testing
-7. **Reproducibility:**
-   - Deterministic file loading (sorted paths)
-   - JSON output for result persistence
-
-### 🔧 Code Verification Status
-
-**✅ All imports resolved correctly**
-- No duplicate imports
-- Clean dependency structure
-
-**✅ Function dependencies validated**
-- `_create_prototype_heatmap` properly defined
-- All called functions exist in `comparisons.py`
-
-**✅ Data flow verified**
-- Heatmap shapes consistent throughout pipeline
-- Proper alignment before comparisons
-
-**✅ No syntax errors**
-- Python type checking passes
-- Only missing library warnings (expected in development environment)
-
----
-
-## Usage Examples
-
-### Example 1: Generate Maps and Compare (Full Pipeline)
-```python
-run_experiment_2(
-    models=['vgg16', 'resnet152'],
-    variants='all',  # Test all available variants
-    xai_methods='both',
-    comparison_only=False,
-    comparison_kinds=["inter_model", "intra_model_variants"],
-    comparison_metrics=["correlation"],
-    show_comparison_plots=True,
-    save_comparison_json=True,
-)
-```
-
-### Example 2: Only Compare Existing Maps
-```python
-run_experiment_2(
-    models=['vgg16', 'resnet152', 'vgg19', 'efficientnetb3', 'densenet161', 'barlowtwins'],
-    xai_methods='both',
-    comparison_only=True,  # Skip map generation
-    comparison_kinds=["inter_model"],
-    comparison_metrics=["correlation"],
-    show_comparison_plots=True,
-)
-```
-
-### Example 3: Only GradCAM for Specific Variants
-```python
-run_experiment_2(
-    models=['vgg16', 'resnet152'],
-    variants='greedy',  # Only greedy-pruned variants
-    xai_methods='gradcam',  # Only GradCAM
-    comparison_only=False,
-    comparison_kinds=["inter_model"],
-)
 ```
 
 ---
@@ -520,74 +417,27 @@ run_experiment_2(
 
 ### Computational Complexity
 
-**Map Generation (Experiment 2A):**
-- GradCAM: O(N × C) where N = images, C = forward+backward passes
-- MPM: O(N × P × S) where P = pixels, S = scales
-- **Bottleneck:** MPM with 138 images × ~50K pixels × 3 scales
+1. **GradCAM**: $\mathcal{O}(N \times C)$ forward and backward passes. Fast ($\sim 1$–$2$ seconds per 138 images on modern GPUs).
+2. **Multiscale Pixel Masking (MPM)**: $\mathcal{O}(N \times P \times S)$ forward passes where $P$ is pixel count and $S = 3$ scales. Handled with batched spatial masking ($512$ masks per forward batch).
+3. **LIME**: $\mathcal{O}(N \times M)$ forward passes where $M = 1200$ perturbations per image.
+   - **Optimization**: Vectorized GPU forward evaluation with batch size $64$ (local) or $512$ (cluster) using PyTorch CUDA AMP (`bfloat16`).
+   - **Shared Tessellation**: Precomputing canonical SLIC superpixels once across all models eliminates repetitive $\mathcal{O}(N \times \text{pixels})$ segmentation overhead.
+   - **Ridge Fitting**: Vectorized normal equations in NumPy/SciPy execute in milliseconds per image.
 
-**Comparison (Experiment 2B):**
-- Loading: O(M × V) where M = models, V = variants
-- Prototype creation: O(M × V × N × H × W)
-- Correlation computation: O(M² × N × H × W)
-- **Bottleneck:** Pairwise comparisons scale quadratically with number of models
+### Storage & Memory Overhead
 
-### Memory Requirements
-
-**Per Model:**
-- Heatmaps: 138 × 224 × 224 × 4 bytes ≈ 27 MB (float32)
-- For 6 models × 3 variants × 2 methods ≈ 972 MB
-
-**GPU Memory:**
-- Model + activations: ~2-8 GB depending on architecture
-- Cleaned after each model to prevent OOM
-
-### Optimization Strategies
-
-1. **Vectorized Operations:** Uses NumPy broadcasting for correlation computation
-2. **Batch Processing:** Processes one image at a time to control memory
-3. **Lazy Loading:** Loads heatmaps only when needed for comparison
-4. **Prototype Approach:** Reduces comparison count by averaging variants first
-
----
-
-## Future Enhancements
-
-### Potential Additions
-
-1. **Additional Metrics:**
-   - Spearman rank correlation (for non-linear relationships)
-   - Intersection over Union (IoU) for thresholded heatmaps
-   - Kullback-Leibler divergence
-
-2. **Statistical Testing:**
-   - Significance tests for correlation differences
-   - Confidence intervals on mean correlations
-
-3. **Advanced Visualizations:**
-   - Hierarchical clustering of models based on attention similarity
-   - t-SNE/UMAP embeddings of heatmap patterns
-   - Per-class analysis (AI vs. Real images separately)
-
-4. **Efficiency Improvements:**
-   - Parallel map generation across GPUs
-   - Incremental comparison (only new models)
-   - HDF5 storage for faster I/O
+- **2D Heatmaps**: $138 \times 224 \times 224 \times 4\text{ bytes} \approx 27.7\text{ MB}$ per (model, variant, method) run.
+- **LIME 1D Betas**: Compressed `.npz` archive containing 138 arrays of dimension $K \approx 150 \approx 120\text{ KB}$ per variant.
+- **LIME Surrogate $R^2$**: $138 \times 4\text{ bytes} \approx 552\text{ bytes}$ per variant.
+- **GPU VRAM**: Explicit `cleanup_model_and_data()` and `explainer.cleanup()` calls ensure intermediate tensors and activation caches are freed after each variant, preventing out-of-memory errors.
 
 ---
 
 ## Conclusion
 
-Experiment 2 provides a robust framework for explainability analysis with the following key innovations:
+Experiment 2 provides a unified framework for explainability analysis across modern deep authenticity architectures. By integrating **GradCAM**, **Multiscale Pixel Masking**, and **GPU-vectorized LIME**, the pipeline spans:
+- White-box gradient spatial localization (GradCAM)
+- Fine-grained multi-scale pixel sensitivity (MPM)
+- Interpretable, model-agnostic superpixel surrogate modeling with statistical fidelity verification (LIME)
 
-1. **Prototype-based inter-model comparison** reduces noise and provides architecture-level insights
-2. **Distribution visualization** reveals image-level agreement patterns
-3. **Flexible pipeline** supports various models, variants, and XAI methods
-4. **Comprehensive output** includes both visual and quantitative results
-
-The code is production-ready with proper error handling, documentation, and modularity. All functions are verified and properly integrated.
-
----
-
-**Report Generated:** November 19, 2025  
-**Code Status:** ✅ Verified and Production-Ready  
-**Next Steps:** Execute pipeline with full model set and analyze results
+The inclusion of prototype-based inter-model comparisons, 1D superpixel beta vector metrics, and cross-method alignment allows rigorous, reproducible evaluation of explainability stability across model scales and architectures.

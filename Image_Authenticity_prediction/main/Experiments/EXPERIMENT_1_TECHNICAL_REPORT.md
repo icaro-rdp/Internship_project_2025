@@ -1,8 +1,8 @@
 # Experiment 1: Model Training and Pruning - Technical Report
 
-**Date:** November 19, 2025  
+**Date:** November 2026  
 **File:** `main/Experiments/experiment_one.py`  
-**Related Utilities:** `main/Utils/pruning.py`, `main/train.py`
+**Related Utilities:** `main/Utils/pruning.py`, `main/train.py`, `main/Utils/config.py`
 
 ---
 
@@ -10,11 +10,11 @@
 
 Experiment 1 implements a comprehensive pipeline for training and pruning deep learning models for image authenticity prediction. The experiment consists of three main phases:
 
-1. **Experiment 1A**: Train multiple variants of each model architecture
-2. **Experiment 1B**: Prune trained models using feature importance analysis
-3. **Testing Phase**: Evaluate all trained and pruned models on a held-out test set
+1. **Experiment 1A**: Train multiple independent variants of each model architecture (10 Monte Carlo variants per architecture)
+2. **Experiment 1B**: Prune trained models using feature importance analysis (greedy unit pruning and negative impact pruning)
+3. **Testing Phase**: Evaluate all trained baseline and pruned models on a held-out, globally fixed test set
 
-The pipeline supports **10 variants per model** and two pruning strategies (**greedy** and **negative impact**), generating a rich dataset for comparing model architectures and pruning effects.
+The pipeline supports **7 vision architectures** (6 CNNs and 1 Vision Transformer), generating **10 baseline variants per model** and two pruning strategies (**greedy** and **negative impact**), resulting in **210 evaluated model checkpoints** (70 baseline + 140 pruned) that directly power downstream Explainable AI (XAI) analysis in Experiment 2.
 
 ---
 
@@ -232,13 +232,14 @@ $$\text{Importance}(i) = \text{MSE}_{\text{without } i} - \text{MSE}_{\text{base
 
 ### Target Layers
 
-Each architecture has a specific target layer for pruning:
+Each architecture has a specific target layer for unit/channel importance analysis and pruning:
 
-- **VGG16/19**: Last convolutional layer before classifier
-- **ResNet152**: Last convolution in final residual block
-- **DenseNet161**: Last convolution in final dense block
-- **EfficientNetB3**: Last convolution in final MBConv block
-- **BarlowTwins**: Last convolution before average pooling
+- **VGG16/19**: Last convolutional layer before classifier (`features.28` for VGG16, `features.34` for VGG19)
+- **ResNet152**: Last convolution in final residual block (`features.7.2.conv3`)
+- **DenseNet161**: Last convolution in final dense block (`features.denseblock4.denselayer24.conv2`)
+- **EfficientNetB3**: Last convolution in final MBConv block (`features.8.0`)
+- **BarlowTwins**: Last convolution before average pooling (`features.7.2.conv3`)
+- **CLIP ViT-B/16**: Visual projection layer (`visual_projection`, 512-d linear projection row units)
 
 ### Pruning Pipeline
 
@@ -436,7 +437,13 @@ vgg16               exp1b_variant1      Greedy     0.0229     0.1513     0.8601 
 vgg16               exp1b_variant1      Negative   0.0238     0.1543     0.8534   0.8401   0.6765
 vgg16               exp1a_variant2      Baseline   0.0236     0.1536     0.8545   0.8411   0.6778
 ...
+clip_vit_b16        exp1a_variant1      Baseline   36.3989    6.0332     0.7315   0.7431   0.5366
+clip_vit_b16        exp1a_variant2      Baseline   36.0088    6.0007     0.7354   0.7471   0.5343
+clip_vit_b16        exp1a_variant3      Baseline   37.1520    6.0952     0.7216   0.7395   0.5301
+...
 ```
+
+*Note: CNN backbones are evaluated on normalized target scales, whereas CLIP ViT-B/16 targets native continuous human MOS ratings on $[0, 100]$ (mean across 10 variants: MSE $= 36.25 \pm 0.54$, RMSE $= 6.02 \pm 0.04$, PLCC $= 0.7316 \pm 0.0059$, SRCC $= 0.7456 \pm 0.0055$, KRCC $= 0.5375 \pm 0.0058$).*
 
 ---
 
@@ -537,9 +544,9 @@ results = run_experiment_one_complete(
 ```
 
 **Output:**
-- 60 baseline models (6 architectures × 10 variants)
-- 120 pruned models (60 variants × 2 pruning methods)
-- **Total: 180 models trained and evaluated**
+- 70 baseline models (7 architectures × 10 variants)
+- 140 pruned models (70 variants × 2 pruning methods)
+- **Total: 210 models trained and evaluated**
 
 ### Example 2: Train Only VGG Models
 
@@ -569,7 +576,7 @@ results = run_experiment_one_complete(
 **Prerequisite:** Trained models must exist in `Weights/`
 
 **Output:**
-- 60 greedy-pruned models
+- 70 greedy-pruned models
 
 ### Example 4: Test All Existing Models
 
@@ -655,10 +662,10 @@ This ensures statistical diversity while maintaining evaluation fairness.
 ### Model Comparison Insights
 
 **Total Models Generated:**
-- 6 architectures
+- 7 architectures
 - 10 variants per architecture
 - 2 pruning methods per variant
-- **= 60 baseline + 120 pruned = 180 models**
+- **= 70 baseline + 140 pruned = 210 models**
 
 **Enables Analysis:**
 1. **Architecture comparison**: Which backbone is best?
@@ -743,28 +750,29 @@ Outputs/Experiment_1_variants/
 │   ├── vgg16_exp1b_variant1_negative_pruned.pth
 │   ├── vgg16_exp1b_variant2_greedy_pruned.pth
 │   ├── ...
-│   ├── resnet152_exp1a_variant1_best.pth
-│   └── ... (total: ~180 .pth files)
+│   ├── clip_vit_b16_exp1a_variant1_best.pth
+│   ├── clip_vit_b16_exp1b_variant1_greedy_pruned.pth
+│   └── ... (total: 210 .pth files: 70 baseline + 140 pruned)
 │
 ├── Training_History/
 │   ├── vgg16_exp1a_variant1_history.npy                # NumPy arrays
-│   ├── vgg16_exp1a_variant2_history.npy
-│   └── ... (60 .npy files)
+│   ├── clip_vit_b16_exp1a_variant1_history.npy
+│   └── ... (70 .npy files)
 │
 ├── Training_Plots/
 │   ├── vgg16_exp1a_training_curve_variant1.png
-│   ├── vgg16_exp1a_training_curve_variant2.png
-│   └── ... (60 .png files)
+│   ├── clip_vit_b16_exp1a_training_curve_variant1.png
+│   └── ... (70 .png files)
 │
 ├── Ranking_arrays/
 │   ├── vgg16_exp1b_variant1_importance_scores.npy
-│   ├── vgg16_exp1b_variant2_importance_scores.npy
-│   └── ... (60 .npy files)
+│   ├── clip_vit_b16_exp1b_variant1_importance_scores.npy
+│   └── ... (70 .npy files)
 │
 ├── Ranking_Plots/
 │   ├── vgg16_exp1b_variant1_importance_scores.png
-│   ├── vgg16_exp1b_variant2_importance_scores.png
-│   └── ... (60 .png files)
+│   ├── clip_vit_b16_exp1b_variant1_importance_scores.png
+│   └── ... (70 .png files)
 │
 └── Test_Results/
     └── experiment_1_test_results.json                   # All test metrics
@@ -781,9 +789,9 @@ Outputs/Experiment_1_variants/
 - GPU Memory: 2-8 GB
 - Disk Space: ~500 MB per variant (weights + history)
 
-**Total for 6 Models × 10 Variants:**
-- Time: 30-120 hours (sequential processing)
-- Disk Space: ~30 GB
+**Total for 7 Models × 10 Variants:**
+- Time: 35-140 hours (sequential processing)
+- Disk Space: ~35 GB
 
 ### Pruning Phase (1B)
 
@@ -792,9 +800,9 @@ Outputs/Experiment_1_variants/
 - GPU Memory: 2-8 GB
 - Disk Space: ~1 GB per variant (weights + scores + plots)
 
-**Total for 60 Variants × 2 Methods:**
-- Time: 20-90 hours
-- Disk Space: ~60 GB
+**Total for 70 Variants × 2 Methods:**
+- Time: 25-105 hours
+- Disk Space: ~70 GB
 
 ### Testing Phase
 
@@ -802,14 +810,14 @@ Outputs/Experiment_1_variants/
 - Time: 2-5 minutes per model
 - GPU Memory: 2-8 GB
 
-**Total for 180 Models:**
-- Time: 6-15 hours
+**Total for 210 Models:**
+- Time: 7-18 hours
 
 ### Recommendations
 
 1. **Use GPU**: CPU training would take 10-50× longer
-2. **Run Overnight**: Each phase takes 1-4 days
-3. **Monitor Disk Space**: Ensure 100+ GB available
+2. **Run Overnight / SLURM**: Each phase takes 1-4 days
+3. **Monitor Disk Space**: Ensure 120+ GB available
 4. **Checkpoint Often**: Results saved incrementally
 
 ---
@@ -848,30 +856,54 @@ t_stat, p_value = ttest_ind(vgg16_scores, resnet_scores)
 
 ## Integration with Experiment 2
 
-### Seamless Pipeline
+### Seamless Downstream Pipeline
 
-Experiment 1 prepares models for Experiment 2 (Explainability):
+Experiment 1 prepares trained baseline and pruned model checkpoints for **Experiment 2 (Explainability Analysis)**:
 
 ```
-Experiment 1A (Train)
+Experiment 1A (Multi-Variant Training)
     ↓
-    Saves weights to: Outputs/Experiment_1_variants/Weights/
+    Saves 70 baseline weights: Outputs/Experiment_1_variants/Weights/{model}_exp1a_variant{1..10}_best.pth
     ↓
-Experiment 1B (Prune)
+Experiment 1B (Feature Map Pruning)
     ↓
-    Saves pruned weights to same directory
+    Saves 140 pruned weights: Outputs/Experiment_1_variants/Weights/{model}_exp1b_variant{N}_{method}_pruned.pth
     ↓
-Experiment 2 (Explainability)
+Outputs/Experiment_1_variants/Weights/ (210 Total Checkpoints across 7 Architectures)
     ↓
-    Loads all weights from: Outputs/Experiment_1_variants/Weights/
-    ↓
-    Generates XAI maps for all models
+Experiment 2 (Explainability Pipeline)
+    ├── Experiment 2A: Attribution Generation
+    │   ├── GradCAM: Spatial gradient-weighted feature attention
+    │   ├── Multiscale Pixel Masking (MPM): Multi-scale Gaussian pixel occlusion
+    │   └── LIME: GPU-vectorized superpixel perturbation & Ridge surrogate modeling
+    │       ├── 2D superpixel saliency heatmaps (*_maps.npy)
+    │       ├── Per-image local surrogate fidelity scores (*_r2.npy)
+    │       └── 1D superpixel Ridge coefficient vectors (*_betas.npz)
+    │
+    └── Experiment 2B: Quantitative Attribution Comparison
+        ├── Inter-Model Prototypes: Average variants into architecture-level prototypes
+        ├── Intra-Model Variant Stability: Monte Carlo seed stability & pruning shift
+        ├── LIME Superpixel Consistency: 1D beta vector correlations across variants
+        └── Cross-Method Consensus: 3-way alignment (GradCAM vs MPM vs LIME)
 ```
 
-**Filename Convention Consistency:**
-- Training: `{model}_exp1a_variant{N}_best.pth`
-- Pruning: `{model}_exp1b_variant{N}_{method}_pruned.pth`
-- Experiment 2 uses regex to parse these filenames
+### Downstream Utility of Experiment 1 Outputs in Experiment 2:
+
+1. **Unpruned Variant Attribution Stability (Monte Carlo Baseline)**:
+   - The 10 independent baseline variants (`exp1a_variant1` ... `exp1a_variant10`) per architecture isolate how head initialization and train/val split variation influence visual explanations.
+   - Evaluated via pairwise Pearson correlation, Spearman rank correlation, and top-$K$ IoU distributions (visualized via cross-architecture violin plots).
+
+2. **Pruning Lesion Saliency Shift**:
+   - Comparing unpruned models against greedy-pruned and negative-pruned models reveals how structured unit removal shifts spatial attention and superpixel importance.
+
+3. **LIME Superpixel Consistency**:
+   - Experiment 2 evaluates the saved weights on a shared canonical $224 \times 224$ SLIC superpixel tessellation (`slic_segments.npy`, $N = 138$ test images, $K \approx 150$), enabling direct 1D superpixel Ridge coefficient comparisons (`lime_superpixel_within_model_variants` and `lime_superpixel_between_model_architectures`).
+
+4. **Filename Convention Consistency**:
+   - Training: `{model}_exp1a_variant{N}_best.pth`
+   - Pruning (Greedy): `{model}_exp1b_variant{N}_greedy_pruned.pth`
+   - Pruning (Negative Impact): `{model}_exp1b_variant{N}_negative_pruned.pth`
+   - Experiment 2 parses these filenames using regular expressions (`exp1a_variant\d+|exp1b_variant\d+_greedy_pruned|exp1b_variant\d+_negative_pruned|orig`) to group variants automatically.
 
 ---
 
@@ -904,32 +936,50 @@ Easy to modify without changing code logic.
 ### First Time Setup
 
 1. **Ensure datasets are prepared:**
-   - `main/data.py` should define `IMAGENET_DATASET`, `DENSENET_DATASET`
+   - `main/data.py` should define `IMAGENET_DATASET`, `DENSENET_DATASET`, and `CLIP_DATASET`
    - Data augmentation and normalization configured
 
 2. **Verify model implementations:**
-   - All 6 models in `main/Models/` must be available
+   - All 7 models in `main/Models/` must be available (VGG16, VGG19, ResNet152, DenseNet161, EfficientNetB3, BarlowTwins, CLIP ViT-B/16)
    - Each model has correct regression head
 
-3. **Check disk space:** 100+ GB recommended
+3. **Check disk space:** 120+ GB recommended
 
 ### Running the Pipeline
 
-**Method 1: Complete Pipeline**
+All execution should use **`uv run`** inside the project environment.
+
+**Method 1: Command Line Interface (CLI)**
 ```bash
-cd main/Experiments/
-python experiment_one.py
+# Complete pipeline (train, prune, test across all 7 models)
+uv run python -m Image_Authenticity_prediction experiment-one --train --prune --test
+
+# Train specific models (e.g. CLIP ViT-B/16 and ResNet152) with 10 variants
+uv run python -m Image_Authenticity_prediction experiment-one \
+    --models clip_vit_b16 resnet152 \
+    --variants 10 \
+    --train
+
+# Prune already-trained models using greedy pruning
+uv run python -m Image_Authenticity_prediction experiment-one \
+    --prune \
+    --pruning-method greedy
+
+# Run testing phase only across all existing models
+uv run python -m Image_Authenticity_prediction experiment-one --test
 ```
 
-**Method 2: Selective Execution**
+**Method 2: Python API**
 ```python
-# Modify __main__ section in experiment_one.py
+from main.Experiments.experiment_one import run_experiment_one_complete
+
 results = run_experiment_one_complete(
-    models_to_process=['vgg16', 'resnet152'],  # Specific models
+    models_to_process=['vgg16', 'resnet152', 'clip_vit_b16'],
     run_training=True,
     run_pruning=True,
     run_testing=True,
-    pruning_method='greedy'  # or 'negative_impact' or 'both'
+    pruning_method='both',
+    num_variants=10,
 )
 ```
 
@@ -940,14 +990,9 @@ The pipeline is **resumable**:
 - Pruning: Importance scores cached (set `force_recompute=False`)
 - Testing: Re-run anytime without retraining
 
-To resume:
-```python
-# Skip already completed phases
-results = run_experiment_one_complete(
-    run_training=False,    # Already done
-    run_pruning=False,     # Already done
-    run_testing=True       # Only run testing
-)
+To resume only testing:
+```bash
+uv run python -m Image_Authenticity_prediction experiment-one --test
 ```
 
 ---
@@ -1052,10 +1097,10 @@ Experiment 1 provides a comprehensive framework for:
 3. **Evaluating thoroughly** with multiple correlation metrics
 
 **Key Achievements:**
-- ✅ 180 models trained and evaluated
-- ✅ Reproducible results (fixed test set)
-- ✅ Automated pipeline with error handling
-- ✅ Rich output for downstream analysis
+- ✅ 210 models trained and evaluated (70 baseline + 140 pruned across 7 architectures)
+- ✅ Reproducible results (fixed global test set)
+- ✅ Automated pipeline with error handling and CLI integration
+- ✅ Rich output for downstream explainability analysis (GradCAM, MPM, and LIME)
 - ✅ Memory-efficient sequential processing
 - ✅ Comprehensive logging and visualization
 
@@ -1063,7 +1108,7 @@ The pipeline is **production-ready**, **well-documented**, and **easily extensib
 
 ---
 
-**Report Generated:** November 19, 2025  
+**Report Generated:** November 2026  
 **Code Status:** ✅ Verified and Production-Ready  
-**Total Models:** 180 (60 baseline + 120 pruned)  
-**Next Steps:** Run complete pipeline and analyze results across architectures
+**Total Models:** 210 (70 baseline + 140 pruned across 7 architectures)  
+**Next Steps:** Proceed to Experiment 2 explainability generation and cross-architecture attribution comparison
