@@ -19,6 +19,10 @@
 5. [Ensemble Methods (Stage 3C)](#5-ensemble-methods-stage-3c)
 6. [Explainability & Attribution Consistency (Stage 3D)](#6-explainability--attribution-consistency-stage-3d)
 7. [Quantitative Results](#7-quantitative-results)
+   - 7.1 [Prediction Performance Comparison](#71-prediction-performance-comparison)
+   - 7.2 [Stacking Model Weights & Architecture Synergy](#72-stacking-model-weights--architecture-synergy)
+   - 7.3 [Heatmap Consistency Across Independent Runs](#73-heatmap-consistency-across-independent-runs)
+   - 7.4 [Prototype Agreement: Ensemble vs. Single Architecture Prototypes](#74-prototype-agreement-ensemble-vs-single-architecture-prototypes)
 8. [Directory Structure & Generated Artifacts](#8-directory-structure--generated-artifacts)
 9. [Usage Examples (CLI, SLURM, and Python API)](#9-usage-examples-cli-slurm-and-python-api)
 10. [Reproducibility & Key Guarantees](#10-reproducibility--key-guarantees)
@@ -182,31 +186,34 @@ Empirical results computed on the held-out 273-image test set across all 10 inde
 
 ### 7.1 Prediction Performance Comparison
 
-| Model / Ensemble | PLCC (Mean ± Std) | SRCC (Mean ± Std) | RMSE (Mean ± Std) | Prediction Reliability ($r_{\text{model}}$) | Combined Ceiling |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| `vgg16` | $0.5397 \pm 0.0276$ | $0.5730 \pm 0.0249$ | $8.6181 \pm 0.4044$ | $0.8559$ | $0.7573$ |
-| `vgg19` | $0.5628 \pm 0.0271$ | $0.5869 \pm 0.0243$ | $8.5220 \pm 0.3392$ | $0.8607$ | $0.7594$ |
-| `resnet152` | $0.5059 \pm 0.0196$ | $0.5265 \pm 0.0212$ | $9.8550 \pm 0.3657$ | $0.9162$ | $0.7835$ |
-| `densenet161` | $0.6274 \pm 0.0179$ | $0.6166 \pm 0.0170$ | $7.4813 \pm 0.2130$ | $0.9088$ | $0.7803$ |
-| `efficientnetb3` | $0.4966 \pm 0.0199$ | $0.5056 \pm 0.0240$ | $8.8185 \pm 0.2484$ | $0.8631$ | $0.7604$ |
-| `barlowtwins` | $0.6169 \pm 0.0119$ | $0.6292 \pm 0.0115$ | $7.0965 \pm 0.1002$ | $0.9431$ | $0.7949$ |
-| `clip_vit_b16` *(best single)* | $0.7317 \pm 0.0059$ | $0.7456 \pm 0.0055$ | $6.0206 \pm 0.0450$ | $0.9757$ | $0.8085$ |
-| **Bagging Ensemble (7 models)** | **$0.7519 \pm 0.0069$** | **$0.7484 \pm 0.0072$** | **$5.9057 \pm 0.0956$** | **$0.9680$** | **$0.8053$** |
-| **Stacking Ensemble (Ridge)** | $\mathbf{0.7742 \pm 0.0102}$ | $\mathbf{0.7734 \pm 0.0090}$ | $\mathbf{5.5442 \pm 0.1049}$ | **$0.9511$** | **$0.7983$** |
+| Model / Ensemble | PLCC (Mean ± Std) | SRCC (Mean ± Std) | RMSE (Mean ± Std) | MSE (Mean ± Std) | Prediction Reliability ($r_{\text{model}}$) | Combined Ceiling ($\sqrt{r_{\text{human}} \cdot r_{\text{model}}}$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `vgg16` | $0.5397 \pm 0.0276$ | $0.5730 \pm 0.0249$ | $8.6181 \pm 0.4044$ | $74.4358 \pm 7.1637$ | $0.8559$ | $0.7573$ |
+| `vgg19` | $0.5628 \pm 0.0271$ | $0.5869 \pm 0.0243$ | $8.5220 \pm 0.3392$ | $72.7398 \pm 5.7700$ | $0.8607$ | $0.7594$ |
+| `resnet152` | $0.5059 \pm 0.0196$ | $0.5265 \pm 0.0212$ | $9.8550 \pm 0.3657$ | $97.2546 \pm 7.2254$ | $0.9162$ | $0.7835$ |
+| `densenet161` | $0.6274 \pm 0.0179$ | $0.6166 \pm 0.0170$ | $7.4813 \pm 0.2130$ | $56.0151 \pm 3.2102$ | $0.9088$ | $0.7803$ |
+| `efficientnetb3` | $0.4966 \pm 0.0199$ | $0.5056 \pm 0.0240$ | $8.8185 \pm 0.2484$ | $77.8284 \pm 4.3614$ | $0.8631$ | $0.7604$ |
+| `barlowtwins` | $0.6169 \pm 0.0119$ | $0.6292 \pm 0.0115$ | $7.0965 \pm 0.1002$ | $50.3708 \pm 1.4199$ | $0.9431$ | $0.7949$ |
+| `clip_vit_b16` *(best single)* | $0.7317 \pm 0.0059$ | $0.7456 \pm 0.0055$ | $6.0206 \pm 0.0450$ | $36.2501 \pm 0.5428$ | $0.9757$ | $0.8085$ |
+| **Bagging Ensemble (7 models)** | **$0.7519 \pm 0.0069$** | **$0.7484 \pm 0.0072$** | **$5.9057 \pm 0.0956$** | **$34.8864 \pm 1.1242$** | **$0.9680$** | **$0.8053$** |
+| **Stacking Ensemble (Ridge)** | $\mathbf{0.7742 \pm 0.0102}$ | $\mathbf{0.7734 \pm 0.0090}$ | $\mathbf{5.5442 \pm 0.1049}$ | $\mathbf{30.7487 \pm 1.1755}$ | **$0.9511$** | **$0.7983$** |
 
 * Human noise ceiling baseline: $r_{\text{human}} = 0.67$.
 
-### 7.2 Stacking Model Weights
+### 7.2 Stacking Model Weights & Architecture Synergy
 
-The learned Ridge regression weights show how each architecture contributes to the final prediction:
-* `clip_vit_b16`: **$+0.3929$** ($38.5\%$ relative weight)
-* `barlowtwins`: **$+0.2115$** ($20.7\%$ relative weight)
-* `densenet161`: **$+0.1683$** ($16.5\%$ relative weight)
-* `vgg19`: $+0.0829$ ($8.1\%$)
-* `efficientnetb3`: $+0.0739$ ($7.2\%$)
-* `resnet152`: $+0.0595$ ($5.8\%$)
-* `vgg16`: $+0.0308$ ($3.0\%$)
-* Intercept: $-0.1671$
+The learned Level-1 Ridge regression meta-learners ($\alpha = 1.0$) fitted strictly on the disjoint validation partitions $\text{val}_k$ ($N = 136$) across all 10 variants demonstrate that all 7 architectures contribute positive, complementary information:
+
+| Architecture | Paradigm | Mean Weight | Std Weight | Relative Importance |
+| :--- | :--- | :---: | :---: | :---: |
+| `clip_vit_b16` | Multimodal Vision-Language Transformer | **$+0.3929$** | $0.0526$ | $38.5\%$ |
+| `barlowtwins` | Self-Supervised Contrastive ResNet-50 | **$+0.2115$** | $0.0384$ | $20.7\%$ |
+| `densenet161` | Supervised Dense CNN ($300\times 300$) | **$+0.1683$** | $0.0360$ | $16.5\%$ |
+| `vgg19` | Supervised Deep CNN | **$+0.0829$** | $0.0275$ | $8.1\%$ |
+| `efficientnetb3` | Compound Scaled CNN | **$+0.0739$** | $0.0312$ | $7.2\%$ |
+| `resnet152` | Supervised Residual CNN | **$+0.0595$** | $0.0304$ | $5.8\%$ |
+| `vgg16` | Supervised CNN | **$+0.0308$** | $0.0251$ | $3.0\%$ |
+| **Intercept** | — | **$-0.1671$** | $0.3421$ | — |
 
 ### 7.3 Heatmap Consistency Across Independent Runs
 
@@ -219,6 +226,26 @@ The learned Ridge regression weights show how each architecture contributes to t
 | **Top-25% Overlap (IoU)** | **$0.6206 \pm 0.0714$** | **$0.5604 \pm 0.0713$** | $0.45 - 0.55$ |
 
 **Takeaway:** Combining models produces heatmaps that are substantially more stable and repeatable across runs than those of any single architecture.
+
+### 7.4 Prototype Agreement: Ensemble vs. Single Architecture Prototypes
+
+Evaluating the prototype heatmaps (averaged across all 10 runs per image, $N = 273$) between the ensembles and the single architectures reveals how the ensemble attributions reflect their component backbones:
+
+| Single Model / Baseline | Bagging Prototype ($r$) | Bagging Top-15% IoU | Stacking Prototype ($r$) | Stacking Top-15% IoU |
+| :--- | :---: | :---: | :---: | :---: |
+| `clip_vit_b16` | $+0.3033 \pm 0.2301$ | $0.2010 \pm 0.1163$ | $\mathbf{+0.7360 \pm 0.1157}$ | $\mathbf{0.4224 \pm 0.1301}$ |
+| `barlowtwins` | $+0.4114 \pm 0.2297$ | $0.2141 \pm 0.1113$ | $\mathbf{+0.4405 \pm 0.2423}$ | $0.2341 \pm 0.1225$ |
+| `densenet161` | $+0.4249 \pm 0.2084$ | $0.2175 \pm 0.1082$ | $+0.3363 \pm 0.2376$ | $0.2003 \pm 0.1175$ |
+| `vgg19` | $\mathbf{+0.5682 \pm 0.1736}$ | $\mathbf{0.2852 \pm 0.1344}$ | $+0.2604 \pm 0.2387$ | $0.1593 \pm 0.1094$ |
+| `vgg16` | $\mathbf{+0.5448 \pm 0.1877}$ | $\mathbf{0.2707 \pm 0.1335}$ | $+0.1995 \pm 0.2747$ | $0.1456 \pm 0.1142$ |
+| `efficientnetb3` | $+0.3347 \pm 0.2113$ | $0.2002 \pm 0.1064$ | $+0.1755 \pm 0.2317$ | $0.1474 \pm 0.0945$ |
+| `resnet152` | $+0.3411 \pm 0.2124$ | $0.2006 \pm 0.1099$ | $+0.1626 \pm 0.2265$ | $0.1473 \pm 0.0910$ |
+| **Between Ensembles (Bagging vs Stacking)** | — | — | $\mathbf{+0.7834 \pm 0.0988}$ | $\mathbf{0.4476 \pm 0.1251}$ |
+
+**Key Takeaways:**
+1. **Stacking reflects learned weights:** The Stacking prototype correlation strongly mirrors the learned Ridge coefficients ($r = 0.7360$ for `clip_vit_b16`, $0.4405$ for `barlowtwins`, and $0.3363$ for `densenet161`), demonstrating that stacking dynamically weights spatial features proportionally to their predictive utility.
+2. **Bagging captures CNN consensus:** Uniform bagging exhibits higher agreement with CNN features (e.g. VGG19 $r = 0.5682$, VGG16 $r = 0.5448$), where majority convolutional representations dominate the unweighted average.
+3. **High Ensemble-to-Ensemble Consensus:** Bagging and Stacking prototype heatmaps exhibit a high Pearson correlation of $\mathbf{0.7834} \pm 0.0988$ and Top-15% IoU of $\mathbf{0.4476} \pm 0.1251$, demonstrating that both ensemble strategies converge on a consistent core of visually salient features.
 
 ---
 

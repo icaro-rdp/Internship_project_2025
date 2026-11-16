@@ -64,6 +64,9 @@ Each of the 10 variants differs in:
    - Training: 80% of total dataset
    - Validation: 10% of total dataset
    - Testing: 10% of total dataset (shared globally)
+   - Training: 70% of total dataset ($N = 959$ images)
+   - Validation: 10% of total dataset ($N = 136$ images)
+   - Testing: 20% of total dataset ($N = 273$ images, shared globally)
 
 ### Training Configuration
 
@@ -898,6 +901,7 @@ Experiment 2 (Explainability Pipeline)
 
 3. **LIME Superpixel Consistency**:
    - Experiment 2 evaluates the saved weights on a shared canonical $224 \times 224$ SLIC superpixel tessellation (`slic_segments.npy`, $N = 138$ test images, $K \approx 150$), enabling direct 1D superpixel Ridge coefficient comparisons (`lime_superpixel_within_model_variants` and `lime_superpixel_between_model_architectures`).
+   - Experiment 2 evaluates the saved weights on a shared canonical $224 \times 224$ SLIC superpixel tessellation (`slic_segments.npy`, $N = 273$ test images, $K \approx 150$), enabling direct 1D superpixel Ridge coefficient comparisons (`lime_superpixel_within_model_variants` and `lime_superpixel_between_model_architectures`).
 
 4. **Filename Convention Consistency**:
    - Training: `{model}_exp1a_variant{N}_best.pth`
