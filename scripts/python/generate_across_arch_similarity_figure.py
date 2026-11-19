@@ -50,10 +50,13 @@ METHODS: list[tuple[str, str, str]] = [
     ("lime", "LIME", "C"),
 ]
 
+DEFAULT_IOU_VMAX_OFFSET: float = 0.02
+
 METRIC_CONFIGS: dict[str, dict[str, Any]] = {
     "correlation": {
         "vmin": -1.0,
         "vmax": 1.0,
+        "cap_vmax": False,
         "cbar_label": "Similarity",
         "cmap": "coolwarm",
         "file_stem": "across_arch_explanation_similarity",
@@ -61,6 +64,7 @@ METRIC_CONFIGS: dict[str, dict[str, Any]] = {
     "top_percent_iou_15": {
         "vmin": 0.0,
         "vmax": 1.0,
+        "cap_vmax": True,
         "cbar_label": "IoU @ 15%",
         "cmap": "coolwarm",
         "file_stem": "across_arch_explanation_iou_15",
@@ -68,6 +72,7 @@ METRIC_CONFIGS: dict[str, dict[str, Any]] = {
     "top_percent_iou_5": {
         "vmin": 0.0,
         "vmax": 1.0,
+        "cap_vmax": True,
         "cbar_label": "IoU @ 5%",
         "cmap": "coolwarm",
         "file_stem": "across_arch_explanation_iou_5",
@@ -75,6 +80,7 @@ METRIC_CONFIGS: dict[str, dict[str, Any]] = {
     "top_percent_iou_25": {
         "vmin": 0.0,
         "vmax": 1.0,
+        "cap_vmax": True,
         "cbar_label": "IoU @ 25%",
         "cmap": "coolwarm",
         "file_stem": "across_arch_explanation_iou_25",
@@ -82,6 +88,7 @@ METRIC_CONFIGS: dict[str, dict[str, Any]] = {
     "ssim": {
         "vmin": -1.0,
         "vmax": 1.0,
+        "cap_vmax": False,
         "cbar_label": "SSIM",
         "cmap": "coolwarm",
         "file_stem": "across_arch_explanation_ssim",
@@ -175,6 +182,38 @@ def load_correlation_matrices(
         Tuple of (matrices, std_matrices).
     """
     return load_metric_matrices(json_path, metric="correlation", models=models)
+
+
+def compute_capped_vmax(
+    matrices: dict[str, np.ndarray],
+    offset: float = DEFAULT_IOU_VMAX_OFFSET,
+    upper_bound: float = 1.0,
+) -> float:
+    """Compute shared color scale cap as max displayed value across panels plus offset.
+
+    Args:
+        matrices: Mapping of method key to (N, N) metric matrix.
+        offset: Small headroom added above the maximum value so the highest cell
+            does not sit at the extreme saturated end of the colormap.
+        upper_bound: Maximum allowed upper limit for the scale.
+
+    Returns:
+        Capped vmax value bounded above by `upper_bound`.
+    """
+    panel_maxima: list[float] = []
+    for m_key, _, _ in METHODS:
+        if m_key not in matrices:
+            continue
+        mat_slice = matrices[m_key][1:, :-1]
+        mask = np.triu(np.ones_like(mat_slice, dtype=bool), k=1) | np.isnan(mat_slice)
+        valid = mat_slice[~mask]
+        if valid.size > 0:
+            panel_maxima.append(float(np.max(valid)))
+
+    if not panel_maxima:
+        return upper_bound
+
+    return min(upper_bound, max(panel_maxima) + offset)
 
 
 def render_across_arch_similarity_figure(
@@ -309,6 +348,7 @@ def generate_all_metric_panels(
     metrics: Sequence[str] | None = None,
     include_std: bool = False,
     dpi: int = 300,
+    iou_vmax_offset: float = DEFAULT_IOU_VMAX_OFFSET,
 ) -> list[Path]:
     """Generate across-architecture panel figures for specified or all metrics.
 
@@ -318,6 +358,8 @@ def generate_all_metric_panels(
         metrics: Sequence of metric keys to generate (defaults to all METRIC_CONFIGS).
         include_std: Whether to include standard deviations in cells.
         dpi: DPI for PNG output.
+        iou_vmax_offset: Headroom added to the max value across panels when capping
+            IoU color scales.
 
     Returns:
         List of generated PDF file paths.
@@ -331,6 +373,7 @@ def generate_all_metric_panels(
             {
                 "vmin": 0.0,
                 "vmax": 1.0,
+                "cap_vmax": "iou" in metric_name.lower(),
                 "cbar_label": metric_name,
                 "cmap": "coolwarm",
                 "file_stem": f"across_arch_explanation_{metric_name}",
@@ -342,6 +385,14 @@ def generate_all_metric_panels(
         )
         if not matrices:
             continue
+
+        vmax = float(config["vmax"])
+        if config.get("cap_vmax", False):
+            vmax = compute_capped_vmax(
+                matrices=matrices,
+                offset=iou_vmax_offset,
+                upper_bound=vmax,
+            )
 
         file_stem = config["file_stem"]
         pdf_path = output_dir / f"{file_stem}.pdf"
@@ -355,7 +406,7 @@ def generate_all_metric_panels(
             include_std=include_std,
             cbar_label=config["cbar_label"],
             vmin=config["vmin"],
-            vmax=config["vmax"],
+            vmax=vmax,
             cmap=config["cmap"],
             dpi=dpi,
         )
@@ -371,7 +422,7 @@ def generate_all_metric_panels(
             include_std=True,
             cbar_label=config["cbar_label"],
             vmin=config["vmin"],
-            vmax=config["vmax"],
+            vmax=vmax,
             cmap=config["cmap"],
             dpi=dpi,
         )
@@ -433,6 +484,12 @@ def main() -> None:
         default=300,
         help="DPI for raster PNG output",
     )
+    parser.add_argument(
+        "--iou-vmax-offset",
+        type=float,
+        default=DEFAULT_IOU_VMAX_OFFSET,
+        help="Headroom added above max panel value for IoU color scales",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -444,6 +501,7 @@ def main() -> None:
         metrics=metrics,
         include_std=args.include_std,
         dpi=args.dpi,
+        iou_vmax_offset=args.iou_vmax_offset,
     )
 
 

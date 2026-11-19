@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from scripts.python.generate_across_arch_similarity_figure import (
+    DEFAULT_IOU_VMAX_OFFSET,
     DEFAULT_MODELS,
+    compute_capped_vmax,
     generate_all_metric_panels,
     load_correlation_matrices,
     load_metric_matrices,
@@ -114,3 +117,54 @@ def test_load_metric_matrices_and_generate_all(tmp_path: Path) -> None:
     assert (out_dir / "across_arch_explanation_similarity.pdf").exists()
     assert (out_dir / "across_arch_explanation_iou_15.pdf").exists()
     assert (out_dir / "across_arch_explanation_iou.pdf").exists()
+
+
+def test_compute_capped_vmax_across_panels() -> None:
+    """Verify capped vmax uses the global max across all 3 panels plus offset."""
+    n = len(DEFAULT_MODELS)
+    mat_a = np.full((n, n), np.nan)
+    mat_b = np.full((n, n), np.nan)
+    mat_c = np.full((n, n), np.nan)
+    mat_a[1, 0] = mat_a[0, 1] = 0.20
+    mat_b[2, 1] = mat_b[1, 2] = 0.13
+    mat_c[5, 4] = mat_c[4, 5] = 0.19
+
+    capped = compute_capped_vmax(
+        {"gradcam": mat_a, "mpm": mat_b, "lime": mat_c},
+        offset=0.02,
+        upper_bound=1.0,
+    )
+    assert np.isclose(capped, 0.22)
+
+    # Bound above by upper_bound
+    mat_a[1, 0] = mat_a[0, 1] = 0.995
+    assert np.isclose(
+        compute_capped_vmax({"gradcam": mat_a}, offset=0.02, upper_bound=1.0),
+        1.0,
+    )
+
+
+def test_generate_all_caps_iou_vmax_only(tmp_path: Path) -> None:
+    """Verify IoU metrics use capped vmax while correlation keeps vmax=1.0."""
+    json_file = _create_mock_json(tmp_path)
+    out_dir = tmp_path / "panels"
+
+    recorded_vmax: list[tuple[str, float]] = []
+
+    def _capture_render(*args, **kwargs):
+        recorded_vmax.append((kwargs["cbar_label"], kwargs["vmax"]))
+        return render_across_arch_similarity_figure(*args, **kwargs)
+
+    with patch(
+        "scripts.python.generate_across_arch_similarity_figure.render_across_arch_similarity_figure",
+        side_effect=_capture_render,
+    ):
+        generate_all_metric_panels(
+            json_path=json_file,
+            output_dir=out_dir,
+            metrics=["correlation", "top_percent_iou_15"],
+        )
+
+    by_label = dict(recorded_vmax)
+    assert np.isclose(by_label["Similarity"], 1.0)
+    assert np.isclose(by_label["IoU @ 15%"], 0.28 + DEFAULT_IOU_VMAX_OFFSET)
